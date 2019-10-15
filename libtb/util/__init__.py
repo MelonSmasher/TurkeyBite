@@ -38,12 +38,6 @@ host_files = [
         'name': 'porn-tiuxo'
     },
     {
-        'url': 'https://raw.githubusercontent.com/chadmayfield/pihole-blocklists/master/lists/pi_blocklist_porn_top1m.list',
-        'categories': ['porn'],
-        'file': 'lists/porn/pi_blocklist_porn_top1m',
-        'name': 'porn-pi_blocklist_porn_top1m'
-    },
-    {
         'url': 'https://raw.githubusercontent.com/chadmayfield/my-pihole-blocklists/master/lists/pi_blocklist_porn_all.list',
         'categories': ['porn'],
         'file': 'lists/porn/pi_blocklist_porn_all',
