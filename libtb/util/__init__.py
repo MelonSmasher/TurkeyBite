@@ -465,11 +465,23 @@ def pull_host_lists():
                     key = 'turkey-bite:' + new_tag + ':' + line
                     result = r.get(key)
                     if result:
-                        result = json.loads(result)
-                        result['categories'] = result['categories'] + list(
-                            set(hostlist['categories']) - set(result['categories']))
-                        r.set(key, json.dumps({'name': line, 'categories': result['categories']}))
-                        print('Updated ' + line + ' in host list cache.')
+                        try:
+                            result = json.loads(result)
+                            result['categories'] = result['categories'] + list(
+                                set(hostlist['categories']) - set(result['categories']))
+                            r.set(key, json.dumps({'name': line, 'categories': result['categories']}))
+                            print('Updated ' + line + ' in host list cache.')
+                        except TypeError as e:
+                            try:
+                                print(e)
+                                result = json.loads(result.decode('utf-8'))
+                                result['categories'] = result['categories'] + list(
+                                    set(hostlist['categories']) - set(result['categories']))
+                                r.set(key, json.dumps({'name': line, 'categories': result['categories']}))
+                                print('Updated ' + line + ' in host list cache.')
+                            except:
+                                r.set(key, json.dumps({'name': line, 'categories': hostlist['categories']}))
+                                print('Added ' + line + ' to host list cache.')
                     else:
                         r.set(key, json.dumps({'name': line, 'categories': hostlist['categories']}))
                         print('Added ' + line + ' to host list cache.')
