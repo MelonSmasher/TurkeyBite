@@ -14,12 +14,6 @@ host_files = [
         'name': 'proxy-blocklist-site-proxy'
     },
     {
-        'url': 'https://blocklist.site/app/dl/porn',
-        'categories': ['porn'],
-        'file': 'lists/porn/blocklist-site-porn',
-        'name': 'porn-blocklist-site-porn'
-    },
-    {
         'url': 'https://raw.githubusercontent.com/StevenBlack/hosts/master/extensions/porn/clefspeare13/hosts',
         'categories': ['porn'],
         'file': 'lists/porn/clefspeare13',
