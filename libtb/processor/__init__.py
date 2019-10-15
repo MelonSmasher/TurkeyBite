@@ -71,6 +71,7 @@ class Processor(object):
         # Get the current tag
         tag = r.get('turkey-bite:current-tag')
         if tag:
+            tag = tag.decode('utf-8')
             for entry in searches:
                 # Build the redis key
                 key = 'turkey-bite:' + tag + ':' + entry

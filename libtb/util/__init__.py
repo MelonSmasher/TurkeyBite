@@ -453,6 +453,7 @@ def pull_host_lists():
     r.hmset('turkey-bite:tags', tags)
 
     if old_tag:
+        old_tag = old_tag.decode('utf-8')
         r.set('turkey-bite:old-tag', old_tag)
 
     for hostlist in host_files:
