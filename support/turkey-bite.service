@@ -1,0 +1,12 @@
+[Unit]
+Description=Turkey Bite Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/turkey-bite
+ExecStart=/usr/bin/python3 /opt/turkey-bite/turkeybite run
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
