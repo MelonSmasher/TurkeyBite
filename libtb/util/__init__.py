@@ -486,9 +486,11 @@ def pull_host_lists():
     r.hmset('turkey-bite:tags', tags)
 
     if old_tag:
+        print('Purging previous data')
         tags[old_tag] = 'purging'
         r.hmset('turkey-bite:tags', tags)
         for key in r.scan_iter('turkey-bite:' + old_tag + ':*'):
             r.delete(key)
         tags[old_tag] = 'purged'
         r.hmset('turkey-bite:tags', tags)
+        print('Done purging previous data')
