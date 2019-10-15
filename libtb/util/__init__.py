@@ -14,12 +14,6 @@ host_files = [
         'name': 'proxy-blocklist-site-proxy'
     },
     {
-        'url': 'https://blocklist.site/app/dl/proxy',
-        'categories': ['proxy'],
-        'file': 'lists/proxy/blocklist-site-proxy',
-        'name': 'proxy-blocklist-site-proxy'
-    },
-    {
         'url': 'https://blocklist.site/app/dl/porn',
         'categories': ['porn'],
         'file': 'lists/porn/blocklist-site-porn',

@@ -6,4 +6,3 @@ CLick==7.0
 setproctitle==1.1.10
 rq==1.1.0
 elasticsearch==7.0.5
-massedit==0.68.5
