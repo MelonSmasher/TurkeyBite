@@ -45,28 +45,21 @@ class Processor(object):
             if 'ip' in data['destination'].keys():
                 client = data['destination']['ip']
 
-        # Do we have a registered domain key?
-        if 'registered_domain' in data['dns']['question'].keys():
-            searches.append(data['dns']['question']['registered_domain'].strip().lower())
+        # Try to grab the full host entry e.g. www.google.com
+        if 'resource' in data.keys():
+            # Do we have a resource?
+            searches.append(data['resource'].strip().lower())
+        elif 'name' in data['dns']['question'].keys():
+            # Do we have a name?
+            searches.append(data['dns']['question']['name'].strip().lower())
 
-        # Do we have a etld_plus_one key?
+        # Try to grab the domain only e.g. google.com
         if 'etld_plus_one' in data['dns']['question'].keys():
-            # Do we have a registered domain key?
-            if 'registered_domain' in data['dns']['question'].keys():
-                # Are the registered_domain and etld_plus_one values the same?
-                if data['dns']['question']['registered_domain'] != data['dns']['question']['etld_plus_one']:
-                    # Different values add etld_plus_one
-                    searches.append(data['dns']['question']['etld_plus_one'].strip().lower())
-            else:
-                # We have etld_plus_one but don't have registered_domain so add etld_plus_one
-                searches.append(data['dns']['question']['etld_plus_one'].strip().lower())
-
-        # Do we have a name key?
-        if 'registered_domain' not in data['dns']['question'].keys() and 'etld_plus_one' not in data['dns'][
-            'question'].keys():
-            # Only search `name` if we don't have registered_domain AND we don't have etld_plus_one
-            if 'name' in data['dns']['question'].keys():
-                searches.append(data['dns']['question']['name'].strip().lower())
+            # Do we have an etld_plus_one?
+            searches.append(data['dns']['question']['etld_plus_one'].strip().lower())
+        elif 'registered_domain' in data['dns']['question'].keys():
+            # Do we have a registered_domain?
+            searches.append(data['dns']['question']['registered_domain'].strip().lower())
 
         # Get the current tag
         tag = r.get('turkey-bite:current-tag')

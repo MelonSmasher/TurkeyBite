@@ -12,37 +12,45 @@ class Filters(object):
             # Is this status OK?
             if data['status'] not in self.valids:
                 return False
+
         # For inbound requests
         if data['network']['direction'] == 'inbound':
             if data['client']['ip'] in self.config['ignore']['clients']:
                 return False
+
         # For outbound requests
         if data['network']['direction'] == 'outbound':
             if self.config['drop_replies']:
                 return False
             if data['destination']['ip'] in self.config['ignore']['clients']:
                 return False
+
         # Do we have a registered domain key?
         if 'registered_domain' in data['dns']['question'].keys():
-            if data['dns']['question']['registered_domain'] in self.config['ignore']['domains']:
+            if data['dns']['question']['registered_domain'].strip().lower() in self.config['ignore']['domains']:
                 return False
-            for d in self.config['ignore']['domains']:
-                if data['dns']['question']['registered_domain'].endswith(d):
-                    return False
+
         # Do we have a etld_plus_one key?
         if 'etld_plus_one' in data['dns']['question'].keys():
-            if data['dns']['question']['etld_plus_one'] in self.config['ignore']['domains']:
+            if data['dns']['question']['etld_plus_one'].strip().lower() in self.config['ignore']['domains']:
+                return False
+
+        # Do we have a name key?
+        if 'resource' in data.keys():
+            if data['resource'].strip().lower() in self.config['ignore']['hosts']:
                 return False
             for d in self.config['ignore']['domains']:
-                if data['dns']['question']['etld_plus_one'].endswith(d):
+                if data['dns']['question']['resource'].endswith(d):
                     return False
+
         # Do we have a name key?
         if 'name' in data['dns']['question'].keys():
-            if data['dns']['question']['name'] in self.config['ignore']['names']:
+            if data['dns']['question']['name'].strip().lower() in self.config['ignore']['hosts']:
                 return False
-            for d in self.config['ignore']['names']:
+            for d in self.config['ignore']['domains']:
                 if data['dns']['question']['name'].endswith(d):
                     return False
+
         # If we made it here, we're good
         return True
 
