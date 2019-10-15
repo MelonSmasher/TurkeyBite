@@ -38,7 +38,16 @@ class Inlet(object):
                     # Filter superfluous packets
                     if self.filters.should_process(data):
                         # Send job to worker queue
+                        if 'type' in data.keys():
+                            if data['type'] == 'dns':
+                                if 'resource' in data.keys():
+                                    print('Queued: ' + data['resource'])
                         worker_queue.enqueue(self.processor.process_packet, data)
+                    else:
+                        if 'type' in data.keys():
+                            if data['type'] == 'dns':
+                                if 'resource' in data.keys():
+                                    print('Dropped: ' + data['resource'])
                 except json.JSONDecodeError:
                     # Ignore json errors
                     pass
