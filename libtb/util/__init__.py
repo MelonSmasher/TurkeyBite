@@ -278,12 +278,6 @@ host_files = [
         'name': 'malicious-CoinBlockerLists'
     },
     {
-        'url': 'https://blocklist.site/app/dl/crypto',
-        'categories': ['malicious', 'mining'],
-        'file': 'lists/mining/blocklist-site',
-        'name': 'malicious-blocklist-site'
-    },
-    {
         'url': 'https://blocklist.site/app/dl/drugs',
         'categories': ['drugs'],
         'file': 'lists/drugs/blocklist-site',
