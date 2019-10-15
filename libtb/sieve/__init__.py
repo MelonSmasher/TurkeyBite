@@ -40,7 +40,7 @@ class Filters(object):
             if data['resource'].strip().lower() in self.config['ignore']['hosts']:
                 return False
             for d in self.config['ignore']['domains']:
-                if data['dns']['question']['resource'].endswith(d):
+                if data['resource'].strip().lower().endswith(d):
                     return False
 
         # Do we have a name key?
@@ -48,7 +48,7 @@ class Filters(object):
             if data['dns']['question']['name'].strip().lower() in self.config['ignore']['hosts']:
                 return False
             for d in self.config['ignore']['domains']:
-                if data['dns']['question']['name'].endswith(d):
+                if data['dns']['question']['name'].strip().lower().endswith(d):
                     return False
 
         # If we made it here, we're good
