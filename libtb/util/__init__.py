@@ -99,7 +99,7 @@ host_files = [
     },
     {
         'url': 'https://s3.amazonaws.com/lists.disconnect.me/simple_malvertising.txt',
-        'categories': ['malvertising'],
+        'categories': ['advertising'],
         'file': 'lists/malicious/disconnect-me',
         'name': 'malicious-disconnect-me'
     },
