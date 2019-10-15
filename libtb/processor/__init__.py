@@ -1,4 +1,3 @@
-import os.path
 from _datetime import datetime
 import json
 from elasticsearch import Elasticsearch
@@ -78,7 +77,7 @@ class Processor(object):
                 # Search redis for the queried domain
                 result = r.get(key)
                 if result:
-                    result = json.loads(result)
+                    result = json.loads(result.decode('utf-8'))
                     # Add any unique categories to the context array
                     contexts = contexts + list(set(result['categories']) - set(contexts))
 
