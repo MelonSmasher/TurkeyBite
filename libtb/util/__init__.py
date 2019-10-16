@@ -9,7 +9,7 @@ import time
 host_files = [
     {
         'url': 'https://blocklist.site/app/dl/proxy',
-        'categories': ['proxy'],
+        'categories': ['proxy/vpn'],
         'file': 'lists/proxy/blocklist-site-proxy',
         'name': 'proxy-blocklist-site-proxy'
     },
@@ -372,6 +372,440 @@ host_files = [
         'categories': ['advertising'],
         'file': 'lists/advertising/blocklist-site',
         'name': 'advertising-blocklist-site'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/adv/domains',
+        'categories': ['advertising'],
+        'file': 'lists/advertising/shallalist-adv',
+        'name': 'advertising-shallalist-adv'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/aggressive/domains',
+        'categories': ['aggressive'],
+        'file': 'lists/misc/shallalist-aggressive',
+        'name': 'misc-shallalist-aggressive'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/alcohol/domains',
+        'categories': ['alcohol'],
+        'file': 'lists/drugs/shallalist-alcohol',
+        'name': 'drugs-shallalist-alcohol'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/anonvpn/domains',
+        'categories': ['proxy/vpn'],
+        'file': 'lists/proxy/shallalist-anonvpn',
+        'name': 'proxy-shallalist-anonvpn'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/anonvpn/domains',
+        'categories': ['proxy/vpn'],
+        'file': 'lists/proxy/shallalist-anonvpn',
+        'name': 'proxy-shallalist-anonvpn'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/automobile/bikes/domains',
+        'categories': ['automobile', 'bikes'],
+        'file': 'lists/misc/shallalist-automobile-bikes',
+        'name': 'misc-shallalist-automobile-bikes'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/automobile/boats/domains',
+        'categories': ['automobile', 'boats'],
+        'file': 'lists/misc/shallalist-automobile-boats',
+        'name': 'misc-shallalist-automobile-boats'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/automobile/cars/domains',
+        'categories': ['automobile', 'cars'],
+        'file': 'lists/misc/shallalist-automobile-cars',
+        'name': 'misc-shallalist-automobile-cars'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/automobile/planes/domains',
+        'categories': ['automobile', 'planes'],
+        'file': 'lists/misc/shallalist-automobile-planes',
+        'name': 'misc-shallalist-automobile-planes'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/chat/domains',
+        'categories': ['social', 'chat'],
+        'file': 'social/misc/shallalist-chat',
+        'name': 'social-shallalist-chat'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/costtraps/domains',
+        'categories': ['cost-trap'],
+        'file': 'lists/misc/shallalist-costtraps',
+        'name': 'misc-shallalist-costtraps'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/dating/domains',
+        'categories': ['dating'],
+        'file': 'lists/misc/shallalist-dating',
+        'name': 'misc-shallalist-dating'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/drugs/domains',
+        'categories': ['drugs'],
+        'file': 'lists/drugs/shallalist-drugs',
+        'name': 'drugs-shallalist-drugs'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/education/schools/domains',
+        'categories': ['education'],
+        'file': 'lists/misc/shallalist-education-schools',
+        'name': 'misc-shallalist-education-schools'
+    },
+
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/finance/banking/domains',
+        'categories': ['finance', 'banking'],
+        'file': 'lists/misc/shallalist-finance-banking',
+        'name': 'misc-shallalist-finance-banking'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/finance/insurance/domains',
+        'categories': ['finance', 'insurance'],
+        'file': 'lists/misc/shallalist-finance-insurance',
+        'name': 'misc-shallalist-finance-insurance'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/finance/moneylending/domains',
+        'categories': ['finance', 'moneylending'],
+        'file': 'lists/misc/shallalist-finance-moneylending',
+        'name': 'misc-shallalist-finance-moneylending'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/finance/other/domains',
+        'categories': ['finance'],
+        'file': 'lists/misc/shallalist-finance-other',
+        'name': 'misc-shallalist-finance-other'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/finance/realestate/domains',
+        'categories': ['finance', 'realestate'],
+        'file': 'lists/misc/shallalist-finance-realestate',
+        'name': 'misc-shallalist-finance-realestate'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/finance/trading/domains',
+        'categories': ['finance', 'trading'],
+        'file': 'lists/misc/shallalist-finance-trading',
+        'name': 'misc-shallalist-finance-trading'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/fortunetelling/domains',
+        'categories': ['fortunetelling'],
+        'file': 'lists/misc/shallalist-fortunetelling',
+        'name': 'misc-shallalist-fortunetelling'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/forum/domains',
+        'categories': ['forum'],
+        'file': 'lists/misc/shallalist-forum',
+        'name': 'misc-shallalist-forum'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/gamble/domains',
+        'categories': ['gambling'],
+        'file': 'lists/gambling/shallalist-gamble',
+        'name': 'gambling-shallalist-gamble'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/government/domains',
+        'categories': ['government'],
+        'file': 'lists/misc/shallalist-government',
+        'name': 'misc-shallalist-government'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hacking/domains',
+        'categories': ['hacking'],
+        'file': 'lists/misc/shallalist-hacking',
+        'name': 'misc-shallalist-hacking'
+    },
+
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hobby/cooking/domains',
+        'categories': ['hobby', 'cooking'],
+        'file': 'lists/misc/shallalist-hobby-cooking',
+        'name': 'misc-shallalist-hobby-cooking'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hobby/games-misc/domains',
+        'categories': ['hobby', 'games-misc', 'gaming'],
+        'file': 'lists/misc/shallalist-hobby-games-misc',
+        'name': 'misc-shallalist-hobby-games-misc'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hobby/games-online/domains',
+        'categories': ['hobby', 'games-online', 'gaming'],
+        'file': 'lists/misc/shallalist-hobby-games-online',
+        'name': 'misc-shallalist-hobby-games-online'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hobby/gardening/domains',
+        'categories': ['hobby', 'gardening'],
+        'file': 'lists/misc/shallalist-hobby-gardening',
+        'name': 'misc-shallalist-hobby-gardening'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hobby/pets/domains',
+        'categories': ['hobby', 'pets'],
+        'file': 'lists/misc/shallalist-hobby-pets',
+        'name': 'misc-shallalist-hobby-pets'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/homestyle/domains',
+        'categories': ['lifestyle'],
+        'file': 'lists/misc/shallalist-homestyle',
+        'name': 'misc-shallalist-homestyle'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/hospitals/domains',
+        'categories': ['hospital'],
+        'file': 'lists/misc/shallalist-hospitals',
+        'name': 'misc-shallalist-hospitals'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/imagehosting/domains',
+        'categories': ['image-hosting'],
+        'file': 'lists/misc/shallalist-imagehosting',
+        'name': 'misc-shallalist-imagehosting'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/isp/domains',
+        'categories': ['isp'],
+        'file': 'lists/misc/shallalist-isp',
+        'name': 'misc-shallalist-isp'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/jobsearch/domains',
+        'categories': ['job-search'],
+        'file': 'lists/misc/shallalist-jobsearch',
+        'name': 'misc-shallalist-jobsearch'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/library/domains',
+        'categories': ['library'],
+        'file': 'lists/misc/shallalist-library',
+        'name': 'misc-shallalist-library'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/military/domains',
+        'categories': ['military'],
+        'file': 'lists/misc/shallalist-military',
+        'name': 'misc-shallalist-military'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/models/domains',
+        'categories': ['models'],
+        'file': 'lists/misc/shallalist-models',
+        'name': 'misc-shallalist-models'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/movies/domains',
+        'categories': ['movies'],
+        'file': 'lists/misc/shallalist-movies',
+        'name': 'misc-shallalist-movies'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/music/domains',
+        'categories': ['music'],
+        'file': 'lists/misc/shallalist-music',
+        'name': 'misc-shallalist-music'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/news/domains',
+        'categories': ['news'],
+        'file': 'lists/misc/shallalist-news',
+        'name': 'misc-shallalist-news'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/podcast/domains',
+        'categories': ['podcast'],
+        'file': 'lists/misc/shallalist-podcast',
+        'name': 'misc-shallalist-podcast'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/politics/domains',
+        'categories': ['politics'],
+        'file': 'lists/misc/shallalist-politics',
+        'name': 'misc-shallalist-politics'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/porn/domains',
+        'categories': ['porn'],
+        'file': 'lists/porn/shallalist-porn',
+        'name': 'porn-shallalist-porn'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/radiotv/domains',
+        'categories': ['radio-tv'],
+        'file': 'lists/misc/shallalist-radiotv',
+        'name': 'misc-shallalist-radiotv'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/recreation/humor/domains',
+        'categories': ['recreation', 'humor'],
+        'file': 'lists/misc/shallalist-recreation-humor',
+        'name': 'misc-shallalist-recreation-humor'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/recreation/martialarts/domains',
+        'categories': ['recreation', 'martial-arts', 'lifestyle'],
+        'file': 'lists/misc/shallalist-recreation-martialarts',
+        'name': 'misc-shallalist-recreation-martialarts'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/recreation/restaurants/domains',
+        'categories': ['recreation', 'restaurants'],
+        'file': 'lists/misc/shallalist-recreation-restaurants',
+        'name': 'misc-shallalist-recreation-restaurants'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/recreation/sports/domains',
+        'categories': ['recreation', 'sports', 'lifestyle'],
+        'file': 'lists/misc/shallalist-recreation-sports',
+        'name': 'misc-shallalist-recreation-sports'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/recreation/travel/domains',
+        'categories': ['recreation', 'travel', 'lifestyle'],
+        'file': 'lists/misc/shallalist-recreation-travel',
+        'name': 'misc-shallalist-recreation-travel'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/recreation/wellness/domains',
+        'categories': ['recreation', 'wellness', 'lifestyle'],
+        'file': 'lists/misc/shallalist-recreation-wellness',
+        'name': 'misc-shallalist-recreation-wellness'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/religion/domains',
+        'categories': ['religion'],
+        'file': 'lists/misc/shallalist-religion',
+        'name': 'misc-shallalist-religion'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/remotecontrol/domains',
+        'categories': ['remote-control'],
+        'file': 'lists/misc/shallalist-remotecontrol',
+        'name': 'misc-shallalist-remotecontrol'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/ringtones/domains',
+        'categories': ['ringtones'],
+        'file': 'lists/misc/shallalist-ringtones',
+        'name': 'misc-shallalist-ringtones'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/science/astronomy/domains',
+        'categories': ['science', 'astronomy'],
+        'file': 'lists/misc/shallalist-science-astronomy',
+        'name': 'misc-shallalist-science-astronomy'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/science/chemistry/domains',
+        'categories': ['science', 'chemistry'],
+        'file': 'lists/misc/shallalist-science-chemistry',
+        'name': 'misc-shallalist-science-chemistry'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/searchengines/domains',
+        'categories': ['search-engine'],
+        'file': 'lists/misc/shallalist-searchengines',
+        'name': 'misc-shallalist-searchengines'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/sex/education/domains',
+        'categories': ['sex', 'sex-education'],
+        'file': 'lists/misc/shallalist-sex-education',
+        'name': 'misc-shallalist-sex-education'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/sex/lingerie/domains',
+        'categories': ['sex', 'lingerie'],
+        'file': 'lists/misc/shallalist-sex-lingerie',
+        'name': 'misc-shallalist-sex-lingerie'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/shopping/domains',
+        'categories': ['shopping'],
+        'file': 'lists/misc/shallalist-shopping',
+        'name': 'misc-shallalist-shopping'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/socialnet/domains',
+        'categories': ['social', 'social-network'],
+        'file': 'lists/misc/shallalist-socialnet',
+        'name': 'misc-shallalist-socialnet'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/spyware/domains',
+        'categories': ['spyware', 'malicious'],
+        'file': 'lists/malicious/shallalist-spyware',
+        'name': 'malicious-shallalist-spyware'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/tracker/domains',
+        'categories': ['tracking'],
+        'file': 'lists/tracking/shallalist-tracker',
+        'name': 'tracking-shallalist-tracker'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/updatesites/domains',
+        'categories': ['software-update'],
+        'file': 'lists/misc/shallalist-updatesites',
+        'name': 'misc-shallalist-updatesites'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/urlshortener/domains',
+        'categories': ['url-shortener'],
+        'file': 'lists/misc/shallalist-urlshortener',
+        'name': 'misc-shallalist-urlshortener'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/violence/domains',
+        'categories': ['violence'],
+        'file': 'lists/misc/shallalist-violence',
+        'name': 'misc-shallalist-violence'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/warez/domains',
+        'categories': ['warez', 'piracy'],
+        'file': 'lists/piracy/shallalist-warez',
+        'name': 'piracy-shallalist-warez'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/weapons/domains',
+        'categories': ['weapons'],
+        'file': 'lists/misc/shallalist-weapons',
+        'name': 'misc-shallalist-weapons'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/webmail/domains',
+        'categories': ['web-mail'],
+        'file': 'lists/misc/shallalist-webmail',
+        'name': 'misc-shallalist-webmail'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/webphone/domains',
+        'categories': ['web-phone'],
+        'file': 'lists/misc/shallalist-webphone',
+        'name': 'misc-shallalist-webphone'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/webradio/domains',
+        'categories': ['web-radio'],
+        'file': 'lists/misc/shallalist-webradio',
+        'name': 'misc-shallalist-webradio'
+    },
+    {
+        'url': 'https://res.sage.edu/files/shallalist/BL/webtv/domains',
+        'categories': ['web-tv'],
+        'file': 'lists/misc/shallalist-webtv',
+        'name': 'misc-shallalist-webtv'
     }
 ]
 
