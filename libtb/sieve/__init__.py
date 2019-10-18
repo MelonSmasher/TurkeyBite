@@ -14,16 +14,21 @@ class Filters(object):
                 return False
 
         # For inbound requests
-        if data['network']['direction'] == 'inbound':
-            if data['client']['ip'] in self.config['ignore']['clients']:
-                return False
+        if 'client' in data.keys():
+            if 'ip' in data['client'].keys():
+                if data['client']['ip'] in self.config['ignore']['clients']:
+                    return False
 
         # For outbound requests
-        if data['network']['direction'] == 'outbound':
-            if self.config['drop_replies']:
-                return False
-            if data['destination']['ip'] in self.config['ignore']['clients']:
-                return False
+        if 'destination' in data.keys():
+            if 'ip' in data['destination']:
+                if data['destination']['ip'] in self.config['ignore']['clients']:
+                    return False
+        if 'network' in data.keys():
+            if 'direction' in data['network'].keys():
+                if data['network']['direction'] == 'outbound':
+                    if self.config['drop_replies']:
+                        return False
 
         # Do we have a registered domain key?
         if 'registered_domain' in data['dns']['question'].keys():

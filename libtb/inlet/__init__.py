@@ -35,16 +35,17 @@ class Inlet(object):
                 try:
                     # Try to convert the message data from a JSON string to a Python dict
                     data = json.loads(message['data'].decode('utf-8'))
-                    if 'direction' not in data['network'].keys():
-                        print(data)
                     # Filter superfluous packets
                     if self.filters.should_process(data):
                         # Send job to worker queue
                         if 'type' in data.keys():
                             if data['type'] == 'dns':
                                 if 'resource' in data.keys():
-                                    if 'direction' in data['network'].keys():
-                                        print('Queued: ' + data['resource'] + ' - ' + data['network']['direction'])
+                                    if 'network' in data.keys():
+                                        if 'direction' in data['network'].keys():
+                                            print('Queued: ' + data['resource'] + ' - ' + data['network']['direction'])
+                                        else:
+                                            print('Queued: ' + data['resource'])
                                     else:
                                         print('Queued: ' + data['resource'])
                         worker_queue.enqueue(self.processor.process_packet, data)
@@ -52,8 +53,11 @@ class Inlet(object):
                         if 'type' in data.keys():
                             if data['type'] == 'dns':
                                 if 'resource' in data.keys():
-                                    if 'direction' in data['network'].keys():
-                                        print('Dropped: ' + data['resource'] + ' - ' + data['network']['direction'])
+                                    if 'network' in data.keys():
+                                        if 'direction' in data['network'].keys():
+                                            print('Dropped: ' + data['resource'] + ' - ' + data['network']['direction'])
+                                        else:
+                                            print('Dropped: ' + data['resource'])
                                     else:
                                         print('Dropped: ' + data['resource'])
                 except json.JSONDecodeError:
