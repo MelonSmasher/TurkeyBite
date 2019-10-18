@@ -35,6 +35,8 @@ class Inlet(object):
                 try:
                     # Try to convert the message data from a JSON string to a Python dict
                     data = json.loads(message['data'].decode('utf-8'))
+                    if 'direction' not in data['network'].keys():
+                        print(data)
                     # Filter superfluous packets
                     if self.filters.should_process(data):
                         # Send job to worker queue
