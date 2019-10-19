@@ -2,7 +2,7 @@ from _datetime import datetime
 import json
 from elasticsearch import Elasticsearch
 from redis import Redis
-from dns import reversename, resolver
+from dns import reversename, resolver, exception
 
 
 class Processor(object):
@@ -81,10 +81,15 @@ class Processor(object):
         # Reverse client lookup
         if self.config['dns']['lookup_ips']:
             if client:
-                rev_name = reversename.from_address(client)
-                tb_resolver = resolver.Resolver()
-                tb_resolver.nameservers = ['resolvers']
-                reversed_dns = tb_resolver.query(rev_name, "PTR")
+                try:
+                    rev_name = reversename.from_address(client)
+                    tb_resolver = resolver.Resolver(configure=False)
+                    tb_resolver.nameservers = ['resolvers']
+                    tb_resolver.timeout = 1
+                    tb_resolver.lifetime = 1
+                    reversed_dns = tb_resolver.query(rev_name, "PTR")
+                except exception.Timeout:
+                    pass
 
         # Build the dataset to ship
         bite = {
