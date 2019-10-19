@@ -89,7 +89,7 @@ class Processor(object):
                     tb_resolver.timeout = 1
                     tb_resolver.lifetime = 1
                     for a in tb_resolver.query(rev_name, "PTR"):
-                        reversed_dns.append(str(a))
+                        reversed_dns.append(str(a).rstrip('.'))
                     rev_name = rev_name.to_text()
                 except exception.Timeout:
                     rev_name = rev_name.to_text()
