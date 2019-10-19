@@ -28,6 +28,7 @@ class Processor(object):
         request = None
         # Reverse DNS add
         reversed_dns = None
+        rev_name = None
         # Redis DB with host lists
         r = Redis(
             host=self.redis_conf['host'],
@@ -103,6 +104,7 @@ class Processor(object):
                 'processed': datetime.now().isoformat(),
                 'client': client,
                 'client_hosts': reversed_dns,
+                'rev': rev_name,
                 'requested': searches,
                 'contexts': contexts,
                 'request': request,
