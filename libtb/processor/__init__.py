@@ -27,7 +27,7 @@ class Processor(object):
         # The request direction
         request = None
         # Reverse DNS add
-        reversed_dns = None
+        reversed_dns = []
         rev_name = None
         # Redis DB with host lists
         r = Redis(
@@ -88,7 +88,8 @@ class Processor(object):
                     tb_resolver.nameservers = self.config['dns']['resolvers']
                     tb_resolver.timeout = 1
                     tb_resolver.lifetime = 1
-                    reversed_dns = str(tb_resolver.query(rev_name, "PTR"))
+                    for a in tb_resolver.query(rev_name, "PTR"):
+                        reversed_dns.append(str(a))
                     rev_name = rev_name.to_text()
                 except exception.Timeout:
                     rev_name = rev_name.to_text()
