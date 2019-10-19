@@ -89,7 +89,9 @@ class Processor(object):
                     tb_resolver.timeout = 1
                     tb_resolver.lifetime = 1
                     reversed_dns = tb_resolver.query(rev_name, "PTR")
+                    rev_name = rev_name.to_text()
                 except exception.Timeout:
+                    rev_name = rev_name.to_text()
                     pass
 
         # Build the dataset to ship
