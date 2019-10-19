@@ -2,6 +2,7 @@ from _datetime import datetime
 import json
 from elasticsearch import Elasticsearch
 from redis import Redis
+from dns import reversename, resolver
 
 
 class Processor(object):
@@ -25,6 +26,8 @@ class Processor(object):
         client = None
         # The request direction
         request = None
+        # Reverse DNS add
+        reversed_dns = None
         # Redis DB with host lists
         r = Redis(
             host=self.redis_conf['host'],
@@ -75,6 +78,14 @@ class Processor(object):
                     # Add any unique categories to the context array
                     contexts = contexts + list(set(result['categories']) - set(contexts))
 
+        # Reverse client lookup
+        if self.config['dns']['lookup_ips']:
+            if client:
+                rev_name = reversename.from_address(client)
+                tb_resolver = resolver.Resolver()
+                tb_resolver.nameservers = ['resolvers']
+                reversed_dns = tb_resolver.query(rev_name, "PTR")
+
         # Build the dataset to ship
         bite = {
             '@timestamp': data['@timestamp'],
@@ -86,6 +97,7 @@ class Processor(object):
             'bite': {
                 'processed': datetime.now().isoformat(),
                 'client': client,
+                'client_hosts': reversed_dns,
                 'requested': searches,
                 'contexts': contexts,
                 'request': request,

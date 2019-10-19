@@ -6,4 +6,4 @@ CLick==7.0
 setproctitle==1.1.10
 rq==1.1.0
 elasticsearch==7.0.5
-pydig==0.2.0
+dnspython==1.16.0
