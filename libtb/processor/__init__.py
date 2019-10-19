@@ -104,7 +104,7 @@ class Processor(object):
                 'processed': datetime.now().isoformat(),
                 'client': client,
                 'client_hosts': reversed_dns,
-                'rev': rev_name,
+                'ptr': rev_name,
                 'requested': searches,
                 'contexts': contexts,
                 'request': request,
