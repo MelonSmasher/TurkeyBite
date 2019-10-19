@@ -85,7 +85,7 @@ class Processor(object):
                 try:
                     rev_name = reversename.from_address(client)
                     tb_resolver = resolver.Resolver(configure=False)
-                    tb_resolver.nameservers = ['resolvers']
+                    tb_resolver.nameservers = self.config['dns']['resolvers']
                     tb_resolver.timeout = 1
                     tb_resolver.lifetime = 1
                     reversed_dns = tb_resolver.query(rev_name, "PTR")
