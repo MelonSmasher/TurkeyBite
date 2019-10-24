@@ -844,14 +844,19 @@ def process_whitelist(r=False, tag=False):
         with open('lists/whitelist.json', 'r') as json_file:
             whitelist = json.load(json_file)
             for context, hosts in whitelist.items():
+                print('Processing ' + context + 'whitelist... ')
                 for host in hosts:
                     key = 'turkey-bite:' + tag + ':' + host
                     result = r.get(key)
                     if result:
                         result = json.loads(result.decode('utf-8'))
+                        print('Processing ' + host + ':')
+                        print(result['categories'])
                         while context in result['categories']:
                             result['categories'].remove(context)
                         r.set(key, json.dumps({'name': host, 'categories': result['categories']}))
+                        print('Done processing ' + host + ':')
+                        print(result['categories'])
     else:
         print('No whitelist.json file to process.')
 
