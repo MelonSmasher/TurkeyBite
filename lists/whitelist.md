@@ -14,17 +14,21 @@ In the example below the sites listed will have the `porn` category removed from
     "dicks.com",
     "www.dicks.com",
     "eonline.com",
-    "www.eonline.com"
+    "www.eonline.com",
+    "tenor.com",
+    "api.tenor.com",
+    "media.tenor.com"
   ]
 }
 ``` 
 
 About the sites listed:
 
-* wwdl.net - Dedicated hosting solution
-* stun.wwdl.net - Most likely related to VOIP / SIP
-* dicks.com & www.dicks.com - Redirects to www.dickssportinggoods.com
-* eonline.com & www.eonline.com - An American cable television network
+* wwdl.net - Dedicated hosting solution.
+* stun.wwdl.net - Most likely related to VOIP / SIP.
+* dicks.com & www.dicks.com - Redirects to www.dickssportinggoods.com.
+* eonline.com & www.eonline.com - An American cable television network.
+* tenor.com & api.tenor.com & media.tenor.com - Tenor is an online GIF search engine and database.
 
 None of the sites listed above are directly related to porn, though they do each appear on a porn list that TB uses.
 To enable the whitelist copy `whitelist.example.json` to `whitelist.json` and the next time domains and hosts are loaded into redis the whitelist will be processed.
