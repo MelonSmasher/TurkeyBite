@@ -8,7 +8,13 @@
     "www.eonline.com",
     "tenor.com",
     "api.tenor.com",
-    "media.tenor.com"
+    "media.tenor.com",
+    "urbandictionary.com",
+    "mob.com",
+    "gm.mob.com",
+    "l.gm.mob.com",
+    "etonline.com",
+    "www.etonline.com"
   ],
   "malware": [
     "doubleverify.com",

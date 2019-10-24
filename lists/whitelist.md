@@ -45,3 +45,4 @@ About the sites listed:
 
 None of the sites listed above are directly related to porn, though they do each appear on a porn list that TB uses.
 To enable the whitelist copy `whitelist.example.json` to `whitelist.json` and the next time domains and hosts are loaded into redis the whitelist will be processed.
+You can also modify `whitelist.json` to meet your own needs.
