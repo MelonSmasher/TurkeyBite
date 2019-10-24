@@ -843,7 +843,7 @@ def process_whitelist(r=False, tag=False):
 
         with open('lists/whitelist.json', 'r') as json_file:
             whitelist = json.load(json_file)
-            for context, hosts in whitelist:
+            for context, hosts in whitelist.items():
                 for host in hosts:
                     key = 'turkey-bite:' + tag + ':' + host
                     result = r.get(key)
