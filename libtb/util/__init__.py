@@ -826,6 +826,36 @@ def read_config():
             print(exc)
 
 
+def process_whitelist(r=False, tag=False):
+    print('Processing whitelist')
+    if os.path.exists('lists/whitelist.json'):
+        config = read_config()
+        if not r:
+            r = Redis(
+                host=config['redis']['host'],
+                port=config['redis']['port'],
+                password=config['redis']['password'],
+                db=config['redis']['host_list_db']
+            )
+            if not tag:
+                tag = r.get('turkey-bite:current-tag').decode('utf-8')
+                pass
+
+        with open('lists/whitelist.json', 'r') as json_file:
+            whitelist = json.load(json_file)
+            for context, hosts in whitelist:
+                for host in hosts:
+                    key = 'turkey-bite:' + tag + ':' + host
+                    result = r.get(key)
+                    if result:
+                        result = json.loads(result.decode('utf-8'))
+                        while context in result['categories']:
+                            result['categories'].remove(context)
+                        r.set(key, json.dumps({'name': host, 'categories': result['categories']}))
+    else:
+        print('No whitelist.json file to process.')
+
+
 def pull_host_lists():
     for hlist in host_files:
         try:
@@ -895,6 +925,8 @@ def pull_host_lists():
                     else:
                         r.set(key, json.dumps({'name': line, 'categories': hostlist['categories']}))
                         print('Added ' + line + ' to host list cache.')
+
+    process_whitelist(r=r, tag=new_tag)
 
     # Set the new tag as live
     tags[new_tag] = 'live'

@@ -12,3 +12,5 @@
 !piracy/
 !proxy/
 !misc/
+!whitelist.example.json
+!whitelist.md
