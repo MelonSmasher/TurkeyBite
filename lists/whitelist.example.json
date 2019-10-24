@@ -19,6 +19,17 @@
     "cosmopolitan.com",
     "www.cosmopolitan.com"
   ],
+  "phishing": [
+    "spotify.com",
+    "pixel.spotify.com",
+    "global-dealer-ssl.spotify.com",
+    "dealer.spotify.com",
+    "spclient.wg.spotify.com",
+    "ap.spotify.com",
+    "open.spotify.com",
+    "apresolve.spotify.com",
+    "api.spotify.com"
+  ],
   "malware": [
     "doubleverify.com",
     "tps.doubleverify.com",
@@ -47,6 +58,15 @@
     "tps10254.doubleverify.com",
     "tps10210.doubleverify.com",
     "tps10229.doubleverify.com",
-    "tps10246.doubleverify.com"
+    "tps10246.doubleverify.com",
+    "spotify.com",
+    "pixel.spotify.com",
+    "global-dealer-ssl.spotify.com",
+    "dealer.spotify.com",
+    "spclient.wg.spotify.com",
+    "ap.spotify.com",
+    "open.spotify.com",
+    "apresolve.spotify.com",
+    "api.spotify.com"
   ]
 }
