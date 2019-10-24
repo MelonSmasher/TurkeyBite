@@ -94,6 +94,9 @@ class Processor(object):
                 except exception.Timeout:
                     rev_name = rev_name.to_text()
                     pass
+                except resolver.NXDOMAIN:
+                    rev_name = ''
+                    pass
 
         # Build the dataset to ship
         bite = {
