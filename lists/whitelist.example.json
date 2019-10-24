@@ -9,5 +9,17 @@
     "tenor.com",
     "api.tenor.com",
     "media.tenor.com"
+  ],
+  "malware": [
+    "doubleverify.com",
+    "tps.doubleverify.com",
+    "cdn.doubleverify.com",
+    "rtbcdn.doubleverify.com"
+  ],
+  "malicious": [
+    "doubleverify.com",
+    "tps.doubleverify.com",
+    "cdn.doubleverify.com",
+    "rtbcdn.doubleverify.com"
   ]
 }
