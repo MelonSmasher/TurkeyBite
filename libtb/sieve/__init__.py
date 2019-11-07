@@ -70,6 +70,8 @@ class Filters(object):
         # Dive down into the data structure
         if 'data' in data.keys():
             print(data)
+
+
             if 'event' in data['data'].keys():
                 if 'data' in data['data']['event'].keys():
 
