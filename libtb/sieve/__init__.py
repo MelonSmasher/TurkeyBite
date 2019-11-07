@@ -109,13 +109,9 @@ class Filters(object):
                                         return False
                                     # Deal with ignored domains
                                     domain = host
-                                    print(domain)
                                     if '.' in domain:
                                         parts = domain.split('.')
-                                        print(domain)
-                                        print(parts)
-                                        domain = '.'.join([parts[len(parts - 2)], parts[len(parts - 1)]])
-                                        print(domain)
+                                        domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
                                     if domain in ignore_domains:
                                         return False
 
