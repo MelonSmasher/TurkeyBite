@@ -179,8 +179,6 @@ class Processor(object):
             if 'event' in data['data'].keys():
                 if 'data' in data['data']['event'].keys():
                     if 'entry' in data['data']['event']['data'].keys():
-                        if 'url' in data['data']['event']['data']['entry'].keys():
-                            searches.append(data['data']['event']['data']['entry']['url'])
                         if 'url_data' in data['data']['event']['data']['entry'].keys():
                             if 'Scheme' in data['data']['event']['data']['entry']['url_data'].keys():
                                 request = data['data']['event']['data']['entry']['url_data']['Scheme']
@@ -223,6 +221,7 @@ class Processor(object):
                 'processed': datetime.now().isoformat(),
                 'event_time_utc': timestamp,
                 'event_time_local': localtime,
+                'url': data['data']['event']['data']['entry']['url'],
                 'requested': searches,
                 'contexts': contexts,
                 'request': request,
