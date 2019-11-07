@@ -192,9 +192,9 @@ class Processor(object):
                                         host = host.split(':')[0]
                                 searches.append(host)
                                 domain = host
-                                if '.' in host:
-                                    parts = host.split('.')
-                                    domain = '.'.join([parts[len(parts - 2)], parts[len(parts - 1)]])
+                                if '.' in domain:
+                                    parts = domain.split('.')
+                                    domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
                                 if domain != host:
                                     searches.append(domain)
 
