@@ -1,11 +1,12 @@
 class Filters(object):
     # Packet types we care about
-    packets = ['dns']
+    packets = ['dns', 'browser.history']
     valids = ['OK']
 
     def __init__(self, config):
         self.config = config
 
+    # Packetbeat DNS filters
     def dns(self, data):
         # If we are filtering invalid packets
         if self.config['drop_error_packets']:
@@ -59,6 +60,70 @@ class Filters(object):
         # If we made it here, we're good
         return True
 
+    # Browserbeat filters
+    def browserbeat(self, data):
+        ignore_clients = self.config['browserbeat']['ignore']['clients']
+        ignore_users = self.config['browserbeat']['ignore']['users']
+        ignore_doamins = self.config['browserbeat']['ignore']['domains']
+        ignore_hosts = self.config['browserbeat']['ignore']['hosts']
+
+        # Dive down into the data structure
+        if 'data' in data.keys():
+            if 'event' in data['data'].keys():
+                if 'data' in data['data']['event'].keys():
+
+                    # Client level rules
+                    if 'client' in data['data']['event']['data'].keys():
+
+                        # Filter ignored client hostnames
+                        if 'Hostname' in data['data']['event']['data']['client'].keys():
+                            # Filter fqdn hostname
+                            if 'hostname' in data['data']['event']['data']['client']['Hostname'].keys():
+                                if data['data']['event']['data']['client']['Hostname']['hostname'] in ignore_clients:
+                                    return False
+                            # Filter short hostname
+                            if 'short' in data['data']['event']['data']['client']['Hostname'].keys():
+                                if data['data']['event']['data']['client']['Hostname']['short'] in ignore_clients:
+                                    return False
+
+                        # Filter ignored IPs
+                        if 'ip_addresses' in data['data']['event']['data']['client'].keys():
+                            for ip in data['data']['event']['data']['client']['ip_addresses']:
+                                if ip in ignore_clients:
+                                    return False
+
+                        # Filter ignored users
+                        if 'user' in data['data']['event']['data']['client'].keys():
+                            if data['data']['event']['data']['client']['user'] in ignore_users:
+                                return False
+
+                    # History entry level rules
+                    if 'entry' in data['data']['event']['data'].keys():
+                        if 'url_data' in data['data']['event']['data']['entry'].keys():
+                            if 'Host' in data['data']['event']['data']['entry']['url_data'].keys():
+                                host = data['data']['event']['data']['entry']['url_data']['Host']
+                                if host:
+                                    if ':' in host:
+                                        # Deal with hosts that have a port in the string
+                                        host = host.split(':')[0]
+                                    # Should we ignore this host
+                                    if host in ignore_hosts:
+                                        return False
+                                    # Deal with ignored domains
+                                    domain = host
+                                    if '.' in host:
+                                        parts = host.split('.')
+                                        domain = '.'.join([parts[len(parts - 2)], parts[len(parts - 1)]])
+                                    if domain in ignore_doamins:
+                                        return False
+
+        else:
+            # If we get here we aren't user how to process this
+            return False
+
+        # If we made it here, we're good
+        return True
+
     def should_process(self, data):
         # Ensure that the data is now a dict
         if isinstance(data, dict):
@@ -69,6 +134,9 @@ class Filters(object):
                     # different filters for different packet types
                     if data['type'] == 'dns':
                         return self.dns(data)
+                    elif data['type'] == 'browser.history':
+                        return self.browserbeat(data)
                     else:
                         return False
+        # If we made it here, we don't want this packet
         return False
