@@ -1,5 +1,6 @@
 from _datetime import datetime
 import json
+from dateutil import *
 from elasticsearch import Elasticsearch
 from redis import Redis
 from dns import reversename, resolver, exception
@@ -14,6 +15,8 @@ class Processor(object):
     def process_packet(self, data):
         if data['type'] == 'dns':
             self.process_dns_packet(data)
+        if data['type'] == 'browser.history':
+            self.process_browser_history(data)
         else:
             return False
 
@@ -120,6 +123,108 @@ class Processor(object):
         }
 
         # Ship the turkey bite to elastic
+        self.ship_bite(bite)
+
+    def process_browser_history(self, data):
+        # Related context from lists
+        contexts = []
+        # Domain names to search
+        searches = []
+        # The request direction
+        request = None
+        # The request timestamp
+        timestamp = data['data']['@timestamp']
+        localtime = data['data']['@timestamp']
+        # Redis DB with host lists
+        r = Redis(
+            host=self.redis_conf['host'],
+            port=self.redis_conf['port'],
+            password=self.redis_conf['password'],
+            db=self.redis_conf['host_list_db']
+        )
+
+        if 'data' in data.keys():
+
+            if '@processed' in data['data'].keys():
+                if data['data']['event']['data']['client']['browser'] == 'safari':
+                    # safari stores data in local time not UTC we need to convert
+                    # From the processed time we can tell the local time zone of the client
+                    processed = datetime.strptime(data['data']['@processed'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    # Create a datetime object from the local time
+                    local = datetime.strptime(data['data']['@timestamp'], '%Y-%m-%dT%H:%M:%SZ')
+                    # Set the timezone on the localtime object from the processed time
+                    local = local.replace(tzinfo=tz.gettz(str(processed.tzinfo)))
+                    localtime = local.strftime('%Y-%m-%dT%H:%M:%S%Z')
+                    # Convert to UTC
+                    utc_time = local.astimezone(tz.tzutc())
+                    # Set the UTC time to match other browsers
+                    timestamp = utc_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    data['data']['@timestamp'] = timestamp
+                elif data['data']['event']['data']['client']['browser'] in ['chrome', 'firefox']:
+                    # Chrome & Firefox do not provide the local time
+                    # From the processed time we can tell the local time zone of the client
+                    processed = datetime.strptime(data['data']['@processed'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    # Parse the UTC time
+                    utc = datetime.strptime(data['data']['@timestamp'], '%Y-%m-%dT%H:%M:%SZ')
+                    utc.replace(tzinfo=tz.tzutc())
+                    # Convert the UTC time to the local timezone found in @processed
+                    local = utc.astimezone(tz.gettz(str(processed.tzinfo)))
+                    localtime = local.strftime('%Y-%m-%dT%H:%M:%S%Z')
+
+            if 'event' in data['data'].keys():
+                if 'data' in data['data']['event'].keys():
+                    if 'entry' in data['data']['event']['data'].keys():
+                        if 'url' in data['data']['event']['data']['entry'].keys():
+                            searches.append(data['data']['event']['data']['entry']['url'])
+                        if 'url_data' in data['data']['event']['data']['entry'].keys():
+                            if 'Scheme' in data['data']['event']['data']['entry']['url_data'].keys():
+                                request = data['data']['event']['data']['entry']['url_data']['Scheme']
+                            if 'Host' in data['data']['event']['data']['entry']['url_data'].keys():
+                                host = data['data']['event']['data']['entry']['url_data']['Host'].strip().lower()
+                                if host:
+                                    if ':' in host:
+                                        # Deal with hosts that have a port in the string
+                                        host = host.split(':')[0]
+                                searches.append(host)
+                                domain = host
+                                if '.' in host:
+                                    parts = host.split('.')
+                                    domain = '.'.join([parts[len(parts - 2)], parts[len(parts - 1)]])
+                                if domain != host:
+                                    searches.append(domain)
+
+        # Get the current tag
+        tag = r.get('turkey-bite:current-tag')
+        if tag:
+            tag = tag.decode('utf-8')
+            for entry in searches:
+                # Build the redis key
+                key = 'turkey-bite:' + tag + ':' + entry
+                # Search redis for the queried domain
+                result = r.get(key)
+                if result:
+                    result = json.loads(result.decode('utf-8'))
+                    # Add any unique categories to the context array
+                    contexts = contexts + list(set(result['categories']) - set(contexts))
+
+        bite = {
+            '@timestamp': timestamp,
+            '@metadata': {
+                'beat': 'turkeybite',
+                'type': '_doc',
+                'version': '0.1.0'
+            },
+            'bite': {
+                'processed': datetime.now().isoformat(),
+                'event_time_utc': timestamp,
+                'event_time_local': localtime,
+                'requested': searches,
+                'contexts': contexts,
+                'request': request,
+                'type': 'browser.history'
+            },
+            'packet': data
+        }
         self.ship_bite(bite)
 
     def ship_bite(self, bite):

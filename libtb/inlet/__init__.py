@@ -43,11 +43,41 @@ class Inlet(object):
                                 if 'resource' in data.keys():
                                     if 'network' in data.keys():
                                         if 'direction' in data['network'].keys():
-                                            print('Queued: ' + data['resource'] + ' - ' + data['network']['direction'])
+                                            print('Packetbeat][DNS] Queued: ' + data['resource'] + ' - ' +
+                                                  data['network']['direction'])
                                         else:
-                                            print('Queued: ' + data['resource'])
+                                            print('Packetbeat][DNS] Queued: ' + data['resource'])
                                     else:
-                                        print('Queued: ' + data['resource'])
+                                        print('Packetbeat][DNS] Queued: ' + data['resource'])
+                            if data['type'] == 'browser.history':
+                                message = '[Browserbeat][History] Queued'
+                                if 'data' in data.keys():
+                                    if 'event' in data['data'].keys():
+                                        if 'data' in data['data']['event'].keys():
+                                            if 'entry' in data['data']['event']['data'].keys():
+                                                if 'url' in data['data']['event']['data']['entry'].keys():
+                                                    message = ' '.join([
+                                                        message,
+                                                        ':',
+                                                        data['data']['event']['data']['entry']['url']
+                                                    ])
+                                            if 'client' in data['data']['event']['data'].keys():
+                                                if 'user' in data['data']['event']['data']['client'].keys():
+                                                    message = ' '.join([
+                                                        message,
+                                                        '-',
+                                                        data['data']['event']['data']['client']['user']
+                                                    ])
+                                                if 'Hostname' in data['data']['event']['data']['client'].keys():
+                                                    if 'short' in data['data']['event']['data']['client'][
+                                                        'Hostname'].keys():
+                                                        message = ' '.join([
+                                                            message,
+                                                            '-',
+                                                            data['data']['event']['data']['client']['Hostname']['short']
+                                                        ])
+                                print(message)
+
                         worker_queue.enqueue(self.processor.process_packet, data)
                     else:
                         if 'type' in data.keys():
@@ -55,11 +85,40 @@ class Inlet(object):
                                 if 'resource' in data.keys():
                                     if 'network' in data.keys():
                                         if 'direction' in data['network'].keys():
-                                            print('Dropped: ' + data['resource'] + ' - ' + data['network']['direction'])
+                                            print('[Packetbeat][DNS] Dropped: ' + data['resource'] + ' - ' +
+                                                  data['network']['direction'])
                                         else:
-                                            print('Dropped: ' + data['resource'])
+                                            print('Packetbeat][DNS] Dropped: ' + data['resource'])
                                     else:
-                                        print('Dropped: ' + data['resource'])
+                                        print('Packetbeat][DNS] Dropped: ' + data['resource'])
+                            if data['type'] == 'browser.history':
+                                message = '[Browserbeat][History] Dropped'
+                                if 'data' in data.keys():
+                                    if 'event' in data['data'].keys():
+                                        if 'data' in data['data']['event'].keys():
+                                            if 'entry' in data['data']['event']['data'].keys():
+                                                if 'url' in data['data']['event']['data']['entry'].keys():
+                                                    message = ' '.join([
+                                                        message,
+                                                        ':',
+                                                        data['data']['event']['data']['entry']['url']
+                                                    ])
+                                            if 'client' in data['data']['event']['data'].keys():
+                                                if 'user' in data['data']['event']['data']['client'].keys():
+                                                    message = ' '.join([
+                                                        message,
+                                                        '-',
+                                                        data['data']['event']['data']['client']['user']
+                                                    ])
+                                                if 'Hostname' in data['data']['event']['data']['client'].keys():
+                                                    if 'short' in data['data']['event']['data']['client'][
+                                                        'Hostname'].keys():
+                                                        message = ' '.join([
+                                                            message,
+                                                            '-',
+                                                            data['data']['event']['data']['client']['Hostname']['short']
+                                                        ])
+                                print(message)
                 except json.JSONDecodeError:
                     # Ignore json errors
                     pass
