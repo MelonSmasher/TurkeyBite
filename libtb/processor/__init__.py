@@ -1,6 +1,7 @@
 from _datetime import datetime
 import json
 from dateutil import *
+from dateutil.parser import parse
 from elasticsearch import Elasticsearch
 from redis import Redis
 from dns import reversename, resolver, exception
@@ -149,9 +150,11 @@ class Processor(object):
                 if data['data']['event']['data']['client']['browser'] == 'safari':
                     # safari stores data in local time not UTC we need to convert
                     # From the processed time we can tell the local time zone of the client
-                    processed = datetime.strptime(data['data']['@processed'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    # '%Y-%m-%dT%H:%M:%S.%f%z'
+                    processed = parse(data['data']['@processed'])
                     # Create a datetime object from the local time
-                    local = datetime.strptime(data['data']['@timestamp'], '%Y-%m-%dT%H:%M:%SZ')
+                    # '%Y-%m-%dT%H:%M:%SZ'
+                    local = parse(data['data']['@timestamp'])
                     # Set the timezone on the localtime object from the processed time
                     local = local.replace(tzinfo=tz.gettz(str(processed.tzinfo)))
                     localtime = local.strftime('%Y-%m-%dT%H:%M:%S%Z')
@@ -163,9 +166,11 @@ class Processor(object):
                 elif data['data']['event']['data']['client']['browser'] in ['chrome', 'firefox']:
                     # Chrome & Firefox do not provide the local time
                     # From the processed time we can tell the local time zone of the client
-                    processed = datetime.strptime(data['data']['@processed'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    # '%Y-%m-%dT%H:%M:%S.%f%z'
+                    processed = parse(data['data']['@processed'])
                     # Parse the UTC time
-                    utc = datetime.strptime(data['data']['@timestamp'], '%Y-%m-%dT%H:%M:%SZ')
+                    # '%Y-%m-%dT%H:%M:%SZ'
+                    utc = parse(data['data']['@timestamp'])
                     utc.replace(tzinfo=tz.tzutc())
                     # Convert the UTC time to the local timezone found in @processed
                     local = utc.astimezone(tz.gettz(str(processed.tzinfo)))
