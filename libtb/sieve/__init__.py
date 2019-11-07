@@ -70,9 +70,8 @@ class Filters(object):
         # Dive down into the data structure
         if 'data' in data.keys():
             if 'event' in data['data'].keys():
-                print(data)
                 if 'data' in data['data']['event'].keys():
-
+                    print(data)
                     # Client level rules
                     if 'client' in data['data']['event']['data'].keys():
 
