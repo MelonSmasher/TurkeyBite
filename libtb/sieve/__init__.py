@@ -78,25 +78,21 @@ class Filters(object):
                             # Filter fqdn hostname
                             if 'hostname' in data['data']['event']['data']['client']['Hostname'].keys():
                                 if data['data']['event']['data']['client']['Hostname']['hostname'] in ignore_clients:
-                                    print('Client FQDN is ignored')
                                     return False
                             # Filter short hostname
                             if 'short' in data['data']['event']['data']['client']['Hostname'].keys():
                                 if data['data']['event']['data']['client']['Hostname']['short'] in ignore_clients:
-                                    print('Client short name is ignored')
                                     return False
 
                         # Filter ignored IPs
                         if 'ip_addresses' in data['data']['event']['data']['client'].keys():
                             for ip in data['data']['event']['data']['client']['ip_addresses']:
                                 if ip in ignore_clients:
-                                    print('Client IP is ignored')
                                     return False
 
                         # Filter ignored users
                         if 'user' in data['data']['event']['data']['client'].keys():
                             if data['data']['event']['data']['client']['user'] in ignore_users:
-                                print('User is ignored')
                                 return False
 
                     # History entry level rules
@@ -110,7 +106,6 @@ class Filters(object):
                                         host = host.split(':')[0]
                                     # Should we ignore this host
                                     if host in ignore_hosts:
-                                        print('Host is ignored')
                                         return False
                                     # Deal with ignored domains
                                     domain = host
@@ -118,11 +113,9 @@ class Filters(object):
                                         parts = host.split('.')
                                         domain = '.'.join([parts[len(parts - 2)], parts[len(parts - 1)]])
                                     if domain in ignore_doamins:
-                                        print('Domain is ignored')
                                         return False
 
         else:
-            print('No data key, unsure how to process')
             # If we get here we aren't user how to process this
             return False
 
