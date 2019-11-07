@@ -64,7 +64,7 @@ class Filters(object):
     def browserbeat(self, data):
         ignore_clients = self.config['browserbeat']['ignore']['clients']
         ignore_users = self.config['browserbeat']['ignore']['users']
-        ignore_doamins = self.config['browserbeat']['ignore']['domains']
+        ignore_domains = self.config['browserbeat']['ignore']['domains']
         ignore_hosts = self.config['browserbeat']['ignore']['hosts']
 
         # Dive down into the data structure
@@ -109,10 +109,14 @@ class Filters(object):
                                         return False
                                     # Deal with ignored domains
                                     domain = host
-                                    if '.' in host:
-                                        parts = host.split('.')
+                                    print(domain)
+                                    if '.' in domain:
+                                        parts = domain.split('.')
+                                        print(domain)
+                                        print(parts)
                                         domain = '.'.join([parts[len(parts - 2)], parts[len(parts - 1)]])
-                                    if domain in ignore_doamins:
+                                        print(domain)
+                                    if domain in ignore_domains:
                                         return False
 
         else:
