@@ -36,12 +36,12 @@ In the example below the sites listed will have the `porn` category removed from
 
 About the sites listed:
 
-* wwdl.net - Dedicated hosting solution.
-* stun.wwdl.net - Most likely related to VOIP / SIP.
-* dicks.com & www.dicks.com - Redirects to www.dickssportinggoods.com.
-* eonline.com & www.eonline.com - An American cable television network.
-* tenor.com & api.tenor.com & media.tenor.com - Tenor is an online GIF search engine and database.
-* doubleverify.com - Used for ads but is not likely to be malware.
+*   wwdl.net - Dedicated hosting solution.
+*   stun.wwdl.net - Most likely related to VOIP / SIP.
+*   dicks.com & www.dicks.com - Redirects to www.dickssportinggoods.com.
+*   eonline.com & www.eonline.com - An American cable television network.
+*   tenor.com & api.tenor.com & media.tenor.com - Tenor is an online GIF search engine and database.
+*   doubleverify.com - Used for ads but is not likely to be malware.
 
 None of the sites listed above are directly related to porn, though they do each appear on a porn list that TB uses.
 To enable the whitelist copy `whitelist.example.json` to `whitelist.json` and the next time domains and hosts are loaded into redis the whitelist will be processed.
@@ -57,31 +57,30 @@ If you'd like to add to the list submit a merge/pull request.
 
 ### Contributing to the whitelist
 
-* Fork the project into your personal namespace.
-
-* Then clone your forked version:
+*   Fork the project into your personal namespace.
+*   Then clone your forked version:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/<username>/TurkeyBite.git
 ```
 
-* Make your own development branch:
+*   Make your own development branch:
 
 ```bash
 git branch <username>/development
 ```
 
-* Make your changes.
-* Commit your changes:
+*   Make your changes.
+*   Commit your changes:
 
 ```bash
 git commit -m 'added example.com to the whitelist'
 ```
 
-* push your changes to your branch
+*   push your changes to your branch
 
 ```bash
 git push -u origin <username>/development
 ```
 
-* Create a merge/pull request into the master branch of the upstream repo.
+*   Create a merge/pull request into the master branch of the upstream repo.

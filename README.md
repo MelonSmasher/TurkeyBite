@@ -1,5 +1,8 @@
 # TurkeyBite
 
+[![GitHub license](https://img.shields.io/github/license/MelonSmasher/TurkeyBite)](https://github.com/MelonSmasher/TurkeyBite/blob/master/LICENSE)
+![Codacy grade](https://img.shields.io/codacy/grade/25d2ad332ca1453cb24aef58f3c10728)
+
 ## What is TurkeyBite?
 
 A domain and host context analysis pipeline.
@@ -10,13 +13,13 @@ TurkeyBite analyzes client network traffic to glean some context into each reque
 
 TurkeyBite relies on the following technologies
 
-* Python3
-* Redis
-* Bind9
-* [Packetbeat](https://www.elastic.co/products/beats/packetbeat) and/or [Browserbeat](https://github.com/MelonSmasher/browserbeat)
-* Elasticsearch
-* Kibana
-* Domain and host lists from many sources
+*   Python3
+*   Redis
+*   Bind9
+*   [Packetbeat](https://www.elastic.co/products/beats/packetbeat) and/or [Browserbeat](https://github.com/MelonSmasher/browserbeat)
+*   Elasticsearch
+*   Kibana
+*   Domain and host lists from many sources
 
 In practice the analysis pipeline looks like this:
 
@@ -30,7 +33,7 @@ As of right now I have tested this with a Microsoft DNS server and I am running 
 
 Any browsers that [Browserbeat](https://github.com/MelonSmasher/browserbeat) supports should work with TurkeyBite.
 
-### Will this block clients?
+### Will this block clients
 
 Short answer: no.
 

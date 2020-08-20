@@ -10,6 +10,7 @@ from dns import reversename, resolver, exception
 class Processor(object):
 
     def __init__(self, config, redis_conf):
+        """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
         self.config = config
         self.redis_conf = redis_conf
 
