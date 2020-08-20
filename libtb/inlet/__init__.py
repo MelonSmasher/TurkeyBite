@@ -6,7 +6,7 @@ from redis import Redis
 class Inlet(object):
 
     def __init__(self, config, filters, processor):
-        """Inlet class responsible for reading the Redis channel and passing incoming messages to the Sieve"""
+        """Inlet class responsible for reading the Redis channel and passing incoming messages to the Sieve."""
         # Store our config
         self.config = config
         # Initialize a filter class

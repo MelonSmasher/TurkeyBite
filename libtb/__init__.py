@@ -1,1 +1,1 @@
-"""Base TurkeyBite package"""
+"""Base TurkeyBite package."""

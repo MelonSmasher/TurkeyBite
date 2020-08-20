@@ -6,6 +6,7 @@ class Filters(object):
     def __init__(self, config):
         """
         Sieve class responsible for filtering out messages that should be ignored.
+
         This lessens the load on the queue workers and makes ES lighter.
         """
         self.config = config

@@ -817,6 +817,7 @@ def get_host_files():
 def read_config():
     """
     Reads our config file
+
     :return: dict
     """
     with open('config.yaml', 'r') as stream:
