@@ -38,4 +38,10 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ## Setup
 
+### Linux
+
+[Ubuntu Instructions](docs/ubuntu_linux_install.md)
+
+### Docker
+
 WIP - coming soon
