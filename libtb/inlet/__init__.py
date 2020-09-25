@@ -79,7 +79,7 @@ class Inlet(object):
                                                         ])
                                 print(message)
 
-                        worker_queue.enqueue(self.processor.process_packet, data)
+                        worker_queue.enqueue(self.processor.process_packet, data, result_ttl=600)
                     else:
                         if 'type' in data.keys():
                             if data['type'] == 'dns':
