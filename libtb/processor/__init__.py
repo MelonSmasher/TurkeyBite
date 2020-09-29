@@ -241,4 +241,4 @@ class Processor(object):
 
         if self.config['syslog']['enable']:
             log = Syslog(host=self.config['syslog']['host'], port=self.config['syslog']['port'])
-            log.send(json.dumps(bite).encode(), Level.INFO)
+            log.send(json.dumps(bite), Level.INFO)

@@ -35,7 +35,7 @@ class Syslog:
     def send(self, message, level):
         """Send a syslog message to remote host using UDP."""
         data = "<%d>%s" % (level + self.facility * 8, message)
-        self.socket.sendto(data, (self.host, self.port))
+        self.socket.sendto(data.encode(), (self.host, self.port))
 
     def warn(self, message):
         """Send a syslog warning message."""
