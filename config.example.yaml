@@ -41,5 +41,11 @@ processor:
     resolvers:
       - 127.0.0.1
   elastic:
+    enable: true
     hosts:
       - http://127.0.0.1:9200
+  syslog:
+    # Syslog UDP
+    enable: false
+    port: 514
+    host: 127.0.0.1

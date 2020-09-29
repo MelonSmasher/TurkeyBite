@@ -1,10 +1,61 @@
-from _datetime import datetime
 import json
+import socket
+from _datetime import datetime
 from dateutil import *
 from dateutil.parser import parse
 from elasticsearch import Elasticsearch
 from redis import Redis
 from dns import reversename, resolver, exception
+
+
+class Facility:
+    """Syslog facilities"""
+    KERN, USER, MAIL, DAEMON, AUTH, SYSLOG, \
+    LPR, NEWS, UUCP, CRON, AUTHPRIV, FTP = range(12)
+
+    LOCAL0, LOCAL1, LOCAL2, LOCAL3, \
+    LOCAL4, LOCAL5, LOCAL6, LOCAL7 = range(16, 24)
+
+
+class Level:
+    """Syslog levels"""
+    EMERG, ALERT, CRIT, ERR, \
+    WARNING, NOTICE, INFO, DEBUG = range(8)
+
+
+class Syslog:
+    """A syslog client that logs to a remote server.
+
+    Example:
+    >>> log = Syslog(host="foobar.example")
+    >>> log.send("hello", Level.WARNING)
+    """
+
+    def __init__(self,
+                 host="localhost",
+                 port=514,
+                 facility=Facility.DAEMON):
+        self.host = host
+        self.port = port
+        self.facility = facility
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def send(self, message, level):
+        """Send a syslog message to remote host using UDP."""
+        data = "<%d>%s" % (level + self.facility * 8, message)
+        self.socket.sendto(data, (self.host, self.port))
+
+    def warn(self, message):
+        """Send a syslog warning message."""
+        self.send(message, Level.WARNING)
+
+    def notice(self, message):
+        """Send a syslog notice message."""
+        self.send(message, Level.NOTICE)
+
+    def error(self, message):
+        """Send a syslog error message."""
+        self.send(message, Level.ERR)
 
 
 class Processor(object):
@@ -13,6 +64,12 @@ class Processor(object):
         """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
         self.config = config
         self.redis_conf = redis_conf
+
+        if self.config['elastic']['enable']:
+            self.es = Elasticsearch(self.config['elastic']['hosts'])
+
+        if self.config['syslog']['enable']:
+            self.syslog = Syslog(host=self.config['syslog']['host'], port=self.config['syslog']['port'])
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -233,6 +290,9 @@ class Processor(object):
         self.ship_bite(bite)
 
     def ship_bite(self, bite):
-        index = ''.join(['tb-index-', datetime.now().strftime("%Y-%m-%d")])
-        es = Elasticsearch(self.config['elastic']['hosts'])
-        es.index(index=index, doc_type='bite', body=bite)
+        if self.config['elastic']['enable']:
+            index = ''.join(['tb-index-', datetime.now().strftime("%Y-%m-%d")])
+            self.es.index(index=index, doc_type='bite', body=bite)
+
+        if self.config['syslog']['enable']:
+            self.syslog.send(json.dumps(bite), Level.INFO)
