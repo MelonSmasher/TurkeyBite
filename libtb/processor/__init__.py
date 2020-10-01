@@ -236,8 +236,9 @@ class Processor(object):
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
-            es = Elasticsearch(self.config['elastic']['hosts'])
-            es.index(index=index, doc_type='bite', body=bite)
+            for host in self.config['elastic']['hosts']:
+                es = Elasticsearch([host])
+                es.index(index=index, doc_type='bite', body=bite)
 
         if self.config['syslog']['enable']:
             log = Syslog(host=self.config['syslog']['host'], port=self.config['syslog']['port'])
