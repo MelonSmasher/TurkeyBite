@@ -235,7 +235,7 @@ class Processor(object):
 
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
-            index = ''.join(['tb-index-', datetime.now().strftime("%Y-%m-%d")])
+            index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             es = Elasticsearch(self.config['elastic']['hosts'])
             es.index(index=index, doc_type='bite', body=bite)
 
