@@ -237,7 +237,11 @@ class Processor(object):
         if self.config['elastic']['enable']:
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             for host in self.config['elastic']['hosts']:
-                es = Elasticsearch([host])
+                if host['username'] and host['password']:
+                    es = Elasticsearch([host['uri']], http_auth=(host['username'], host['password']), ca_certs=False,
+                                       verify_certs=False)
+                else:
+                    es = Elasticsearch([host['uri']], ca_certs=False, verify_certs=False)
                 es.index(index=index, doc_type='bite', body=bite)
 
         if self.config['syslog']['enable']:

@@ -44,7 +44,13 @@ processor:
     enable: true
     index_prefix: tb-index
     hosts:
-      - http://127.0.0.1:9200
+      - uri: http://127.0.0.1:9200
+        username: false
+        password: false
+      - uri: https://127.0.0.1:9201
+        username: user
+        password: password
+
   syslog:
     # Syslog UDP
     enable: false
