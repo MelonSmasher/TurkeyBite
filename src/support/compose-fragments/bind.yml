@@ -1,0 +1,18 @@
+services:
+  bind9:
+    image: ubuntu/bind9:9.18-24.04_beta
+    container_name: bind9
+    restart: unless-stopped
+    expose:
+      - "53"
+      - "53/udp"
+    environment:
+      - TZ
+    networks:
+      tb-net:
+        ipv4_address: ${BIND9_IP:-172.172.0.100}
+    volumes:
+      - bind9_cache:/var/cache/bind
+      - ./vols/bind/slave.conf:/etc/bind/slave.conf:ro
+      - ./vols/bind/named.conf.options:/etc/bind/named.conf.options:ro
+      - ./vols/bind/named.conf.local:/etc/bind/named.conf.local:ro

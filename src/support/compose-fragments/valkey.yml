@@ -1,0 +1,35 @@
+services:
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: ${VALKEY_HOST:-valkey}
+    restart: unless-stopped
+    volumes:
+      - valkey_data:/data
+    ports:
+      - "${VALKEY_PORT:-6379}:${VALKEY_PORT:-6379}" # Map the specified port (default: 6379) for connections
+    secrets:
+      - valkey_password # Use a secure password stored in a Docker secret
+    networks:
+      - tb-net
+    command: >
+      sh -c "valkey-server
+      --save '${VALKEY_SAVE_INTERVAL_SECONDS:-60}' '${VALKEY_SAVE_KEYS:-1000}'
+      --loglevel ${VALKEY_LOGLEVEL:-warning}
+      --requirepass $(cat /run/secrets/valkey_password)
+      --port ${VALKEY_PORT:-6379}"
+    environment:
+      - TZ
+      - VALKEY_PORT # Environment variable for the port
+      - VALKEY_LOGLEVEL # Environment variable for the logging level
+      - VALKEY_SAVE_INTERVAL_SECONDS # Environment variable for the database save interval
+      - VALKEY_SAVE_KEYS # Environment variable for the number of key changes required to save
+    healthcheck:
+      # Define a health check for the Valkey service
+      test: [
+          "CMD-SHELL",
+          # Run redis-cli to send a PING command and check for PONG
+          "redis-cli -a $(cat /run/secrets/valkey_password) -h localhost -p ${VALKEY_PORT:-6379} PING | grep PONG || exit 1",
+        ]
+      interval: 5s # Check health every 5 seconds
+      timeout: 3s # Timeout for health check commands
+      retries: 3 # Retry up to 3 times before marking the service as unhealthy

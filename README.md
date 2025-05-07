@@ -63,40 +63,45 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    Run the setup script to create required directories and configuration files:
 
    ```bash
-   ./setup.sh
+   bash setup.sh
    ```
 
-3. **Configure the environment**
+   The setup script will guide you through configuration options including:
+   
+   - Deployment type (Development, Small Scale, or Full Scale)
+   - DNS lookup configuration for client IPs
+   - Output options (OpenSearch and/or Syslog)
+   - Service passwords and connection settings
+   
+   For distributed deployments, you'll run this script on each node with the appropriate configuration.
 
-   Edit the `.env` file to set up your environment variables:
+3. **Review configuration (optional)**
+
+   The setup script automatically generates the following configuration files:
+
+   - `.env` - Environment variables for Docker containers
+   - `config.yaml` - TurkeyBite application configuration
+   - `docker-compose.yml` - Container orchestration configuration
+
+   While the setup script configures these files based on your selections, you can review and adjust them if needed:
+
+   **Environment Variables** in `.env`:
 
    ```bash
-   # Required environment variables
-   OPENSEARCH_INITIAL_ADMIN_PASSWORD=strongpassword  # Set a strong password for OpenSearch admin
-   OPENSEARCH_HOSTS=https://opensearch:9200          # OpenSearch connection URL
-   
-   # Optional environment variables with defaults
-   VALKEY_HOST=valkey                                # Valkey/Redis hostname
-   VALKEY_PORT=6379                                  # Valkey/Redis port
-   BIND9_IP=172.172.0.100                           # Static IP for Bind9 in Docker network
-   TURKEYBITE_WORKER_PROCS=4                        # Number of worker processes
-   TURKEYBITE_HOSTS_INTERVAL_MIN=720                # Host list refresh interval (minutes)
-   TURKEYBITE_IGNORELIST_INTERVAL_MIN=5            # Ignorelist refresh interval (minutes)
+   # Key environment variables (automatically configured by setup)
+   OPENSEARCH_INITIAL_ADMIN_PASSWORD=******      # Password for OpenSearch admin
+   OPENSEARCH_HOSTS='["https://opensearch:9200"]'  # OpenSearch connection URL array
+   VALKEY_HOST=valkey                            # Valkey/Redis hostname or IP
+   VALKEY_PORT=6379                             # Valkey/Redis port
+   OPENSEARCH_PORT=9200                         # OpenSearch API port
+   OPENSEARCH_DASHBOARD_PORT=5601               # OpenSearch Dashboards port
+   BIND9_IP=172.172.0.100                       # Static IP for Bind9 in Docker network
+   TURKEYBITE_WORKER_PROCS=2                    # Number of worker processes
+   TURKEYBITE_HOSTS_INTERVAL_MIN=720            # Host list refresh interval (minutes)
+   TURKEYBITE_IGNORELIST_INTERVAL_MIN=5         # Ignorelist refresh interval (minutes)
    ```
-
-4. **Configure Bind9 (if using as DNS server)**
-
-   The setup script copies example Bind9 configuration files to the `vols/bind/` directory. Review and modify these files:
    
-   * `named.conf.local` - Local DNS configuration
-   * `named.conf.options` - DNS server options
-   * `slave.conf` - Zone configurations for slave DNS setup
-
-   For more information on Bind9 configuration see [docs/bind9.md](docs/bind9.md).
-
-5. **Configure TurkeyBite**
-
-   Edit the `config.yaml` file to set up your system configuration:
+   **Application Configuration** in `config.yaml`:
 
    ```yaml
    redis:
@@ -109,13 +114,25 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    # ... other configuration sections
    ```
 
-6. **Secrets setup**
+4. **Secrets Setup**
 
    The setup script automatically creates the required password files in the `vols/secrets/` directory. These include:
-   
-   * `valkey_password.txt` - Password for Valkey/Redis authentication
-   
+
+   - `valkey_password.txt` - Password for Valkey/Redis authentication
+
    You can review and modify these secrets if needed.
+
+   **Important for Distributed Setups:** In distributed deployments where Valkey runs on its own dedicated node, the `valkey_password.txt` file must be copied from the Valkey server to all Core and Worker nodes. The setup script will prompt you to enter this password when configuring nodes that don't run Valkey directly.
+
+5. **Configure Bind9 (if using as DNS server)**
+
+   The setup script copies example Bind9 configuration files to the `vols/bind/` directory. Review and modify these files:
+   
+   * `named.conf.local` - Local DNS configuration
+   * `named.conf.options` - DNS server options
+   * `slave.conf` - Zone configurations for slave DNS setup
+
+   For more information on Bind9 configuration see [docs/bind9.md](docs/bind9.md).
 
 ### Running TurkeyBite
 
