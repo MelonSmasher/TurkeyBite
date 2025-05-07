@@ -73,18 +73,28 @@ class Processor(object):
             searches.append(data['dns']['question']['registered_domain'].strip().lower())
 
         # Get the current tag
+        print(f"DEBUG: searches={searches}")  # Print what domains we're looking up
         tag = r.get('turkey-bite:current-tag')
+        print(f"DEBUG: Redis tag key='turkey-bite:current-tag', result={tag}")  # Debug the tag
         if tag:
             tag = tag.decode('utf-8')
+            print(f"DEBUG: Decoded tag={tag}")
             for entry in searches:
                 # Build the redis key
                 key = 'turkey-bite:' + tag + ':' + entry
+                print(f"DEBUG: Looking for Redis key={key}")
                 # Search redis for the queried domain
                 result = r.get(key)
+                print(f"DEBUG: Redis lookup result for {key}={result is not None}")
                 if result:
-                    result = json.loads(result.decode('utf-8'))
-                    # Add any unique categories to the context array
-                    contexts = contexts + list(set(result['categories']) - set(contexts))
+                    try:
+                        result = json.loads(result.decode('utf-8'))
+                        print(f"DEBUG: JSON parsed, 'categories' in result={'categories' in result}, categories={result.get('categories', [])}")
+                        # Add any unique categories to the context array
+                        contexts = contexts + list(set(result['categories']) - set(contexts))
+                        print(f"DEBUG: Updated contexts={contexts}")
+                    except Exception as e:
+                        print(f"DEBUG: Error parsing JSON: {str(e)}")
 
         # Reverse client lookup
         if self.config['dns']['lookup_ips']:
@@ -126,6 +136,9 @@ class Processor(object):
             'packet': data
         }
 
+        # Print final contexts before shipping
+        print(f"DEBUG: Final contexts for {searches} = {contexts}")
+        
         # Ship the turkey bite to elastic
         self.ship_bite(bite)
 
@@ -200,18 +213,28 @@ class Processor(object):
                                     searches.append(domain)
 
         # Get the current tag
+        print(f"DEBUG: searches={searches}")  # Print what domains we're looking up
         tag = r.get('turkey-bite:current-tag')
+        print(f"DEBUG: Redis tag key='turkey-bite:current-tag', result={tag}")  # Debug the tag
         if tag:
             tag = tag.decode('utf-8')
+            print(f"DEBUG: Decoded tag={tag}")
             for entry in searches:
                 # Build the redis key
                 key = 'turkey-bite:' + tag + ':' + entry
+                print(f"DEBUG: Looking for Redis key={key}")
                 # Search redis for the queried domain
                 result = r.get(key)
+                print(f"DEBUG: Redis lookup result for {key}={result is not None}")
                 if result:
-                    result = json.loads(result.decode('utf-8'))
-                    # Add any unique categories to the context array
-                    contexts = contexts + list(set(result['categories']) - set(contexts))
+                    try:
+                        result = json.loads(result.decode('utf-8'))
+                        print(f"DEBUG: JSON parsed, 'categories' in result={'categories' in result}, categories={result.get('categories', [])}")
+                        # Add any unique categories to the context array
+                        contexts = contexts + list(set(result['categories']) - set(contexts))
+                        print(f"DEBUG: Updated contexts={contexts}")
+                    except Exception as e:
+                        print(f"DEBUG: Error parsing JSON: {str(e)}")
 
         bite = {
             '@timestamp': timestamp,
