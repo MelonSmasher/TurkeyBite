@@ -255,9 +255,7 @@ class Processor(object):
                                 request_timeout=30, # Add timeout
                                 retry_on_timeout=True, # Enable retries
                                 # Force a compatible content type for OpenSearch
-                                headers={"Content-Type": "application/json"},
-                                # Use compatibility mode for OpenSearch
-                                compatibility_mode=True
+                                headers={"Content-Type": "application/json"}
                             )
                         else:
                             es = Elasticsearch(
@@ -266,9 +264,7 @@ class Processor(object):
                                 request_timeout=30, # Add timeout
                                 retry_on_timeout=True, # Enable retries
                                 # Force a compatible content type for OpenSearch
-                                headers={"Content-Type": "application/json"},
-                                # Use compatibility mode for OpenSearch
-                                compatibility_mode=True
+                                headers={"Content-Type": "application/json"}
                             )
                     else:
                         es = Elasticsearch(
@@ -278,9 +274,7 @@ class Processor(object):
                             request_timeout=30, # Add timeout
                             retry_on_timeout=True, # Enable retries
                             # Force a compatible content type for OpenSearch
-                            headers={"Content-Type": "application/json"},
-                            # Use compatibility mode for OpenSearch
-                            compatibility_mode=True
+                            headers={"Content-Type": "application/json"}
                         )
                     # Attempt to index the document
                     es.index(index=index, body=bite)
