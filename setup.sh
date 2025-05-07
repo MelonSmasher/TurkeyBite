@@ -59,6 +59,40 @@ else
     fi
 fi
 
+if [ ! -f vols/bind/named.conf.local ]; then
+    echo "named.conf.local not found, copying example"
+    cp src/support/bind/named.conf.local vols/bind/named.conf.local
+else
+    echo "named.conf.local found"
+    prompt "Do you want to overwrite the named.conf.local file? (y/n)"
+    if [ "$REPLY" = "y" ]; then
+        cp src/support/bind/named.conf.local vols/bind/named.conf.local
+    fi
+fi
+
+if [ ! -f vols/bind/named.conf.options ]; then
+    echo "named.conf.options not found, copying example"
+    cp src/support/bind/named.conf.options vols/bind/named.conf.options
+else
+    echo "named.conf.options found"
+    prompt "Do you want to overwrite the named.conf.options file? (y/n)"
+    if [ "$REPLY" = "y" ]; then
+        cp src/support/bind/named.conf.options vols/bind/named.conf.options
+    fi
+fi
+
+if [ ! -f vols/bind/slave.conf ]; then
+    echo "slave.conf not found, copying example"
+    cp src/support/bind/slave.conf vols/bind/slave.conf
+else
+    echo "slave.conf found"
+    prompt "Do you want to overwrite the slave.conf file? (y/n)"
+    if [ "$REPLY" = "y" ]; then
+        cp src/support/bind/slave.conf vols/bind/slave.conf
+    fi
+fi  
+    
+
 echo "Setup complete"
 echo "Edit the .env file to set the environment variables"
 echo "Edit config.yaml to set the configuration options"

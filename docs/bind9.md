@@ -146,8 +146,6 @@ options {
     forwarders {
         1.1.1.1; // CF Main
         1.0.0.1; // CF Alt
-        208.67.222.222; // Open DNS
-        208.67.220.220; // Open DNS Alt
         8.8.8.8; // Google Main
         8.8.4.4; // Google Alt
     };
