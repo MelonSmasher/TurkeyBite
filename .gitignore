@@ -2,6 +2,10 @@
 
 # Project files
 config.yaml
+docker-compose.yml
+.env
+vols/secrets/valkey_password.txt
+
 
 # Created by .ignore support plugin (hsz.mobi)
 ### SublimeText template

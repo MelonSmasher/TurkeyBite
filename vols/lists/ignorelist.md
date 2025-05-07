@@ -1,8 +1,8 @@
-# Whitelist
+# Ignorelist
 
-The whitelist can be used to remove a domain or host from a specific context category.
+The ignorelist can be used to remove a domain or host from a specific context category.
 
-Building and tuning your whitelist can help reduce false positives.
+Building and tuning your ignorelist can help reduce false positives.
 
 In the example below the sites listed will have the `porn` category removed from them.
 
@@ -44,18 +44,18 @@ About the sites listed:
 *   doubleverify.com - Used for ads but is not likely to be malware.
 
 None of the sites listed above are directly related to porn, though they do each appear on a porn list that TB uses.
-To enable the whitelist copy `whitelist.example.json` to `whitelist.json` and the next time domains and hosts are loaded into redis the whitelist will be processed.
-You can also modify `whitelist.json` to meet your own needs.
+To enable the ignorelist copy `ignorelist.example.json` to `ignorelist.json` and the next time domains and hosts are loaded into redis the ignorelist will be processed.
+You can also modify `ignorelist.json` to meet your own needs.
 
-## Using example whitelist as your whitelist
+## Using example ignorelist as your ignorelist
 
-I'm maintaining my own whitelist in `whitelist.example.json` if you wish to use this as your `whitelist.json`, symlink it instead of copying it.
+I'm maintaining my own ignorelist in `ignorelist.example.json` if you wish to use this as your `ignorelist.json`, symlink it instead of copying it.
 
-If you use `whitelist.example.json` as your whitelist **do not modify it** as it's checked into source control and you wont be able to update Turkey Bite.
+If you use `ignorelist.example.json` as your ignorelist **do not modify it** as it's checked into source control and you wont be able to update Turkey Bite.
 
 If you'd like to add to the list submit a merge/pull request.
 
-### Contributing to the whitelist
+### Contributing to the ignorelist
 
 *   Fork the project into your personal namespace.
 *   Then clone your forked version:
@@ -74,7 +74,7 @@ git branch <username>/development
 *   Commit your changes:
 
 ```bash
-git commit -m 'added example.com to the whitelist'
+git commit -m 'added example.com to the ignorelist'
 ```
 
 *   push your changes to your branch

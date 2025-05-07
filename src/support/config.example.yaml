@@ -1,8 +1,8 @@
 redis:
-  host: 127.0.0.1
+  host: valkey
   port: 6379
   channel: turkeybite
-  password: "YourRedisPassword" # Use a long one: https://stackoverflow.com/questions/7537905/redis-set-a-password-for-redis#:~:text=Make%20sure%20you%20choose%20something,in%20the%20config%20file%20mention.
+  password_file: /run/secrets/valkey_password
   db: 0
   host_list_db: 1
 
@@ -24,14 +24,17 @@ sieve:
   drop_replies: true
   drop_error_packets: true
   ignore:
+    # Ignore entire domains
     domains:
       # - whitelisted-domain.com
       - 10.in-addr.arpa
       - 192.168.in-addr.arpa
       - default.svc
       - kubernetes.default
+    # Ignore specific client IP addresses
     clients:
       - 127.0.0.1
+    # Ignore specific hostnames
     hosts:
       - kubernetes.default.svc
 
@@ -39,20 +42,16 @@ processor:
   dns:
     lookup_ips: true
     resolvers:
-      - 127.0.0.1
+      - 172.172.0.100
   elastic:
     enable: true
     index_prefix: tb-index
     hosts:
-      - uri: http://127.0.0.1:9200
-        username: false
-        password: false
-      - uri: https://127.0.0.1:9201
-        username: user
-        password: password
-
+      - uri: http://opensearch:9200
+        username: admin
+        password: Changeit12345!
   syslog:
     # Syslog UDP
     enable: false
     port: 514
-    host: 127.0.0.1
+    host: graylog

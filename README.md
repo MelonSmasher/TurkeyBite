@@ -3,6 +3,8 @@
 [![GitHub license](https://img.shields.io/github/license/MelonSmasher/TurkeyBite)](https://github.com/MelonSmasher/TurkeyBite/blob/master/LICENSE)
 ![Codacy grade](https://img.shields.io/codacy/grade/25d2ad332ca1453cb24aef58f3c10728)
 
+![TurkeyBite Logo](docs/img/turkey_bite_spy.png)
+
 ## What is TurkeyBite
 
 A domain and host context analysis pipeline.
@@ -13,17 +15,18 @@ TurkeyBite analyzes client network traffic to glean some context into each reque
 
 TurkeyBite relies on the following technologies
 
+*   Docker
 *   Python3
-*   Redis
+*   Valkey
 *   Bind9
 *   [Packetbeat](https://www.elastic.co/products/beats/packetbeat) and/or [Browserbeat](https://github.com/MelonSmasher/browserbeat)
-*   Elasticsearch
-*   Kibana
+*   OpenSearch
+*   OpenSearch Dashboards
 *   Domain and host lists from many sources
 
 In practice the analysis pipeline looks like this:
 
-![flow-chart](img/flow.png)
+![flow-chart](docs/img/flow.png)
 
 ### What DNS servers does this work with
 
@@ -41,10 +44,4 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ## Setup
 
-### Linux
-
-[Ubuntu Instructions](docs/ubuntu_linux_install.md)
-
-### Docker
-
-WIP - coming soon
+WIP

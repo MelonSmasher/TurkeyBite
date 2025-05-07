@@ -1,0 +1,7 @@
+redis~=6.0.0
+pyyaml~=6.0.0
+CLick~=8.1.0
+rq~=2.3.0
+elasticsearch~=9.0.0
+dnspython~=2.7.0
+setuptools~=80.3.0
