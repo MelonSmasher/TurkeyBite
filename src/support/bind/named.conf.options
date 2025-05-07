@@ -3,7 +3,6 @@ options {
     check-names master warn; // Must be WARN only for AD/Windows
     max-udp-size 4096;
     dnssec-validation yes; // optional, can be yes or no
-    dnssec-lookaside auto; // MUST be auto for AD/Windows
     forwarders {
         1.1.1.1; // CF Main
         1.0.0.1; // CF Alt
