@@ -239,10 +239,26 @@ class TurkeyBiteSetup:
         # OpenSearch
         config_data['processor']['elastic']['enable'] = self.use_opensearch
         if self.use_opensearch:
-            # Update OpenSearch connection details with admin password
-            for i, host in enumerate(config_data['processor']['elastic']['hosts']):
-                if isinstance(host, dict) and 'uri' in host and 'username' in host and 'password' in host:
-                    config_data['processor']['elastic']['hosts'][i]['password'] = self.opensearch_admin_password
+            # Update OpenSearch connection details with admin password and host
+            protocol = "https" if self.node_type == "search" else "http"
+            opensearch_uri = f"{protocol}://{self.opensearch_host}:9200"
+            
+            # Reset hosts array if needed for distributed deployments
+            if self.is_distributed and self.opensearch_host != "opensearch":
+                config_data['processor']['elastic']['hosts'] = [
+                    {
+                        "uri": opensearch_uri,
+                        "username": "admin",
+                        "password": self.opensearch_admin_password
+                    }
+                ]
+            else:
+                # Update existing hosts with password and possibly URI
+                for i, host in enumerate(config_data['processor']['elastic']['hosts']):
+                    if isinstance(host, dict) and 'uri' in host and 'username' in host and 'password' in host:
+                        config_data['processor']['elastic']['hosts'][i]['password'] = self.opensearch_admin_password
+                        if self.opensearch_host != "opensearch":
+                            config_data['processor']['elastic']['hosts'][i]['uri'] = opensearch_uri
         
         # Syslog
         config_data['processor']['syslog']['enable'] = self.use_syslog

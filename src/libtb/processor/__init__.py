@@ -1,10 +1,11 @@
 import json
+import sys
 from libtb.tbsyslog import Syslog, Level
 from _datetime import datetime
 from dateutil import *
 from dateutil.parser import parse
-from elasticsearch import Elasticsearch
 from redis import Redis
+from elasticsearch import Elasticsearch
 from dns import reversename, resolver, exception
 
 
@@ -237,16 +238,47 @@ class Processor(object):
         if self.config['elastic']['enable']:
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             for host in self.config['elastic']['hosts']:
-                if host['username'] and host['password']:
-                    if host['uri'].startswith('https'):
-                        es = Elasticsearch([host['uri']], http_auth=(host['username'], host['password']), ca_certs=False,
-                                           verify_certs=False)
+                try:
+                    # Configure the Elasticsearch client based on URI and auth
+                    if host['username'] and host['password']:
+                        if host['uri'].startswith('https'):
+                            es = Elasticsearch(
+                                [host['uri']], 
+                                http_auth=(host['username'], host['password']), 
+                                ca_certs=False,
+                                verify_certs=False,
+                                request_timeout=30, # Add timeout
+                                retry_on_timeout=True # Enable retries
+                            )
+                        else:
+                            es = Elasticsearch(
+                                [host['uri']], 
+                                http_auth=(host['username'], host['password']),
+                                request_timeout=30, # Add timeout
+                                retry_on_timeout=True # Enable retries
+                            )
                     else:
-                        es = Elasticsearch([host['uri']], http_auth=(host['username'], host['password']))
-                else:
-                    es = Elasticsearch([host['uri']], ca_certs=False, verify_certs=False)
-                es.index(index=index, body=bite)
+                        es = Elasticsearch(
+                            [host['uri']], 
+                            ca_certs=False, 
+                            verify_certs=False,
+                            request_timeout=30, # Add timeout
+                            retry_on_timeout=True # Enable retries
+                        )
+                    # Attempt to index the document
+                    es.index(index=index, body=bite)
+                    # If successful, break the loop
+                    break
+                except Exception as e:
+                    # Log the error to stderr but continue processing
+                    print(f"Error sending to Elasticsearch at {host['uri']}: {str(e)}", file=sys.stderr)
+                    # Continue to the next host if available, or fall back to syslog
+                    continue
 
         if self.config['syslog']['enable']:
-            log = Syslog(host=self.config['syslog']['host'], port=self.config['syslog']['port'])
-            log.send(json.dumps(bite), Level.INFO)
+            try:
+                log = Syslog(host=self.config['syslog']['host'], port=self.config['syslog']['port'])
+                log.send(json.dumps(bite), Level.INFO)
+            except Exception as e:
+                print(f"Error sending to Syslog: {str(e)}", file=sys.stderr)
+                # No fallback for syslog errors
