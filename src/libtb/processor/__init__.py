@@ -245,7 +245,7 @@ class Processor(object):
                         es = Elasticsearch([host['uri']], http_auth=(host['username'], host['password']))
                 else:
                     es = Elasticsearch([host['uri']], ca_certs=False, verify_certs=False)
-                es.index(index=index, doc_type='bite', body=bite)
+                es.index(index=index, body=bite)
 
         if self.config['syslog']['enable']:
             log = Syslog(host=self.config['syslog']['host'], port=self.config['syslog']['port'])
