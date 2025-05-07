@@ -328,18 +328,26 @@ class TurkeyBiteSetup:
             component_env_vars['common'].append(f"SYSLOG_HOST={self.syslog_host}\n")
             component_env_vars['common'].append(f"SYSLOG_PORT={self.syslog_port}\n")
         
-        # Start with common variables
-        env_content = component_env_vars['common']
+        # Initialize environment variable content list
+        env_content = []
         
-        # Add component-specific variables based on what's being deployed
-        # Note: core, librarian, worker all need Valkey connection info
-        if any(comp in self.components for comp in ['core', 'librarian', 'worker']):
-            env_content.extend(component_env_vars['core'])
-            
-        # Add other component-specific variables
+        # Determine which sections to include based on components
+        sections_to_include = ['common']
+        
+        # Include core section with Valkey connection details if we have app components,
+        # but skip for search nodes since they don't need Valkey info
+        if any(comp in self.components for comp in ['core', 'librarian', 'worker']) and self.node_type != 'search':
+            sections_to_include.append('core')
+        
+        # Add component variables for direct services
         for component in ['librarian', 'worker', 'valkey', 'opensearch', 'bind']:
-            if component in self.components and component in component_env_vars:
-                env_content.extend(component_env_vars[component])
+            if component in self.components:
+                sections_to_include.append(component)
+        
+        # Add all environment variables from included sections
+        for section in sections_to_include:
+            if section in component_env_vars:
+                env_content.extend(component_env_vars[section])
         
         # Write the updated content
         with open(target_env, 'w') as f:
@@ -779,7 +787,6 @@ class TurkeyBiteSetup:
         elif "Search Node" in node_type:
             self.node_type = "search"
             self.components = ["opensearch"]
-            self.valkey_host = self.prompt("Enter the Application node IP or hostname (for Valkey connection)")
             self.use_opensearch = True
             self.use_syslog = False
             # DNS lookups not applicable for the search node
@@ -828,7 +835,9 @@ class TurkeyBiteSetup:
             self.enable_dns_lookups = False
         
         # For distributed setups, get connection information
-        if self.node_type != "data" and "valkey" not in self.components:
+        # Skip Valkey host prompt for Search Nodes as they don't need it
+        if self.node_type != "data" and self.node_type != "search" and "valkey" not in self.components:
+            # Valkey is external, prompt for connection info
             self.valkey_host = self.prompt("Enter Valkey host (IP or hostname)")
             
         if self.node_type in ["core", "worker"] and "opensearch" not in self.components and self.use_opensearch:
