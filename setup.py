@@ -867,8 +867,10 @@ class TurkeyBiteSetup:
         
         self.print_info(f"Components selected: {', '.join(self.components)}")
         
-        # Setup Valkey password and configuration
-        self.setup_valkey()
+        # Setup Valkey password and configuration only if needed
+        # Skip for Search Nodes as they don't need Valkey access
+        if self.node_type != 'search':
+            self.setup_valkey()
         
         # Setup OpenSearch admin password if using OpenSearch
         if self.use_opensearch:
