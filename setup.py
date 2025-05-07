@@ -495,6 +495,21 @@ class TurkeyBiteSetup:
                                         service_config['volumes'].pop(i)
                                         break
                             
+                            # Special handling for OpenSearch ports based on deployment type
+                            if service_name == 'opensearch':
+                                # For search nodes or full-scale OpenSearch deployments,
+                                # expose ports externally with 'ports' directive
+                                if self.node_type == 'search' or (self.is_distributed and component == 'opensearch'):
+                                    # Remove 'expose' directive if it exists
+                                    if 'expose' in service_config:
+                                        del service_config['expose']
+                                    
+                                    # Add 'ports' directive for external access
+                                    service_config['ports'] = [
+                                        "${OPENSEARCH_PORT:-9200}:9200",
+                                        "${OPENSEARCH_PERFORMANCE_PORT:-9600}:9600"
+                                    ]
+                            
                             # Special handling for distributed deployments
                             if self.is_distributed and 'depends_on' in service_config:
                                 # In distributed deployments, we need to remove dependencies on services
