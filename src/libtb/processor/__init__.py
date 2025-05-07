@@ -236,11 +236,6 @@ class Processor(object):
 
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
-            # Print detailed debug information about the OpenSearch configuration
-            print(f"[DEBUG] OpenSearch configuration: {self.config['elastic']}", file=sys.stderr)
-            for host_idx, host in enumerate(self.config['elastic']['hosts']):
-                print(f"[DEBUG] Host {host_idx}: URI={host.get('uri', 'NOT_SET')}, Username={host.get('username', 'NOT_SET')}", file=sys.stderr)
-            
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             for host in self.config['elastic']['hosts']:
                 try:
@@ -283,7 +278,7 @@ class Processor(object):
                     
                     # Attempt to index the document
                     os_client.index(index=index, body=bite)
-                    print(f"Successfully sent data to OpenSearch at {host['uri']}", file=sys.stderr)
+                    print(f"Successfully sent data to OpenSearch at {host['uri']}")
                     # If successful, break the loop
                     break
                 except Exception as e:
