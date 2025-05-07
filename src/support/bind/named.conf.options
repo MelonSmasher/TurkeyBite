@@ -2,7 +2,6 @@ options {
     directory "/var/cache/bind";
     check-names master warn; // Must be WARN only for AD/Windows
     max-udp-size 4096;
-    dnssec-enable yes; //optional
     dnssec-validation yes; // optional, can be yes or no
     dnssec-lookaside auto; // MUST be auto for AD/Windows
     forwarders {
