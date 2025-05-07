@@ -282,7 +282,7 @@ class Processor(object):
                         )
                     
                     # Attempt to index the document
-                    os_client.index(index=index, body=bite, doc_type='bite')
+                    os_client.index(index=index, body=bite)
                     print(f"Successfully sent data to OpenSearch at {host['uri']}", file=sys.stderr)
                     # If successful, break the loop
                     break
