@@ -5,7 +5,7 @@ from _datetime import datetime
 from dateutil import *
 from dateutil.parser import parse
 from redis import Redis
-from elasticsearch import Elasticsearch
+from opensearchpy import OpenSearch
 from dns import reversename, resolver, exception
 
 
@@ -236,53 +236,59 @@ class Processor(object):
 
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
-            # Print detailed debug information about the Elasticsearch configuration
-            print(f"[DEBUG] Elasticsearch configuration: {self.config['elastic']}", file=sys.stderr)
+            # Print detailed debug information about the OpenSearch configuration
+            print(f"[DEBUG] OpenSearch configuration: {self.config['elastic']}", file=sys.stderr)
             for host_idx, host in enumerate(self.config['elastic']['hosts']):
                 print(f"[DEBUG] Host {host_idx}: URI={host.get('uri', 'NOT_SET')}, Username={host.get('username', 'NOT_SET')}", file=sys.stderr)
             
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             for host in self.config['elastic']['hosts']:
                 try:
-                    # Configure the Elasticsearch client based on URI and auth
+                    # Configure the OpenSearch client based on URI and auth
                     if host['username'] and host['password']:
-                        if host['uri'].startswith('https'):
-                            es = Elasticsearch(
-                                [host['uri']], 
-                                http_auth=(host['username'], host['password']), 
-                                ca_certs=False,
-                                verify_certs=False,
-                                request_timeout=30, # Add timeout
-                                retry_on_timeout=True, # Enable retries
-                                # Force a compatible content type for OpenSearch
-                                headers={"Content-Type": "application/json"}
-                            )
-                        else:
-                            es = Elasticsearch(
-                                [host['uri']], 
-                                http_auth=(host['username'], host['password']),
-                                request_timeout=30, # Add timeout
-                                retry_on_timeout=True, # Enable retries
-                                # Force a compatible content type for OpenSearch
-                                headers={"Content-Type": "application/json"}
-                            )
-                    else:
-                        es = Elasticsearch(
-                            [host['uri']], 
-                            ca_certs=False, 
+                        # URI parsing to get host and port
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(host['uri'])
+                        use_ssl = parsed_url.scheme == 'https'
+                        host_name = parsed_url.hostname
+                        port = parsed_url.port or (443 if use_ssl else 80)
+                        
+                        # Create OpenSearch client
+                        os_client = OpenSearch(
+                            hosts=[{'host': host_name, 'port': port}],
+                            http_auth=(host['username'], host['password']),
+                            use_ssl=use_ssl,
                             verify_certs=False,
-                            request_timeout=30, # Add timeout
-                            retry_on_timeout=True, # Enable retries
-                            # Force a compatible content type for OpenSearch
-                            headers={"Content-Type": "application/json"}
+                            ssl_show_warn=False,
+                            request_timeout=30,  # Add timeout
+                            retry_on_timeout=True  # Enable retries
                         )
+                    else:
+                        # URI parsing to get host and port
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(host['uri'])
+                        use_ssl = parsed_url.scheme == 'https'
+                        host_name = parsed_url.hostname
+                        port = parsed_url.port or (443 if use_ssl else 80)
+                        
+                        # Create OpenSearch client
+                        os_client = OpenSearch(
+                            hosts=[{'host': host_name, 'port': port}],
+                            use_ssl=use_ssl,
+                            verify_certs=False,
+                            ssl_show_warn=False,
+                            request_timeout=30,  # Add timeout
+                            retry_on_timeout=True  # Enable retries
+                        )
+                    
                     # Attempt to index the document
-                    es.index(index=index, body=bite)
+                    os_client.index(index=index, body=bite, doc_type='bite')
+                    print(f"Successfully sent data to OpenSearch at {host['uri']}", file=sys.stderr)
                     # If successful, break the loop
                     break
                 except Exception as e:
                     # Log the error to stderr but continue processing
-                    print(f"Error sending to Elasticsearch at {host['uri']}: {str(e)}", file=sys.stderr)
+                    print(f"Error sending to OpenSearch at {host['uri']}: {str(e)}", file=sys.stderr)
                     # Continue to the next host if available, or fall back to syslog
                     continue
 
