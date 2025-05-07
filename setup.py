@@ -210,6 +210,11 @@ class TurkeyBiteSetup:
 
     def setup_config(self):
         """Set up the configuration file"""
+        # Skip config creation if no TurkeyBite components are present
+        if not any(comp in self.components for comp in ['core', 'librarian', 'worker']):
+            self.print_info("No TurkeyBite application components selected, skipping config.yaml creation.")
+            return
+        
         example_config = self.support_dir / "config.example.yaml"
         target_config = self.base_dir / self.config_file
         
@@ -302,7 +307,11 @@ class TurkeyBiteSetup:
                 "OPENSEARCH_PERFORMANCE_PORT=9600\n",
                 "OPENSEARCH_DASHBOARD_PORT=5601\n",
                 f"OPENSEARCH_INITIAL_ADMIN_PASSWORD={self.opensearch_admin_password}\n",
-                f"OPENSEARCH_HOSTS='[\"https://{self.opensearch_host}:9200\"]'\n"
+                f"OPENSEARCH_HOSTS='[\"https://{self.opensearch_host}:9200\"]'\n",
+                "bootstrap.memory_lock=true\n",
+                f"node.name=${{OPENSEARCH_HOST}}\n",
+                "discovery.type=single-node\n",
+                "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m\n"
             ],
             # Bind9 specific settings
             'bind': [
@@ -467,6 +476,16 @@ class TurkeyBiteSetup:
                         for service_name, service_config in component_data['services'].items():
                             # Make a copy of the service config so we can modify it
                             service_config = service_config.copy()
+                            
+                            # Remove config.yaml volume mount if it doesn't exist or isn't needed
+                            if not Path(self.base_dir / self.config_file).exists() and 'volumes' in service_config:
+                                config_mount_found = False
+                                # Find and remove the config.yaml volume mount if present
+                                for i, volume in enumerate(service_config['volumes']):
+                                    if isinstance(volume, str) and '/turkey-bite/config.yaml' in volume:
+                                        config_mount_found = True
+                                        service_config['volumes'].pop(i)
+                                        break
                             
                             # Special handling for distributed deployments
                             if self.is_distributed and 'depends_on' in service_config:

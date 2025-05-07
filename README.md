@@ -91,6 +91,10 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    # Key environment variables (automatically configured by setup)
    OPENSEARCH_INITIAL_ADMIN_PASSWORD=******      # Password for OpenSearch admin
    OPENSEARCH_HOSTS='["https://opensearch:9200"]'  # OpenSearch connection URL array
+   bootstrap.memory_lock=true                     # Enable memory locking for OpenSearch
+   node.name=${OPENSEARCH_HOST}                  # Set node name to match host
+   discovery.type=single-node                    # Run in single node mode
+   OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m        # Configure Java memory limits
    VALKEY_HOST=valkey                            # Valkey/Redis hostname or IP
    VALKEY_PORT=6379                             # Valkey/Redis port
    OPENSEARCH_PORT=9200                         # OpenSearch API port
