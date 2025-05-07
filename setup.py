@@ -240,8 +240,8 @@ class TurkeyBiteSetup:
         config_data['processor']['elastic']['enable'] = self.use_opensearch
         if self.use_opensearch:
             # Update OpenSearch connection details with admin password and host
-            protocol = "https" if self.node_type == "search" else "http"
-            opensearch_uri = f"{protocol}://{self.opensearch_host}:9200"
+            # Always use HTTPS for OpenSearch connections
+            opensearch_uri = f"https://{self.opensearch_host}:9200"
             
             # Reset hosts array if needed for distributed deployments
             if self.is_distributed and self.opensearch_host != "opensearch":

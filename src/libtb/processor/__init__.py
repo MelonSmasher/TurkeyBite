@@ -236,6 +236,11 @@ class Processor(object):
 
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
+            # Print detailed debug information about the Elasticsearch configuration
+            print(f"[DEBUG] Elasticsearch configuration: {self.config['elastic']}", file=sys.stderr)
+            for host_idx, host in enumerate(self.config['elastic']['hosts']):
+                print(f"[DEBUG] Host {host_idx}: URI={host.get('uri', 'NOT_SET')}, Username={host.get('username', 'NOT_SET')}", file=sys.stderr)
+            
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             for host in self.config['elastic']['hosts']:
                 try:

@@ -47,7 +47,7 @@ processor:
     enable: true
     index_prefix: tb-index
     hosts:
-      - uri: http://opensearch:9200
+      - uri: https://opensearch:9200
         username: admin
         password: Changeit12345!
   syslog:
