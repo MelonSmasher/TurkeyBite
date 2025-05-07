@@ -79,7 +79,7 @@ services:
       - turkeybite
     command: >
       sh -c "valkey-server
-      --save '${VALKEY_SAVE_INTERVAL_SECONDS:-60}' '${VALKEY_SAVE_KEYS:-1}'
+      --save '${VALKEY_SAVE_INTERVAL_SECONDS:-60}' '${VALKEY_SAVE_KEYS:-1000}'
       --loglevel ${VALKEY_LOGLEVEL:-warning}
       --requirepass $(cat /run/secrets/valkey_password)
       --port ${VALKEY_PORT:-6379}"
