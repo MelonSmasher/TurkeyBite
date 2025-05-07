@@ -253,14 +253,22 @@ class Processor(object):
                                 ca_certs=False,
                                 verify_certs=False,
                                 request_timeout=30, # Add timeout
-                                retry_on_timeout=True # Enable retries
+                                retry_on_timeout=True, # Enable retries
+                                # Force a compatible content type for OpenSearch
+                                headers={"Content-Type": "application/json"},
+                                # Use compatibility mode for OpenSearch
+                                compatibility_mode=True
                             )
                         else:
                             es = Elasticsearch(
                                 [host['uri']], 
                                 http_auth=(host['username'], host['password']),
                                 request_timeout=30, # Add timeout
-                                retry_on_timeout=True # Enable retries
+                                retry_on_timeout=True, # Enable retries
+                                # Force a compatible content type for OpenSearch
+                                headers={"Content-Type": "application/json"},
+                                # Use compatibility mode for OpenSearch
+                                compatibility_mode=True
                             )
                     else:
                         es = Elasticsearch(
@@ -268,7 +276,11 @@ class Processor(object):
                             ca_certs=False, 
                             verify_certs=False,
                             request_timeout=30, # Add timeout
-                            retry_on_timeout=True # Enable retries
+                            retry_on_timeout=True, # Enable retries
+                            # Force a compatible content type for OpenSearch
+                            headers={"Content-Type": "application/json"},
+                            # Use compatibility mode for OpenSearch
+                            compatibility_mode=True
                         )
                     # Attempt to index the document
                     es.index(index=index, body=bite)
