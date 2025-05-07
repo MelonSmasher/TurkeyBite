@@ -288,8 +288,8 @@ class TurkeyBiteSetup:
                 f"VALKEY_HOST={self.valkey_host}\n"
             ],
             'librarian': [
-                "TURKEYBITE_HOSTS_INTERVAL_MIN=60\n",
-                "TURKEYBITE_IGNORELIST_INTERVAL_MIN=60\n"
+                "TURKEYBITE_HOSTS_INTERVAL_MIN=720\n",
+                "TURKEYBITE_IGNORELIST_INTERVAL_MIN=5\n"
             ],
             'worker': [
                 "TURKEYBITE_WORKER_PROCS=2\n"
