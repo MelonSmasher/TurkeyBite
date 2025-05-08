@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 echo "Setting up OpenSearch index template for TurkeyBite..."
@@ -14,8 +14,8 @@ echo "OpenSearch URL: $OPENSEARCH_URL"
 
 # Function to check if OpenSearch is available
 check_opensearch() {
-    local status_code=$(curl -s -o /dev/null -w "%{http_code}" --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
-    if [[ "$status_code" -ge 200 && "$status_code" -lt 300 ]]; then
+    status_code=$(curl -s -o /dev/null -w "%{http_code}" --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
+    if [ "$status_code" -ge 200 ] && [ "$status_code" -lt 300 ]; then
         return 0  # Success
     else
         return 1  # Failure
