@@ -867,6 +867,10 @@ def pull_host_lists():
     folders = [f for f in os.listdir('lists') if os.path.isdir(os.path.join('lists', f))]
     #loop over the folders and look for a default turkeybite list and custom list
     for folder in folders:
+        # Skip tld folder
+        if folder in ['tld']:
+            continue
+        # This allows for built in lists to be added to the host_files list
         if os.path.exists('lists/' + folder + '/turkeybite'):
             host_files.append({
                 'url': None,
@@ -874,6 +878,7 @@ def pull_host_lists():
                 'file': 'lists/' + folder + '/turkeybite',
                 'name': folder
             })
+        # This allows for custom lists and categories to be added to the host_files list
         if os.path.exists('lists/' + folder + '/custom'):
             host_files.append({
                 'url': None,
