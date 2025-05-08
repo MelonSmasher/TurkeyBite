@@ -31,7 +31,7 @@ class Filters(object):
                     return False
         if 'network' in data.keys():
             if 'direction' in data['network'].keys():
-                if data['network']['direction'] == 'outbound':
+                if data['network']['direction'] in ['outbound', 'egress']:
                     if self.config['drop_replies']:
                         return False
 
