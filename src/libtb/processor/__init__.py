@@ -45,13 +45,13 @@ class Processor(object):
         )
 
         # For inbound requests
-        if data['network']['direction'] == 'inbound':
+        if data['network']['direction'] in ['inbound', 'ingress']:
             request = 'query'
             if 'ip' in data['client'].keys():
                 client = data['client']['ip']
 
         # For outbound requests
-        if data['network']['direction'] == 'outbound':
+        if data['network']['direction'] in ['outbound', 'egress']:
             request = 'reply'
             if 'ip' in data['destination'].keys():
                 client = data['destination']['ip']
