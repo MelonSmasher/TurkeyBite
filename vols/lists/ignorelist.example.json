@@ -119,7 +119,15 @@
     "1rx.io",
     "live.net",
     "b-cdn.net",
-    "crunchyroll.com"
+    "crunchyroll.com",
+    "pandora.com",
+    "max.com",
+    "clickcease.com",
+    "bidstreamserver.com",
+    "use-application-dns.net",
+    "monster.com",
+    "sharethrough.com",
+    "qq.com"
   ],
   "advertising": [
     "x.com",
@@ -127,7 +135,12 @@
     "yimg.com",
     "pinterest.com",
     "microsoft.com",
-    "go.com"
+    "go.com",
+    "monster.com"
+  ],
+  "crypto": [
+    "monster.com",
+    "qq.com"
   ],
   "tracking": [
     "me.com",
@@ -145,7 +158,8 @@
     "open.spotify.com",
     "apresolve.spotify.com",
     "api.spotify.com",
-    "go.com"
+    "go.com",
+    "max.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -168,7 +182,8 @@
   "gambling": [
     "live.com",
     "go.com",
-    "live.net"
+    "live.net",
+    "max.com"
   ],
   "fraud": [
     "youtube.com",
@@ -213,6 +228,9 @@
     "yimg.com",
     "amazon-adsystem.com",
     "go.com",
-    "live.net"
+    "live.net",
+    "max.com",
+    "monster.com",
+    "qq.com"
   ]
 }
