@@ -128,7 +128,10 @@
     "monster.com",
     "sharethrough.com",
     "qq.com",
-    "instagram.com"
+    "instagram.com",
+    "sync.1rx.io",
+    "isc.org",
+    "clock.isc.org"
   ],
   "piracy": [
     "hulu.com",
@@ -145,7 +148,9 @@
   ],
   "crypto": [
     "monster.com",
-    "qq.com"
+    "qq.com",
+    "sync.1rx.io",
+    "1rx.io"
   ],
   "tracking": [
     "me.com",
