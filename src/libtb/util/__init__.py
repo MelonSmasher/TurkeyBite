@@ -863,7 +863,29 @@ def clean_list_file(file_path: str, tlds: list[str]):
 def pull_host_lists():
     # Get the list of TLDs
     tlds = pull_tld_list()
+    # get names of only folders in lists/
+    folders = [f for f in os.listdir('lists') if os.path.isdir(os.path.join('lists', f))]
+    #loop over the folders and look for a default turkeybite list and custom list
+    for folder in folders:
+        if os.path.exists('lists/' + folder + '/turkeybite'):
+            host_files.append({
+                'url': None,
+                'categories': ['list-turkeybite', folder],
+                'file': 'lists/' + folder + '/turkeybite',
+                'name': folder
+            })
+        if os.path.exists('lists/' + folder + '/custom'):
+            host_files.append({
+                'url': None,
+                'categories': ['list-custom', folder],
+                'file': 'lists/' + folder + '/custom',
+                'name': folder
+            })
+
     for hlist in host_files:
+        # Skip local lists for downloads
+        if hlist['url'] is None:
+            continue
         try:
             print('Downloading: ' + hlist['name'])
             opener = urllib.request.build_opener()

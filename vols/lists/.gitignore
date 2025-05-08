@@ -17,6 +17,7 @@
 !url-shorteners/
 !streaming/
 !proxy/
+!fascist/
 
 !whitelist.example.json
 !whitelist.md

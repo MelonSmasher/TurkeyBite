@@ -114,7 +114,12 @@
     "me.com",
     "ring.com",
     "go.com",
-    "marshall.com"
+    "marshall.com",
+    "hp.com",
+    "1rx.io",
+    "live.net",
+    "b-cdn.net",
+    "crunchyroll.com"
   ],
   "advertising": [
     "x.com",
@@ -162,7 +167,8 @@
   ],
   "gambling": [
     "live.com",
-    "go.com"
+    "go.com",
+    "live.net"
   ],
   "fraud": [
     "youtube.com",
@@ -206,6 +212,7 @@
     "windows.com",
     "yimg.com",
     "amazon-adsystem.com",
-    "go.com"
+    "go.com",
+    "live.net"
   ]
 }
