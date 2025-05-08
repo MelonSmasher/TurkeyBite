@@ -43,9 +43,12 @@ def process_ignorelist(r=False, tag=False):
                 db=config['redis']['host_list_db']
             )
             if not tag:
-                tag = r.get('turkey-bite:current-tag').decode('utf-8')
-                pass
-
+                try:
+                    tag = r.get('turkey-bite:current-tag').decode('utf-8')
+                except AttributeError:
+                    print('No current tag found')
+                    exit()
+                    
         with open('lists/ignorelist.json', 'r') as json_file:
             ignorelist = json.load(json_file)
             for context, hosts in ignorelist.items():
