@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 echo "Setting up OpenSearch index template for TurkeyBite..."
@@ -14,8 +14,8 @@ echo "OpenSearch URL: $OPENSEARCH_URL"
 
 # Function to check if OpenSearch is available
 check_opensearch() {
-    status_code=$(curl -s -o /dev/null -w "%{http_code}" --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
-    if [ "$status_code" -ge 200 ] && [ "$status_code" -lt 300 ]; then
+    local status_code=$(curl -s -o /dev/null -w "%{http_code}" --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
+    if [[ "$status_code" -ge 200 && "$status_code" -lt 300 ]]; then
         return 0  # Success
     else
         return 1  # Failure
@@ -35,15 +35,9 @@ while ! check_opensearch; do
     sleep $RETRY_INTERVAL
 done
 
-echo "OpenSearch is available! Checking for existing template..."
+echo "OpenSearch is available! Creating/updating index template..."
 
-# Check if template exists
-CHECK_TEMPLATE=$(curl -s --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}/_index_template/turkeybite-template" || echo '{"error": "Connection failed"}')
-
-if echo "$CHECK_TEMPLATE" | grep -q "index_template_not_found_exception" || echo "$CHECK_TEMPLATE" | grep -q "Connection failed"; then
-    echo "TurkeyBite index template not found, creating..."
-    
-    # Create index template
+# Create or update the index template
     curl -XPUT "$OPENSEARCH_URL/_index_template/turkeybite-template" \
         -H "Content-Type: application/json" \
         -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" \
@@ -78,10 +72,6 @@ if echo "$CHECK_TEMPLATE" | grep -q "index_template_not_found_exception" || echo
             }
         }
     }'
-    
-    echo "✅ Index template created successfully!"
-else
-    echo "✅ TurkeyBite index template already exists!"
-fi
 
+echo "✅ Index template created successfully!"
 echo "OpenSearch template setup complete!"
