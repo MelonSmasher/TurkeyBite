@@ -338,6 +338,8 @@ class TurkeyBiteSetup:
         # If using OpenSearch for output, all components need this
         if self.use_opensearch:
             component_env_vars['common'].append(f"OPENSEARCH_HOST={self.opensearch_host}\n")
+            component_env_vars['common'].append(f"OPENSEARCH_USERNAME=admin\n")
+            component_env_vars['common'].append(f"OPENSEARCH_PASSWORD={self.opensearch_admin_password}\n")
         
         # If using Syslog for output, all components need this
         if self.use_syslog:

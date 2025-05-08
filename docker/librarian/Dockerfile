@@ -8,6 +8,7 @@ ENV TB_ROLE=librarian
 COPY docker/librarian/run-librarian.sh ./run.sh
 COPY docker/librarian/ignorelist.sh .
 COPY docker/librarian/hosts.sh .
+COPY docker/librarian/setup-opensearch-template.sh ./setup-opensearch-template.sh
 COPY src/libtb ./libtb
 COPY src/turkeybite .
 COPY src/requirements.txt .
@@ -15,10 +16,11 @@ COPY src/requirements.txt .
 
 RUN pip3 install --no-cache --upgrade pip setuptools wheel && \
     pip3 install -r requirements.txt && \
-    apk add --no-cache supervisor envsubst && \
+    apk add --no-cache supervisor envsubst curl && \
     chmod +x run.sh && \
     chmod +x ignorelist.sh && \
     chmod +x hosts.sh && \
+    chmod +x setup-opensearch-template.sh && \
     mkdir -p /var/log/turkey-bite && \
     rm -rf /etc/supervisor && \
     mkdir /etc/supervisor

@@ -20,5 +20,8 @@ services:
       - VALKEY_PORT
       - TURKEYBITE_HOSTS_INTERVAL_MIN
       - TURKEYBITE_IGNORELIST_INTERVAL_MIN
+      - OPENSEARCH_HOST
+      - OPENSEARCH_USERNAME
+      - OPENSEARCH_PASSWORD
     networks:
       - tb-net
