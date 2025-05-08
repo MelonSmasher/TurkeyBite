@@ -127,7 +127,12 @@
     "use-application-dns.net",
     "monster.com",
     "sharethrough.com",
-    "qq.com"
+    "qq.com",
+    "instagram.com"
+  ],
+  "piracy": [
+    "hulu.com",
+    "opera.com"
   ],
   "advertising": [
     "x.com",
@@ -159,7 +164,11 @@
     "apresolve.spotify.com",
     "api.spotify.com",
     "go.com",
-    "max.com"
+    "max.com",
+    "ntp.org",
+    "wikipedia.org",
+    "netflix.com",
+    "instagram.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -231,6 +240,11 @@
     "live.net",
     "max.com",
     "monster.com",
-    "qq.com"
+    "qq.com",
+    "netflix.com",
+    "ntp.org",
+    "wikipedia.org",
+    "instagram.com",
+    "gmail.com"
   ]
 }

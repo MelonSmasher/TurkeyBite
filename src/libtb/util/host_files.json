@@ -1,0 +1,681 @@
+[
+    {
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/porn-only/hosts",
+        "categories": ["porn"],
+        "file": "lists/porn/StevenBlack-porn-only",
+        "name": "StevenBlack-porn-only"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/nsfw.txt",
+        "categories": ["porn"],
+        "file": "lists/porn/hagezi-nsfw",
+        "name": "hagezi-nsfw"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/porn-nl.txt",
+        "categories": ["porn"],
+        "file": "lists/porn/blocklistproject-porn-nl",
+        "name": "blocklistproject-porn-nl"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/tiuxo/hosts/master/porn",
+        "categories": ["porn"],
+        "file": "lists/porn/tiuxo-porn",
+        "name": "tiuxo-porn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/cbuijs/accomplist/refs/heads/main/adult-themed/optimized.black.domain.list",
+        "categories": ["porn"],
+        "file": "lists/porn/cbuijs-adult-themed",
+        "name": "cbuijs-adult-themed"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Adult",
+        "categories": ["porn"],
+        "file": "lists/porn/shadowwhisperer-adult",
+        "name": "shadowwhisperer-adult"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/sjhgvr/oisd/main/domainswild_nsfw.txt",
+        "categories": ["porn"],
+        "file": "lists/porn/sjhgvr-domainswild-nsfw",
+        "name": "sjhgvr-domainswild-nsfw"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/anti.piracy.txt",
+        "categories": ["piracy"],
+        "file": "lists/piracy/hagezi-anti-piracy",
+        "name": "hagezi-anti-piracy"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/piracy-nl.txt",
+        "categories": ["piracy"],
+        "file": "lists/piracy/blocklistproject-piracy-nl",
+        "name": "blocklistproject-piracy-nl"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/torrent-nl.txt",
+        "categories": ["piracy", "torrent"],
+        "file": "lists/piracy/blocklistproject-torrent-nl",
+        "name": "blocklistproject-torrent-nl"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/torrent-websites",
+        "categories": ["piracy", "torrent"],
+        "file": "lists/piracy/nextdns-torrent-websites",
+        "name": "nextdns-torrent-websites"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/torrent-trackers",
+        "categories": ["piracy", "torrent"],
+        "file": "lists/piracy/nextdns-torrent-trackers",
+        "name": "nextdns-torrent-trackers"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/torrent-clients",
+        "categories": ["piracy", "torrent"],
+        "file": "lists/piracy/nextdns-torrent-clients",
+        "name": "nextdns-torrent-clients"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/social_networks/domains",
+        "categories": ["social"],
+        "file": "lists/social/olbat-social-networks",
+        "name": "olbat-social-networks"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/social-only/hosts",
+        "categories": ["social"],
+        "file": "lists/social/StevenBlack-social-only",
+        "name": "StevenBlack-social-only"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-facebook.txt",
+        "categories": ["social", "facebook"],
+        "file": "lists/social/gieljnssns-facebook",
+        "name": "gieljnssns-facebook"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-instagram.txt",
+        "categories": ["social", "instagram"],
+        "file": "lists/social/gieljnssns-instagram",
+        "name": "gieljnssns-instagram"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-reddit.txt",
+        "categories": ["social", "reddit"],
+        "file": "lists/social/gieljnssns-reddit",
+        "name": "gieljnssns-reddit"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-reddit.txt",
+        "categories": ["social", "reddit"],
+        "file": "lists/social/nickoppen-reddit",
+        "name": "nickoppen-reddit"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/twitter",
+        "categories": ["social", "twitter"],
+        "file": "lists/social/nextdns-twitter",
+        "name": "nextdns-twitter"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-snapchat.txt",
+        "categories": ["social", "snapchat"],
+        "file": "lists/social/gieljnssns-snapchat",
+        "name": "gieljnssns-snapchat"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-myspace.txt",
+        "categories": ["social", "myspace"],
+        "file": "lists/social/nickoppen-myspace",
+        "name": "nickoppen-myspace"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-signal.txt",
+        "categories": ["social", "signal"],
+        "file": "lists/social/nickoppen-signal",
+        "name": "nickoppen-signal"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-telegram.txt",
+        "categories": ["social", "telegram"],
+        "file": "lists/social/nickoppen-telegram",
+        "name": "nickoppen-telegram"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-tiktok.txt",
+        "categories": ["social", "tiktok"],
+        "file": "lists/social/nickoppen-tiktok",
+        "name": "nickoppen-tiktok"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-tinder.txt",
+        "categories": ["social", "tinder"],
+        "file": "lists/social/nickoppen-tinder",
+        "name": "nickoppen-tinder"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/whatsapp",
+        "categories": ["social", "whatsapp"],
+        "file": "lists/social/nextdns-whatsapp",
+        "name": "nextdns-whatsapp"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/zoom",
+        "categories": ["social", "zoom"],
+        "file": "lists/social/nextdns-zoom",
+        "name": "nextdns-zoom"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-whispersystems.txt",
+        "categories": ["social", "whispersystems"],
+        "file": "lists/social/nickoppen-whispersystems",
+        "name": "nickoppen-whispersystems"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-discord.txt",
+        "categories": ["social", "discord"],
+        "file": "lists/social/nickoppen-discord",
+        "name": "nickoppen-discord"
+    },
+
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/drugs-nl.txt",
+        "categories": ["drugs"],
+        "file": "lists/drugs/blocklistproject-drugs-nl",
+        "name": "blocklistproject-drugs-nl"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/gambling-only/hosts",
+        "categories": ["gambling"],
+        "file": "lists/gambling/StevenBlack-gambling-only",
+        "name": "StevenBlack-gambling-only"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/gambling.txt",
+        "categories": ["gambling"],
+        "file": "lists/gambling/hagezi-gambling",
+        "name": "hagezi-gambling"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/gambling-nl.txt",
+        "categories": ["gambling"],
+        "file": "lists/gambling/blocklistproject-gambling-nl",
+        "name": "blocklistproject-gambling-nl"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/IREK-szef/games-blocklist/main/lists/Adblock-dns/games.txt",
+        "categories": ["games"],
+        "file": "lists/games/IREK-szef-games",
+        "name": "IREK-szef-games"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-roblox.txt",
+        "categories": ["games", "roblox"],
+        "file": "lists/games/gieljnssns-roblox",
+        "name": "gieljnssns-roblox"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-minecraft.txt",
+        "categories": ["games", "minecraft"],
+        "file": "lists/games/nickoppen-minecraft",
+        "name": "nickoppen-minecraft"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-steam.txt",
+        "categories": ["games", "steam"],
+        "file": "lists/games/nickoppen-steam",
+        "name": "nickoppen-steam"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-square-enix.txt",
+        "categories": ["games", "square-enix"],
+        "file": "lists/games/nickoppen-square-enix",
+        "name": "nickoppen-square-enix"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-rockstargames.txt",
+        "categories": ["games", "rockstargames"],
+        "file": "lists/games/nickoppen-rockstargames",
+        "name": "nickoppen-rockstargames"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-riotgames.txt",
+        "categories": ["games", "riotgames"],
+        "file": "lists/games/nickoppen-riotgames",
+        "name": "nickoppen-riotgames"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-ubisoft.txt",
+        "categories": ["games", "ubisoft"],
+        "file": "lists/games/nickoppen-ubisoft",
+        "name": "nickoppen-ubisoft"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-warthunder.txt",
+        "categories": ["games", "warthunder"],
+        "file": "lists/games/nickoppen-warthunder",
+        "name": "nickoppen-warthunder"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-zynga.txt",
+        "categories": ["games", "zynga"],
+        "file": "lists/games/nickoppen-zynga",
+        "name": "nickoppen-zynga"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-blizzard.txt",
+        "categories": ["games", "blizzard"],
+        "file": "lists/games/nickoppen-blizzard",
+        "name": "nickoppen-blizzard"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-activision.txt",
+        "categories": ["games", "activision"],
+        "file": "lists/games/nickoppen-activision",
+        "name": "nickoppen-activision"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-ea.txt",
+        "categories": ["games", "ea"],
+        "file": "lists/games/nickoppen-ea",
+        "name": "nickoppen-ea"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-epicgames.txt",
+        "categories": ["games", "epicgames"],
+        "file": "lists/games/nickoppen-epicgames",
+        "name": "nickoppen-epicgames"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-nintendo.txt",
+        "categories": ["games", "nintendo"],
+        "file": "lists/games/nickoppen-nintendo",
+        "name": "nickoppen-nintendo"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-take-twoInteractive.txt",
+        "categories": ["games", "take-twointeractive"],
+        "file": "lists/games/nickoppen-take-twointeractive",
+        "name": "nickoppen-take-twointeractive"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/urlshortener.txt",
+        "categories": ["url-shorteners"],
+        "file": "lists/url-shorteners/hagezi-urlshortener",
+        "name": "hagezi-urlshortener"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/fakenews-only/hosts",
+        "categories": ["fake-news"],
+        "file": "lists/fakenews/StevenBlack-fakenews-only",
+        "name": "StevenBlack-fakenews-only"
+    },
+    
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-netflix.txt",
+        "categories": ["streaming", "netflix"],
+        "file": "lists/streaming/gieljnssns-netflix",
+        "name": "gieljnssns-netflix"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-twitch.txt",
+        "categories": ["streaming", "twitch"],
+        "file": "lists/streaming/gieljnssns-twitch",
+        "name": "gieljnssns-twitch"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-tiktok.txt",
+        "categories": ["streaming", "tiktok"],
+        "file": "lists/streaming/gieljnssns-tiktok",
+        "name": "gieljnssns-tiktok"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/disneyplus",
+        "categories": ["streaming", "disneyplus"],
+        "file": "lists/streaming/nextdns-disneyplus",
+        "name": "nextdns-disneyplus"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/hulu",
+        "categories": ["streaming", "hulu"],
+        "file": "lists/streaming/nextdns-hulu",
+        "name": "nextdns-hulu"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/spotify",
+        "categories": ["streaming", "spotify"],
+        "file": "lists/streaming/nextdns-spotify",
+        "name": "nextdns-spotify"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/gieljnssns/Social-media-Blocklists/refs/heads/master/adguard-youtube.txt",
+        "categories": ["streaming", "youtube"],
+        "file": "lists/streaming/gieljnssns-youtube",
+        "name": "gieljnssns-youtube"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/services/main/services/vimeo",
+        "categories": ["streaming", "vimeo"],
+        "file": "lists/streaming/nextdns-vimeo",
+        "name": "nextdns-vimeo"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/streaming-video",
+        "categories": ["streaming", "streaming-video"],
+        "file": "lists/streaming/nextdns-streaming-video",
+        "name": "nextdns-streaming-video"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/streaming-audio",
+        "categories": ["streaming", "streaming-audio"],
+        "file": "lists/streaming/nextdns-streaming-audio",
+        "name": "nextdns-streaming-audio"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/fake.txt",
+        "categories": ["malicious"],
+        "file": "lists/malicious/hagezi-fake",
+        "name": "hagezi-fake"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/fraud-nl.txt",
+        "categories": ["malicious", "fraud"],
+        "file": "lists/malicious/blocklistproject-fraud-nl",
+        "name": "blocklistproject-fraud-nl"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/ransomware-nl.txt",
+        "categories": ["malicious", "ransomware"],
+        "file": "lists/malicious/blocklistproject-ransomware-nl",
+        "name": "blocklistproject-ransomware-nl"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/scam-nl.txt",
+        "categories": ["malicious", "scam"],
+        "file": "lists/malicious/blocklistproject-scam-nl",
+        "name": "blocklistproject-scam-nl"
+    },
+    {
+        "url": "https://phishing.army/download/phishing_army_blocklist_extended.txt",
+        "categories": ["malicious", "phishing"],
+        "file": "lists/malicious/phishing_army_blocklist_extended",
+        "name": "malicious-phishing_army_blocklist_extended"
+    },
+    {
+        "url": "https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-malware.txt",
+        "categories": ["malicious", "malware"],
+        "file": "lists/malicious/notrack-malware",
+        "name": "malicious-notrack-malware"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareHosts.txt",
+        "categories": ["malicious"],
+        "file": "lists/malicious/DandelionSprout-anti-malware-hosts",
+        "name": "DandelionSprout-malicious-anti-malware-hosts"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/Prigent-Crypto.txt",
+        "categories": ["malicious", "crypto"],
+        "file": "lists/malicious/Prigent-Crypto",
+        "name": "Prigent-malicious-crypto"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/crypto-nl.txt",
+        "categories": ["malicious", "crypto"],
+        "file": "lists/malicious/blocklistproject-crypto-nl",
+        "name": "blocklistproject-crypto-nl"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/malware-nl.txt",
+        "categories": ["malicious", "malware"],
+        "file": "lists/malicious/blocklistproject-malware-nl",
+        "name": "blocklistproject-malware-nl"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/phishing-nl.txt",
+        "categories": ["malicious", "phishing"],
+        "file": "lists/malicious/blocklistproject-phishing-nl",
+        "name": "blocklistproject-phishing-nl"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Risk/hosts",
+        "categories": ["malicious"],
+        "file": "lists/malicious/FadeMind-Risk",
+        "name": "FadeMind-malicious-risk"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/RPiList-Malware.txt",
+        "categories": ["malicious"],
+        "file": "lists/malicious/RPiList-Malware",
+        "name": "RPiList-malicious"
+    },
+    {
+        "url": "https://lists.cyberhost.uk/malware.txt",
+        "categories": ["malicious"],
+        "file": "lists/malicious/cyberhostuk-malware",
+        "name": "cyberhostuk-malicious"
+    },
+
+    {
+        "url": "https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-blocklist.txt",
+        "categories": ["tracking"],
+        "file": "lists/tracking/notrack-blocklist",
+        "name": "tracking-notrack-blocklist"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.2o7Net/hosts",
+        "categories": ["tracking"],
+        "file": "lists/tracking/FadeMind-2o7Net",
+        "name": "tracking-FadeMind-2o7Net"
+    },
+    {
+        "url": "https://hostfiles.frogeye.fr/firstparty-trackers-hosts.txt",
+        "categories": ["tracking"],
+        "file": "lists/tracking/firstparty-trackers",
+        "name": "tracking-firstparty-trackers"
+    },
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/tracking-nl.txt",
+        "categories": ["tracking"],
+        "file": "lists/tracking/blocklistproject-tracking-nl",
+        "name": "blocklistproject-tracking-nl"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt",
+        "categories": ["tracking", "windows-tracking"],
+        "file": "lists/tracking/WindowsSpyBlocker",
+        "name": "tracking-WindowsSpyBlocker"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/Easyprivacy.txt",
+        "categories": ["tracking"],
+        "file": "lists/tracking/Easyprivacy",
+        "name": "tracking-Easyprivacy"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/Prigent-Ads.txt",
+        "categories": ["tracking"],
+        "file": "lists/tracking/Prigent-Ads",
+        "name": "tracking-Prigent-Ads"
+    },
+
+    {
+        "url": "https://blocklistproject.github.io/Lists/alt-version/ads-nl.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/blocklistproject-ads-nl",
+        "name": "blocklistproject-ads-nl"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/popupads.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/hagezi-popupads",
+        "name": "hagezi-popupads"
+    },
+    {
+        "url": "https://adaway.org/hosts.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/AdAway",
+        "name": "advertising-AdAway"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/AdguardDNS.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/AdguardDNS",
+        "name": "advertising-AdguardDNS"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/Admiral.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/Admiral",
+        "name": "advertising-Admiral"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/anudeepND",
+        "name": "advertising-anudeepND"
+    },
+    {
+        "url": "https://v.firebog.net/hosts/Easylist.txt",
+        "categories": ["advertising"],
+        "file": "lists/advertising/Easylist",
+        "name": "advertising-Easylist"
+    },
+    {
+        "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
+        "categories": ["advertising"],
+        "file": "lists/advertising/pgl-yoyo",
+        "name": "advertising-pgl-yoyo"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts",
+        "categories": ["advertising"],
+        "file": "lists/advertising/bigdargon-hostsVN",
+        "name": "advertising-bigdargon-hostsVN"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-atlasvpn.txt",
+        "categories": ["vpn", "atlasvpn"],
+        "file": "lists/vpn/nickoppen-atlasvpn",
+        "name": "nickoppen-atlasvpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-cyberghostvpn.txt",
+        "categories": ["vpn", "cyberghostvpn"],
+        "file": "lists/vpn/nickoppen-cyberghostvpn",
+        "name": "nickoppen-cyberghostvpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-expressvpn.txt",
+        "categories": ["vpn", "expressvpn"],
+        "file": "lists/vpn/nickoppen-expressvpn",
+        "name": "nickoppen-expressvpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-freevpnplanet.txt",
+        "categories": ["vpn", "freevpnplanet"],
+        "file": "lists/vpn/nickoppen-freevpnplanet",
+        "name": "nickoppen-freevpnplanet"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-hide.txt",
+        "categories": ["vpn", "hide.me"],
+        "file": "lists/vpn/nickoppen-hide",
+        "name": "nickoppen-hide"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-hideservers.txt",
+        "categories": ["vpn", "hide.me"],
+        "file": "lists/vpn/nickoppen-hideservers",
+        "name": "nickoppen-hideservers"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-hotspotshield.txt",
+        "categories": ["vpn", "hotspotshield"],
+        "file": "lists/vpn/nickoppen-hotspotshield",
+        "name": "nickoppen-hotspotshield"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-ipvanish.txt",
+        "categories": ["vpn", "ipvanish"],
+        "file": "lists/vpn/nickoppen-ipvanish",
+        "name": "nickoppen-ipvanish"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-ivpn.txt",
+        "categories": ["vpn", "ivpn"],
+        "file": "lists/vpn/nickoppen-ivpn",
+        "name": "nickoppen-ivpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-mullvad.txt",
+        "categories": ["vpn", "mullvad"],
+        "file": "lists/vpn/nickoppen-mullvad",
+        "name": "nickoppen-mullvad"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-privadovpn.txt",
+        "categories": ["vpn", "privadovpn"],
+        "file": "lists/vpn/nickoppen-privadovpn",
+        "name": "nickoppen-privadovpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-privateinternetaccess.txt",
+        "categories": ["vpn", "privateinternetaccess"],
+        "file": "lists/vpn/nickoppen-privateinternetaccess",
+        "name": "nickoppen-privateinternetaccess"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-protonvpn.txt",
+        "categories": ["vpn", "protonvpn"],
+        "file": "lists/vpn/nickoppen-protonvpn",
+        "name": "nickoppen-protonvpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-purevpn.txt",
+        "categories": ["vpn", "purevpn"],
+        "file": "lists/vpn/nickoppen-purevpn",
+        "name": "nickoppen-purevpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-strongvpn.txt",
+        "categories": ["vpn", "strongvpn"],
+        "file": "lists/vpn/nickoppen-strongvpn",
+        "name": "nickoppen-strongvpn"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-surfshark.txt",
+        "categories": ["vpn", "surfshark"],
+        "file": "lists/vpn/nickoppen-surfshark",
+        "name": "nickoppen-surfshark"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-tunnelbear.txt",
+        "categories": ["vpn", "tunnelbear"],
+        "file": "lists/vpn/nickoppen-tunnelbear",
+        "name": "nickoppen-tunnelbear"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/nickoppen/pihole-blocklists/refs/heads/master/blocklist-urban-vpn.txt",
+        "categories": ["vpn", "urbanvpn"],
+        "file": "lists/vpn/nickoppen-urbanvpn",
+        "name": "nickoppen-urbanvpn"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/proxies",
+        "categories": ["proxy"],
+        "file": "lists/proxy/nextdns-proxy",
+        "name": "nextdns-proxy"
+    }
+]
