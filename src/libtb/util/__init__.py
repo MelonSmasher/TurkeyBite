@@ -8,7 +8,9 @@ import time
 
 
 def get_host_files():
-    with open('host_files.json', 'r') as json_file:
+    # get the current directory of this library file
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    with open(current_dir + '/host_files.json', 'r') as json_file:
         return json.load(json_file)
 
 
