@@ -114,6 +114,7 @@
     "x.com",
     "api.x.com",
     "ton.x.com",
+    "cf.x.com",
     "me.com",
     "ring.com",
     "go.com",
@@ -144,7 +145,8 @@
     "samplicio.us",
     "x.com",
     "api.x.com",
-    "ton.x.com"
+    "ton.x.com",
+    "cf.x.com"
   ],
   "piracy": [
     "hulu.com",
@@ -155,12 +157,14 @@
     "samplicio.us",
     "x.com",
     "api.x.com",
-    "ton.x.com"
+    "ton.x.com",
+    "cf.x.com"
   ],
   "advertising": [
     "x.com",
     "api.x.com",
     "ton.x.com",
+    "cf.x.com",
     "me.com",
     "yimg.com",
     "pinterest.com",
@@ -179,6 +183,7 @@
     "x.com",
     "api.x.com",
     "ton.x.com",
+    "cf.x.com",
     "yimg.com",
     "pinterest.com"
   ],
@@ -200,7 +205,8 @@
     "instagram.com",
     "x.com",
     "api.x.com",
-    "ton.x.com"
+    "ton.x.com",
+    "cf.x.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -221,7 +227,8 @@
     "go.com",
     "x.com",
     "api.x.com",
-    "ton.x.com"
+    "ton.x.com",
+    "cf.x.com"
   ],
   "gambling": [
     "live.com",
@@ -270,6 +277,7 @@
     "x.com",
     "api.x.com",
     "ton.x.com",
+    "cf.x.com",
     "me.com",
     "google.com",
     "snapchat.com",
@@ -293,6 +301,7 @@
     "ring.com",
     "x.com",
     "api.x.com",
-    "ton.x.com"
+    "ton.x.com",
+    "cf.x.com"
   ]
 }
