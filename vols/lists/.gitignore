@@ -23,4 +23,5 @@
 !whitelist.example.json
 !whitelist.md
 !ignorelist.example.json
+!host_files.example.json
 !ignorelist.md

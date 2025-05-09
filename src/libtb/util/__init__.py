@@ -8,10 +8,14 @@ import time
 
 
 def get_host_files():
-    # get the current directory of this library file
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    with open(current_dir + '/host_files.json', 'r') as json_file:
-        return json.load(json_file)
+    host_files = []
+    if os.path.exists('lists/host_files.json'):
+        with open('lists/host_files.json', 'r') as json_file:
+            host_files = json.load(json_file)
+    else:
+        with open('lists/host_files.example.json', 'r') as json_file:
+            host_files = json.load(json_file)
+    return host_files
 
 
 def read_config(config_file='config.yaml'):
