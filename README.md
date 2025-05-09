@@ -28,6 +28,8 @@ In practice the analysis pipeline looks like this:
 
 ![flow-chart](docs/img/flow.png)
 
+When conceptualizing the diagram above replace redis, elasticsearch, and kibana with valkey, opensearch, and opensearch dashboards respectively.
+
 ### What DNS servers does this work with
 
 As of right now I have tested this with a Microsoft DNS server and I am running this in production with multiple Bind9 servers. Since Packetbeat is used to grab and send packets to Redis this should work with any DNS server that can also run Packetbeat.
@@ -109,12 +111,12 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
    ```yaml
    redis:
-     host: ${VALKEY_HOST}
-     port: ${VALKEY_PORT}
+     host: valkey
+     port: 6379
      password: your_password_from_secrets
      db: 0
      host_list_db: 1
-     channel: packetbeat
+     channel: turkeybite
    # ... other configuration sections
    ```
 
@@ -176,10 +178,10 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
        include_additionals: true
    
    output.redis:
-     hosts: ["${VALKEY_HOST}:${VALKEY_PORT}"]
+     hosts: ["valkey.domain.com:6379"]
      password: "your_valkey_password"
      db: 0
-     key: "packetbeat"
+     key: "turkeybite"
      data_type: "list"
    ```
 
