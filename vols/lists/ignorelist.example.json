@@ -137,13 +137,17 @@
   "torrent":[
     "opera.com",
     "get.geo.opera.com",
-    "geo.opera.com"
+    "geo.opera.com",
+    "tracker.samplicio.us",
+    "samplicio.us"
   ],
   "piracy": [
     "hulu.com",
     "opera.com",
     "get.geo.opera.com",
-    "geo.opera.com"
+    "geo.opera.com",
+    "tracker.samplicio.us",
+    "samplicio.us"
   ],
   "advertising": [
     "x.com",
