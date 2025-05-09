@@ -55,6 +55,9 @@ echo "OpenSearch is available! Creating/updating index template..."
                     "bite": {
                         "properties": {
                             "processed": { "type": "date" },
+                            "event_time_utc": { "type": "date" },
+                            "event_time_local": { "type": "keyword" },
+                            "url": { "type": "keyword" },
                             "client": { "type": "ip" },
                             "client_hosts": { "type": "keyword" },
                             "ptr": { "type": "keyword" },
