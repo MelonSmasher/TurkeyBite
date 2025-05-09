@@ -112,6 +112,7 @@
     "pie.org",
     "hadronid.net",
     "x.com",
+    "api.x.com",
     "me.com",
     "ring.com",
     "go.com",
@@ -140,7 +141,8 @@
     "geo.opera.com",
     "tracker.samplicio.us",
     "samplicio.us",
-    "x.com"
+    "x.com",
+    "api.x.com"
   ],
   "piracy": [
     "hulu.com",
@@ -149,10 +151,12 @@
     "geo.opera.com",
     "tracker.samplicio.us",
     "samplicio.us",
-    "x.com"
+    "x.com",
+    "api.x.com"
   ],
   "advertising": [
     "x.com",
+    "api.x.com",
     "me.com",
     "yimg.com",
     "pinterest.com",
@@ -169,6 +173,7 @@
   "tracking": [
     "me.com",
     "x.com",
+    "api.x.com",
     "yimg.com",
     "pinterest.com"
   ],
@@ -188,7 +193,8 @@
     "wikipedia.org",
     "netflix.com",
     "instagram.com",
-    "x.com"
+    "x.com",
+    "api.x.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -207,7 +213,8 @@
     "me.com",
     "live.com",
     "go.com",
-    "x.com"
+    "x.com",
+    "api.x.com"
   ],
   "gambling": [
     "live.com",
@@ -254,6 +261,7 @@
     "nextdoor.com",
     "outlook.com",
     "x.com",
+    "api.x.com",
     "me.com",
     "google.com",
     "snapchat.com",
@@ -275,6 +283,7 @@
   ],
   "drugs": [
     "ring.com",
-    "x.com"
+    "x.com",
+    "api.x.com"
   ]
 }
