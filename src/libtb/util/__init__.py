@@ -28,6 +28,34 @@ def read_config(config_file='config.yaml'):
             # Read the password from the secret file
             with open(password_file, 'r') as password_file:
                 conf['redis']['password'] = password_file.read().strip()
+                
+            # Initialize sieve section if needed
+            if 'sieve' not in conf:
+                conf['sieve'] = {}
+                
+            # Initialize browserbeat configuration if needed
+            if 'browserbeat' not in conf['sieve']:
+                conf['sieve']['browserbeat'] = {}
+                
+            if 'ignore' not in conf['sieve']['browserbeat']:
+                conf['sieve']['browserbeat']['ignore'] = {}
+                
+            # Ensure all browserbeat ignore lists are initialized
+            browserbeat_ignore_lists = ['clients', 'users', 'domains', 'hosts']
+            for list_name in browserbeat_ignore_lists:
+                if list_name not in conf['sieve']['browserbeat']['ignore'] or conf['sieve']['browserbeat']['ignore'][list_name] is None:
+                    conf['sieve']['browserbeat']['ignore'][list_name] = []
+            
+            # Initialize general sieve ignore section
+            if 'ignore' not in conf['sieve']:
+                conf['sieve']['ignore'] = {}
+                
+            # Ensure all general sieve ignore lists are initialized
+            sieve_ignore_lists = ['domains', 'clients', 'hosts']
+            for list_name in sieve_ignore_lists:
+                if list_name not in conf['sieve']['ignore'] or conf['sieve']['ignore'][list_name] is None:
+                    conf['sieve']['ignore'][list_name] = []
+                    
             return conf
         except yaml.YAMLError as exc:
             print(exc)
