@@ -204,9 +204,13 @@
     "youtube.com",
     "microsoftonline.com",
     "windows.com",
-    "instagram.com"
+    "instagram.com",    
+    "www.linkedin.com",
+    "linkedin.com"
   ],
   "malicious": [
+    "www.linkedin.com",
+    "linkedin.com",
     "doubleverify.com",
     "tps.doubleverify.com",
     "cdn.doubleverify.com",
