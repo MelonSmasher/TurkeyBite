@@ -134,9 +134,16 @@
     "isc.org",
     "clock.isc.org"
   ],
+  "torrent":[
+    "opera.com",
+    "get.geo.opera.com",
+    "geo.opera.com"
+  ],
   "piracy": [
     "hulu.com",
-    "opera.com"
+    "opera.com",
+    "get.geo.opera.com",
+    "geo.opera.com"
   ],
   "advertising": [
     "x.com",
