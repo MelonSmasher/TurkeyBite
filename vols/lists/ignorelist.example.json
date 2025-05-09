@@ -139,7 +139,8 @@
     "get.geo.opera.com",
     "geo.opera.com",
     "tracker.samplicio.us",
-    "samplicio.us"
+    "samplicio.us",
+    "x.com"
   ],
   "piracy": [
     "hulu.com",
@@ -147,7 +148,8 @@
     "get.geo.opera.com",
     "geo.opera.com",
     "tracker.samplicio.us",
-    "samplicio.us"
+    "samplicio.us",
+    "x.com"
   ],
   "advertising": [
     "x.com",
@@ -185,7 +187,8 @@
     "ntp.org",
     "wikipedia.org",
     "netflix.com",
-    "instagram.com"
+    "instagram.com",
+    "x.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -203,7 +206,8 @@
     "tps10246.doubleverify.com",
     "me.com",
     "live.com",
-    "go.com"
+    "go.com",
+    "x.com"
   ],
   "gambling": [
     "live.com",
@@ -270,6 +274,7 @@
     "gmail.com"
   ],
   "drugs": [
-    "ring.com"
+    "ring.com",
+    "x.com"
   ]
 }
