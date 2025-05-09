@@ -1,0 +1,22 @@
+[program:turkey-bite-worker]
+numprocs=${TURKEYBITE_WORKER_PROCS}
+numprocs_start=01
+command=/usr/local/bin/rq worker --results-ttl 30 --url redis://:${VALKEY_PASSWORD}@${VALKEY_HOST}:${VALKEY_PORT}/${VALKEY_DB}
+process_name=%(program_name)s_%(process_num)02d
+priority=999
+autostart=true
+autorestart=unexpected
+startsecs=5
+startretries=3
+exitcodes=0,2
+stopsignal=TERM
+stopwaitsecs=10
+directory=/turkey-bite
+user=root
+redirect_stderr=false
+stdout_logfile=/var/log/turkey-bite/turkey-bite-worker-%(process_num)s.out
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=10
+stderr_logfile=/var/log/turkey-bite/turkey-bite-worker-%(process_num)s.err
+stderr_logfile_maxbytes=10MB
+stderr_logfile_backups=10

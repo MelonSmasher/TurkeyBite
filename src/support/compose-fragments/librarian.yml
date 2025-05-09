@@ -1,0 +1,27 @@
+services:
+  turkeybite-librarian:
+    build:
+      context: .
+      dockerfile: docker/librarian/Dockerfile
+    container_name: turkeybite-librarian
+    restart: unless-stopped
+    depends_on:
+      valkey:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/turkey-bite/config.yaml:ro
+      - ./vols/lists:/turkey-bite/lists
+      - ./vols/logs:/var/log/turkey-bite
+    secrets:
+      - valkey_password
+    environment:
+      - TZ
+      - VALKEY_HOST
+      - VALKEY_PORT
+      - TURKEYBITE_HOSTS_INTERVAL_MIN
+      - TURKEYBITE_IGNORELIST_INTERVAL_MIN
+      - OPENSEARCH_HOST
+      - OPENSEARCH_USERNAME
+      - OPENSEARCH_PASSWORD
+    networks:
+      - tb-net

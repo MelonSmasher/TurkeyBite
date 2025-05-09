@@ -1,0 +1,17 @@
+options {
+    directory "/var/cache/bind";
+    check-names master warn; // Must be WARN only for AD/Windows
+    max-udp-size 4096;
+    dnssec-validation yes; // optional, can be yes or no
+    forwarders {
+        1.1.1.1; // CF Main
+        1.0.0.1; // CF Alt
+        8.8.8.8; // Google Main
+        8.8.4.4; // Google Alt
+    };
+    auth-nxdomain no;    # conform to RFC1035
+    listen-on-v6 { any; };
+    allow-recursion { any; };
+    allow-query { any; };
+    allow-query-cache { any; };
+};

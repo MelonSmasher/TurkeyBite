@@ -1,9 +1,0 @@
-redis==3.3.10
-OTXv2==1.5.3
-virustotal3==1.0.4
-pyyaml==5.1.2
-CLick==7.0
-setproctitle==1.1.10
-rq==1.1.0
-elasticsearch==7.0.5
-dnspython==1.16.0

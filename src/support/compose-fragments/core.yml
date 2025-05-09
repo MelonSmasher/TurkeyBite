@@ -1,0 +1,31 @@
+services:
+  turkeybite-core:
+    build:
+      context: ./
+      dockerfile: docker/core/Dockerfile
+    container_name: turkeybite-core
+    restart: unless-stopped
+    depends_on:
+      valkey:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/turkey-bite/config.yaml:ro
+      - ./vols/lists:/turkey-bite/lists
+      - ./vols/logs:/var/log/turkey-bite
+    secrets:
+      - valkey_password
+    environment:
+      - TZ
+      - VALKEY_HOST
+      - VALKEY_PORT
+    networks:
+      - tb-net
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536

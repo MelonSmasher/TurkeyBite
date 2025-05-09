@@ -1,0 +1,34 @@
+services:
+  turkeybite-worker:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    container_name: turkeybite-worker
+    restart: unless-stopped
+    depends_on:
+      valkey:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      bind9:
+        condition: service_started
+    volumes:
+      - ./config.yaml:/turkey-bite/config.yaml:ro
+      - ./vols/lists:/turkey-bite/lists
+      - ./vols/logs:/var/log/turkey-bite
+    secrets:
+      - valkey_password
+    environment:
+      - TZ
+      - VALKEY_HOST
+      - VALKEY_PORT
+      - TURKEYBITE_WORKER_PROCS
+    networks:
+      - tb-net
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
