@@ -1,5 +1,11 @@
 [
     {
+        "url": "https://github.com/laylavish/uBlockOrigin-HUGE-AI-Blocklist/blob/main/noai_hosts.txt",
+        "categories": ["ai"],
+        "file": "lists/ai/laylavish-noai-hosts",
+        "name": "laylavish-noai-hosts"
+    },
+    {
         "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/porn-only/hosts",
         "categories": ["porn"],
         "file": "lists/porn/StevenBlack-porn-only",
