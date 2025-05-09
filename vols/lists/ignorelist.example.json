@@ -113,6 +113,7 @@
     "hadronid.net",
     "x.com",
     "api.x.com",
+    "ton.x.com",
     "me.com",
     "ring.com",
     "go.com",
@@ -142,7 +143,8 @@
     "tracker.samplicio.us",
     "samplicio.us",
     "x.com",
-    "api.x.com"
+    "api.x.com",
+    "ton.x.com"
   ],
   "piracy": [
     "hulu.com",
@@ -152,11 +154,13 @@
     "tracker.samplicio.us",
     "samplicio.us",
     "x.com",
-    "api.x.com"
+    "api.x.com",
+    "ton.x.com"
   ],
   "advertising": [
     "x.com",
     "api.x.com",
+    "ton.x.com",
     "me.com",
     "yimg.com",
     "pinterest.com",
@@ -174,6 +178,7 @@
     "me.com",
     "x.com",
     "api.x.com",
+    "ton.x.com",
     "yimg.com",
     "pinterest.com"
   ],
@@ -194,7 +199,8 @@
     "netflix.com",
     "instagram.com",
     "x.com",
-    "api.x.com"
+    "api.x.com",
+    "ton.x.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -214,7 +220,8 @@
     "live.com",
     "go.com",
     "x.com",
-    "api.x.com"
+    "api.x.com",
+    "ton.x.com"
   ],
   "gambling": [
     "live.com",
@@ -262,6 +269,7 @@
     "outlook.com",
     "x.com",
     "api.x.com",
+    "ton.x.com",
     "me.com",
     "google.com",
     "snapchat.com",
@@ -284,6 +292,7 @@
   "drugs": [
     "ring.com",
     "x.com",
-    "api.x.com"
+    "api.x.com",
+    "ton.x.com"
   ]
 }
