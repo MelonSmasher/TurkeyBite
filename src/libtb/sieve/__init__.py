@@ -81,11 +81,13 @@ class Filters(object):
                         if 'Hostname' in data['data']['event']['data']['client'].keys():
                             # Filter fqdn hostname
                             if 'hostname' in data['data']['event']['data']['client']['Hostname'].keys():
-                                if data['data']['event']['data']['client']['Hostname']['hostname'] in ignore_clients:
+                                hostname = data['data']['event']['data']['client']['Hostname']['hostname']
+                                if hostname is not None and hostname in ignore_clients:
                                     return False
                             # Filter short hostname
                             if 'short' in data['data']['event']['data']['client']['Hostname'].keys():
-                                if data['data']['event']['data']['client']['Hostname']['short'] in ignore_clients:
+                                short_hostname = data['data']['event']['data']['client']['Hostname']['short']
+                                if short_hostname is not None and short_hostname in ignore_clients:
                                     return False
 
                         # Filter ignored IPs
