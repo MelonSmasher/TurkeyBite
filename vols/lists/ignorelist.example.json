@@ -284,7 +284,9 @@
     "x.com",
     "api.x.com",
     "ton.x.com",
-    "cf.x.com"
+    "cf.x.com",
+    "ted.com",
+    "www.ted.com"
   ],
   "malware": [
     "doubleverify.com",
@@ -385,7 +387,9 @@
     "mediavoice.com",
     "today.com",
     "www.today.com",
-    "aamt.today.com"
+    "aamt.today.com",
+    "ted.com",
+    "www.ted.com"
   ],
   "drugs": [
     "ring.com",
