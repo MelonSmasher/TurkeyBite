@@ -30,12 +30,6 @@
         "name": "tiuxo-porn"
     },
     {
-        "url": "https://raw.githubusercontent.com/cbuijs/accomplist/refs/heads/main/adult-themed/optimized.black.domain.list",
-        "categories": ["porn"],
-        "file": "lists/porn/cbuijs-adult-themed",
-        "name": "cbuijs-adult-themed"
-    },
-    {
         "url": "https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Adult",
         "categories": ["porn"],
         "file": "lists/porn/shadowwhisperer-adult",
