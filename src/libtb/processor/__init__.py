@@ -67,10 +67,25 @@ class Processor(object):
         # Try to grab the domain only e.g. google.com
         if 'etld_plus_one' in data['dns']['question'].keys():
             # Do we have an etld_plus_one?
-            searches.append(data['dns']['question']['etld_plus_one'].strip().lower())
+            etld_plus_one = data['dns']['question']['etld_plus_one'].strip().lower()
+            # add domain.tld to searches
+            searches.append(etld_plus_one)
+            # add *.domain.tld to searches
+            searches.append("*." + etld_plus_one)
+            # grab only tld
+            tld = etld_plus_one.split('.')[-1]
+            # add *.tld to searches
+            searches.append("*." + tld)
         elif 'registered_domain' in data['dns']['question'].keys():
             # Do we have a registered_domain?
-            searches.append(data['dns']['question']['registered_domain'].strip().lower())
+            registered_domain = data['dns']['question']['registered_domain'].strip().lower()
+            searches.append(registered_domain)
+            # add *.registered_domain to searches
+            searches.append("*." + registered_domain)
+            # grab only tld
+            tld = registered_domain.split('.')[-1]
+            # add *.tld to searches
+            searches.append("*." + tld)
 
         # Get the current tag
         print(f"DEBUG: searches={searches}")  # Print what domains we're looking up
@@ -205,13 +220,16 @@ class Processor(object):
                                         # Deal with hosts that have a port in the string
                                         host = host.split(':')[0]
                                 searches.append(host)
+                                searches.append("*." + host)
+                                searches.append("*." + host.split('.')[-1])
                                 domain = host
                                 if '.' in domain:
                                     parts = domain.split('.')
                                     domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
                                 if domain != host:
                                     searches.append(domain)
-
+                                    searches.append("*." + domain)
+                                   
         # Get the current tag
         print(f"DEBUG: searches={searches}")  # Print what domains we're looking up
         tag = r.get('turkey-bite:current-tag')
