@@ -143,7 +143,8 @@ class Processor(object):
                 'client': client,
                 'client_hosts': reversed_dns,
                 'ptr': rev_name,
-                'requested': searches,
+                'requested': [searches[0]],
+                'searches': searches,
                 'contexts': contexts,
                 'request': request,
                 'type': 'dns'
@@ -266,7 +267,8 @@ class Processor(object):
                 'event_time_utc': timestamp,
                 'event_time_local': localtime,
                 'url': data['data']['event']['data']['entry']['url'],
-                'requested': searches,
+                'requested': [searches[0]],
+                'searches': searches,
                 'contexts': contexts,
                 'request': request,
                 'type': 'browser.history'
