@@ -24,6 +24,10 @@
 !government/
 !education/
 !development/
+!it/
+!news/
+!mail/
+!search/
 !whitelist.example.json
 !whitelist.md
 !ignorelist.example.json
