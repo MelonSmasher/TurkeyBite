@@ -103,6 +103,20 @@ class Filters(object):
 
                     # History entry level rules
                     if 'entry' in data['data']['event']['data'].keys():
+                        entry = data['data']['event']['data']['entry']
+                        if 'url_data' in entry.keys():
+                            if 'Scheme' in entry['url_data'].keys():
+                                scheme = entry['url_data']['Scheme']
+                                if isinstance(scheme, str) and scheme.strip().lower() == 'file':
+                                    return False
+                        if 'url' in entry.keys():
+                            # Skip file:// urls
+                            u = entry['url']
+                            if isinstance(u, str):
+                                s = u.strip()
+                                ls = s.lower()
+                                if ls.startswith('file://'):
+                                    return False
                         if 'url_data' in data['data']['event']['data']['entry'].keys():
                             if 'Host' in data['data']['event']['data']['entry']['url_data'].keys():
                                 host = data['data']['event']['data']['entry']['url_data']['Host']
