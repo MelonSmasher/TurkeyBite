@@ -1,3 +1,38 @@
+def dig(data, *keys):
+    """Walks nested dict keys.
+
+    Returns None as soon as a level is missing or is not a dict, so a
+    malformed packet yields None instead of raising.
+    """
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
+def normalize_host(value):
+    """Lowercases a hostname field and drops surrounding dots.
+
+    A query can arrive in FQDN form as 'www.example.com.', which should match
+    the same ignore entries as 'www.example.com'. Returns None when the field
+    is absent, empty or not a string.
+    """
+    if not isinstance(value, str):
+        return None
+    return value.strip().lower().strip('.') or None
+
+
+def matches_domain(host, domain):
+    """True when host is the domain itself or a subdomain of it.
+
+    A bare endswith() also matches evil-example.com against example.com, and
+    4.3.2.110.in-addr.arpa against 10.in-addr.arpa, because it does not
+    require a label boundary.
+    """
+    return host == domain or host.endswith('.' + domain)
+
+
 class Filters(object):
     # Packet types we care about
     packets = ['dns', 'browser.history']
@@ -9,56 +44,63 @@ class Filters(object):
         This lessens the load on the queue workers and makes ES lighter.
         """
         self.config = config
+        # Hostnames from packets are normalized before comparison, so normalize
+        # the configured entries the same way once at startup. Otherwise a
+        # config entry of 'Example.com' or '.example.com' never matches.
+        ignore = config.get('ignore') or {}
+        self.ignore_domains = [d for d in
+                               (normalize_host(v) for v in (ignore.get('domains') or []))
+                               if d]
+        self.ignore_hosts = [h for h in
+                             (normalize_host(v) for v in (ignore.get('hosts') or []))
+                             if h]
 
     # Packetbeat DNS filters
     def dns(self, data):
         # If we are filtering invalid packets
         if self.config['drop_error_packets']:
-            # Is this status OK?
-            if data['status'] not in self.valids:
+            # Is this status OK? A packet carrying no status at all cannot be
+            # confirmed good, so it goes with the rest
+            if data.get('status') not in self.valids:
                 return False
 
         # For inbound requests
-        if 'client' in data.keys():
-            if 'ip' in data['client'].keys():
-                if data['client']['ip'] in self.config['ignore']['clients']:
-                    return False
+        if dig(data, 'client', 'ip') in self.config['ignore']['clients']:
+            return False
 
         # For outbound requests
-        if 'destination' in data.keys():
-            if 'ip' in data['destination']:
-                if data['destination']['ip'] in self.config['ignore']['clients']:
-                    return False
-        if 'network' in data.keys():
-            if 'direction' in data['network'].keys():
-                if data['network']['direction'] in ['outbound', 'egress']:
-                    if self.config['drop_replies']:
-                        return False
+        if dig(data, 'destination', 'ip') in self.config['ignore']['clients']:
+            return False
+        if dig(data, 'network', 'direction') in ['outbound', 'egress']:
+            if self.config['drop_replies']:
+                return False
 
         # Do we have a registered domain key?
-        if 'registered_domain' in data['dns']['question'].keys():
-            if data['dns']['question']['registered_domain'].strip().lower() in self.config['ignore']['domains']:
-                return False
+        registered_domain = normalize_host(dig(data, 'dns', 'question', 'registered_domain'))
+        if registered_domain in self.ignore_domains:
+            return False
 
         # Do we have a etld_plus_one key?
-        if 'etld_plus_one' in data['dns']['question'].keys():
-            if data['dns']['question']['etld_plus_one'].strip().lower() in self.config['ignore']['domains']:
-                return False
+        etld_plus_one = normalize_host(dig(data, 'dns', 'question', 'etld_plus_one'))
+        if etld_plus_one in self.ignore_domains:
+            return False
 
-        # Do we have a name key?
-        if 'resource' in data.keys():
-            if data['resource'].strip().lower() in self.config['ignore']['hosts']:
+        # Do we have a resource key?
+        resource = normalize_host(data.get('resource'))
+        if resource:
+            if resource in self.ignore_hosts:
                 return False
-            for d in self.config['ignore']['domains']:
-                if data['resource'].strip().lower().endswith(d):
+            for d in self.ignore_domains:
+                if matches_domain(resource, d):
                     return False
 
         # Do we have a name key?
-        if 'name' in data['dns']['question'].keys():
-            if data['dns']['question']['name'].strip().lower() in self.config['ignore']['hosts']:
+        name = normalize_host(dig(data, 'dns', 'question', 'name'))
+        if name:
+            if name in self.ignore_hosts:
                 return False
-            for d in self.config['ignore']['domains']:
-                if data['dns']['question']['name'].strip().lower().endswith(d):
+            for d in self.ignore_domains:
+                if matches_domain(name, d):
                     return False
 
         # If we made it here, we're good
@@ -71,73 +113,68 @@ class Filters(object):
         ignore_domains = self.config['browserbeat']['ignore']['domains']
         ignore_hosts = self.config['browserbeat']['ignore']['hosts']
 
-        # Dive down into the data structure
-        if 'data' in data.keys():
-            if 'event' in data['data'].keys():
-                if 'data' in data['data']['event'].keys():
-                    # Client level rules
-                    if 'client' in data['data']['event']['data'].keys():
-                        # Filter ignored client hostnames
-                        if 'Hostname' in data['data']['event']['data']['client'].keys():
-                            # Filter fqdn hostname
-                            if 'hostname' in data['data']['event']['data']['client']['Hostname'].keys():
-                                hostname = data['data']['event']['data']['client']['Hostname']['hostname']
-                                if hostname is not None and hostname in ignore_clients:
-                                    return False
-                            # Filter short hostname
-                            if 'short' in data['data']['event']['data']['client']['Hostname'].keys():
-                                short_hostname = data['data']['event']['data']['client']['Hostname']['short']
-                                if short_hostname is not None and short_hostname in ignore_clients:
-                                    return False
-
-                        # Filter ignored IPs
-                        if 'ip_addresses' in data['data']['event']['data']['client'].keys():
-                            for ip in data['data']['event']['data']['client']['ip_addresses']:
-                                if ip in ignore_clients:
-                                    return False
-
-                        # Filter ignored users
-                        if 'user' in data['data']['event']['data']['client'].keys():
-                            if data['data']['event']['data']['client']['user'] in ignore_users:
-                                return False
-
-                    # History entry level rules
-                    if 'entry' in data['data']['event']['data'].keys():
-                        entry = data['data']['event']['data']['entry']
-                        if 'url_data' in entry.keys():
-                            if 'Scheme' in entry['url_data'].keys():
-                                scheme = entry['url_data']['Scheme']
-                                if isinstance(scheme, str) and scheme.strip().lower() == 'file':
-                                    return False
-                        if 'url' in entry.keys():
-                            # Skip file:// urls
-                            u = entry['url']
-                            if isinstance(u, str):
-                                s = u.strip()
-                                ls = s.lower()
-                                if ls.startswith('file://'):
-                                    return False
-                        if 'url_data' in data['data']['event']['data']['entry'].keys():
-                            if 'Host' in data['data']['event']['data']['entry']['url_data'].keys():
-                                host = data['data']['event']['data']['entry']['url_data']['Host']
-                                if host:
-                                    if ':' in host:
-                                        # Deal with hosts that have a port in the string
-                                        host = host.split(':')[0]
-                                    # Should we ignore this host
-                                    if host in ignore_hosts:
-                                        return False
-                                    # Deal with ignored domains
-                                    domain = host
-                                    if '.' in domain:
-                                        parts = domain.split('.')
-                                        domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
-                                    if domain in ignore_domains:
-                                        return False
-
-        else:
-            # If we get here we aren't user how to process this
+        # Dive down into the data structure. A history event without this
+        # much structure carries no URL to look at, and would only fail later
+        # in the worker, so drop it here.
+        event_data = dig(data, 'data', 'event', 'data')
+        if not isinstance(event_data, dict):
             return False
+
+        # Client level rules
+        client = dig(event_data, 'client')
+        if isinstance(client, dict):
+            # Filter ignored client hostnames
+            hostnames = dig(client, 'Hostname')
+            if isinstance(hostnames, dict):
+                # Filter fqdn hostname
+                hostname = hostnames.get('hostname')
+                if hostname is not None and hostname in ignore_clients:
+                    return False
+                # Filter short hostname
+                short_hostname = hostnames.get('short')
+                if short_hostname is not None and short_hostname in ignore_clients:
+                    return False
+
+            # Filter ignored IPs
+            ip_addresses = client.get('ip_addresses')
+            if isinstance(ip_addresses, (list, tuple)):
+                for ip in ip_addresses:
+                    if ip in ignore_clients:
+                        return False
+
+            # Filter ignored users
+            if 'user' in client.keys():
+                if client['user'] in ignore_users:
+                    return False
+
+        # History entry level rules
+        entry = dig(event_data, 'entry')
+        if isinstance(entry, dict):
+            url_data = dig(entry, 'url_data')
+            if isinstance(url_data, dict):
+                scheme = url_data.get('Scheme')
+                if isinstance(scheme, str) and scheme.strip().lower() == 'file':
+                    return False
+            # Skip file:// urls
+            u = entry.get('url')
+            if isinstance(u, str) and u.strip().lower().startswith('file://'):
+                return False
+            if isinstance(url_data, dict):
+                host = url_data.get('Host')
+                if host and isinstance(host, str):
+                    if ':' in host:
+                        # Deal with hosts that have a port in the string
+                        host = host.split(':')[0]
+                    # Should we ignore this host
+                    if host in ignore_hosts:
+                        return False
+                    # Deal with ignored domains
+                    domain = host
+                    if '.' in domain:
+                        parts = domain.split('.')
+                        domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
+                    if domain in ignore_domains:
+                        return False
 
         # If we made it here, we're good
         return True
