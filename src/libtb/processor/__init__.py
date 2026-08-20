@@ -108,24 +108,39 @@ class Processor(object):
                     except Exception as e:
                         print(f"Malformed host list entry at {key}: {e}", file=sys.stderr)
 
-        # Reverse client lookup
+        # Reverse client lookup. This enriches the event with the client's
+        # hostname and is never worth failing the event over, so every failure
+        # mode has to land somewhere. The status goes in the document instead
+        # of the log, so a resolver that stops working shows up in a query
+        # rather than in a wall of per-event log lines.
+        ptr_status = 'skipped'
         if self.config['dns']['lookup_ips']:
             if client:
+                ptr_status = 'ok'
                 try:
                     rev_name = reversename.from_address(client)
                     tb_resolver = resolver.Resolver(configure=False)
                     tb_resolver.nameservers = self.config['dns']['resolvers']
                     tb_resolver.timeout = 1
                     tb_resolver.lifetime = 1
-                    for a in tb_resolver.query(rev_name, "PTR"):
+                    for a in tb_resolver.resolve(rev_name, 'PTR'):
                         reversed_dns.append(str(a).rstrip('.'))
                     rev_name = rev_name.to_text()
-                except exception.Timeout:
-                    rev_name = rev_name.to_text()
-                    pass
                 except resolver.NXDOMAIN:
+                    # The client has no reverse record, which is normal
+                    ptr_status = 'nxdomain'
+                    rev_name = rev_name.to_text() if rev_name else ''
+                except exception.DNSException as e:
+                    # Everything dnspython raises subclasses DNSException,
+                    # including NoNameservers, which is what a resolver
+                    # answering SERVFAIL produces. Catching only Timeout and
+                    # NXDOMAIN here discarded every DNS event for 15 months.
+                    ptr_status = type(e).__name__
+                    rev_name = rev_name.to_text() if rev_name else ''
+                except ValueError:
+                    # from_address rejects an address it cannot parse
+                    ptr_status = 'bad_client_address'
                     rev_name = ''
-                    pass
 
         # Build the dataset to ship
         bite = {
@@ -140,6 +155,7 @@ class Processor(object):
                 'client': client,
                 'client_hosts': reversed_dns,
                 'ptr': rev_name,
+                'ptr_status': ptr_status,
                 'requested': [searches[0]],
                 'searches': searches,
                 'contexts': contexts,

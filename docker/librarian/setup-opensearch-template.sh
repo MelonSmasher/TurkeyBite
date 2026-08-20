@@ -61,6 +61,7 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "client": { "type": "ip" },
                             "client_hosts": { "type": "keyword" },
                             "ptr": { "type": "keyword" },
+                            "ptr_status": { "type": "keyword" },
                             "requested": { "type": "keyword" },
                             "searches": { "type": "keyword" },
                             "contexts": { "type": "keyword" },
