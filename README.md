@@ -182,8 +182,13 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      password: "your_valkey_password"
      db: 0
      key: "turkeybite"
-     data_type: "list"
+     data_type: "channel"
    ```
+
+   `data_type` must be `channel`. The core subscribes to a Valkey pub/sub
+   channel, so a `list` output fills a Valkey key that nothing ever reads, and
+   nothing logs an error to tell you why no data arrives. `key` has to match
+   `redis.channel` in `config.yaml`, which is `turkeybite` by default.
 
 2. **Browserbeat**
 
