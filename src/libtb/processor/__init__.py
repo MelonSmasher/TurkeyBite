@@ -87,6 +87,10 @@ class Processor(object):
             # add *.tld to searches
             searches.append("*." + tld)
 
+        # Nothing to look up means nothing worth shipping
+        if not searches:
+            return False
+
         # Get the current tag
         tag = r.get('turkey-bite:current-tag')
         if tag:
@@ -205,22 +209,27 @@ class Processor(object):
                             if 'Scheme' in data['data']['event']['data']['entry']['url_data'].keys():
                                 request = data['data']['event']['data']['entry']['url_data']['Scheme']
                             if 'Host' in data['data']['event']['data']['entry']['url_data'].keys():
-                                host = data['data']['event']['data']['entry']['url_data']['Host'].strip().lower()
+                                host = data['data']['event']['data']['entry']['url_data']['Host']
+                                host = host.strip().lower() if isinstance(host, str) else ''
+                                if ':' in host:
+                                    # Deal with hosts that have a port in the string
+                                    host = host.split(':')[0]
                                 if host:
-                                    if ':' in host:
-                                        # Deal with hosts that have a port in the string
-                                        host = host.split(':')[0]
-                                searches.append(host)
-                                searches.append("*." + host)
-                                searches.append("*." + host.split('.')[-1])
-                                domain = host
-                                if '.' in domain:
-                                    parts = domain.split('.')
-                                    domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
-                                if domain != host:
-                                    searches.append(domain)
-                                    searches.append("*." + domain)
+                                    searches.append(host)
+                                    searches.append("*." + host)
+                                    searches.append("*." + host.split('.')[-1])
+                                    domain = host
+                                    if '.' in domain:
+                                        parts = domain.split('.')
+                                        domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
+                                    if domain != host:
+                                        searches.append(domain)
+                                        searches.append("*." + domain)
                                    
+        # Nothing to look up means nothing worth shipping
+        if not searches:
+            return False
+
         # Get the current tag
         tag = r.get('turkey-bite:current-tag')
         if tag:

@@ -54,6 +54,17 @@ class Filters(object):
         self.ignore_hosts = [h for h in
                              (normalize_host(v) for v in (ignore.get('hosts') or []))
                              if h]
+        # Same for the browserbeat lists. Client hostnames and usernames are
+        # left as written, since usernames are not case-insensitive.
+        browserbeat_ignore = dig(config, 'browserbeat', 'ignore') or {}
+        self.browserbeat_ignore_domains = [d for d in
+                                          (normalize_host(v) for v in
+                                           (browserbeat_ignore.get('domains') or []))
+                                          if d]
+        self.browserbeat_ignore_hosts = [h for h in
+                                         (normalize_host(v) for v in
+                                          (browserbeat_ignore.get('hosts') or []))
+                                         if h]
 
     # Packetbeat DNS filters
     def dns(self, data):
@@ -110,8 +121,8 @@ class Filters(object):
     def browserbeat(self, data):
         ignore_clients = self.config['browserbeat']['ignore']['clients']
         ignore_users = self.config['browserbeat']['ignore']['users']
-        ignore_domains = self.config['browserbeat']['ignore']['domains']
-        ignore_hosts = self.config['browserbeat']['ignore']['hosts']
+        ignore_domains = self.browserbeat_ignore_domains
+        ignore_hosts = self.browserbeat_ignore_hosts
 
         # Dive down into the data structure. A history event without this
         # much structure carries no URL to look at, and would only fail later
@@ -147,34 +158,39 @@ class Filters(object):
                 if client['user'] in ignore_users:
                     return False
 
-        # History entry level rules
+        # History entry level rules. Without a usable entry there is no URL to
+        # look at, so drop the event rather than let the worker fail on it.
         entry = dig(event_data, 'entry')
-        if isinstance(entry, dict):
-            url_data = dig(entry, 'url_data')
-            if isinstance(url_data, dict):
-                scheme = url_data.get('Scheme')
-                if isinstance(scheme, str) and scheme.strip().lower() == 'file':
-                    return False
-            # Skip file:// urls
-            u = entry.get('url')
-            if isinstance(u, str) and u.strip().lower().startswith('file://'):
+        if not isinstance(entry, dict):
+            return False
+
+        url_data = dig(entry, 'url_data')
+        if isinstance(url_data, dict):
+            scheme = url_data.get('Scheme')
+            if isinstance(scheme, str) and scheme.strip().lower() == 'file':
                 return False
-            if isinstance(url_data, dict):
-                host = url_data.get('Host')
-                if host and isinstance(host, str):
-                    if ':' in host:
-                        # Deal with hosts that have a port in the string
-                        host = host.split(':')[0]
-                    # Should we ignore this host
-                    if host in ignore_hosts:
-                        return False
-                    # Deal with ignored domains
-                    domain = host
-                    if '.' in domain:
-                        parts = domain.split('.')
-                        domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
-                    if domain in ignore_domains:
-                        return False
+        # Skip file:// urls
+        u = entry.get('url')
+        if isinstance(u, str) and u.strip().lower().startswith('file://'):
+            return False
+        # Without a host there is nothing to look up. The worker would
+        # only fail on the event or index an empty one, so drop it here.
+        host = normalize_host(dig(entry, 'url_data', 'Host'))
+        if host and ':' in host:
+            # Deal with hosts that have a port in the string
+            host = normalize_host(host.split(':')[0])
+        if not host:
+            return False
+        # Should we ignore this host
+        if host in ignore_hosts:
+            return False
+        # Deal with ignored domains
+        domain = host
+        if '.' in domain:
+            parts = domain.split('.')
+            domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
+        if domain in ignore_domains:
+            return False
 
         # If we made it here, we're good
         return True
