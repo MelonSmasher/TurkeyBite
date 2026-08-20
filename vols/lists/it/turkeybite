@@ -87,7 +87,6 @@ openshift.com
 rancherdesktop.io
 railway.app
 heroku.com
-digitalocean.com
 aws.amazon.com
 cloud.google.com
 azure.microsoft.com
@@ -139,7 +138,7 @@ perl.org
 go.dev
 openvpn.net
 wireguard.com
-pfSense.org
+pfsense.org
 opensense.org
 pi-hole.net
 unifi.ui.com
