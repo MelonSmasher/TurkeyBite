@@ -134,48 +134,74 @@ def pull_tld_list():
             tlds.append(line.strip().lower())
     return tlds
     
+# Hosts-file lines put an address, then whitespace, then the domain.
+# The trailing \s+ is required: without it these patterns match the leading
+# hex-looking characters of a bare domain and eat its first label, turning
+# facebook.com into ook.com.
+IPV4_PREFIX = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}\s+')
+IPV6_PREFIX = re.compile(r'^[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){1,7}(?:%\w+)?\s+')
+# Adblock address markers, '||domain^' and '|domain^'.
+ADBLOCK_PREFIX = re.compile(r'^\|\|?')
+# A trailing comment introduced by '#' or '!' after whitespace.
+TRAILING_COMMENT = re.compile(r'\s+[#!]')
+# A DNS label: alphanumeric ends, hyphens allowed only in the middle.
+LABEL = r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?'
+# Either a '*.' wildcard of the kind the lookup keys use, so '*.gov' counts,
+# or a plain domain of two labels or more.
+VALID_HOST = re.compile(
+    r'^(?:\*\.' + LABEL + r'(?:\.' + LABEL + r')*'
+    r'|' + LABEL + r'(?:\.' + LABEL + r')+)$'
+)
+
+
 def clean_list_file(file_path: str, tlds: list[str]):
-    hosts = []
+    # Keys of a dict, so duplicate entries collapse and order is kept
+    hosts = {}
     # Read the file
     with open(file_path, 'r') as file:
         lines = file.readlines()
-    
+
     # Process the file
     for line in lines:
-        line = line.strip()
-        if line:
-            # Sanitize the line
-            # For IPv4 addresses at start of line
-            line = re.sub(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*', '', line)
-            # For IPv6 addresses at start of line 
-            line = re.sub(r'^([0-9a-fA-F:]{2,39})\s*', '', line)
-            # Remove any whitespace
-            line = re.sub(r'\s+', '', line)
-            # Strip '||' from begining
-            line = re.sub(r'^\|\|', '', line)
-            # String '^' from end
-            line = re.sub(r'\^$', '', line)
+        line = line.strip().lower()
+        if not line:
+            continue
+        # Skip comments and adblock metadata such as '[Adblock Plus 2.0]'
+        if line[0] in ('#', '!', '['):
+            continue
+        # An adblock '@@' rule means do not match this domain, so drop the
+        # line rather than strip the marker and add the domain
+        if line.startswith('@@'):
+            continue
+        # Cut a trailing comment off the end of the entry
+        line = TRAILING_COMMENT.split(line, maxsplit=1)[0]
+        # Drop a leading address, hosts-file style
+        line = IPV4_PREFIX.sub('', line)
+        line = IPV6_PREFIX.sub('', line)
+        # Drop adblock markers and anything the '^' separator introduces,
+        # e.g. '||example.com^$third-party'
+        line = ADBLOCK_PREFIX.sub('', line)
+        line = line.split('^')[0]
+        # Some lists put several domains on one line, take the first
+        fields = line.split()
+        if not fields:
+            continue
+        # Drop the leading dot of '.example.com' and the root dot of an FQDN
+        host = fields[0].strip('.')
+        if not host:
+            continue
 
-            # Validate the line
-            # Skip comments and anything that starts with a hyphen
-            # domains starting with a hyphen are not valid
-            if line[0] in ['-', '#']:
-                continue
-            # Skip anything that ends with a hyphen
-            # domains ending with a hyphen are not valid
-            if line[-1] == '-':
-                continue
-            # Skip anything missing a period
-            if '.' not in line:
-                continue
-            # ensure that line only contains valid characters
-            if not re.match(r'^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$', line):
-                continue
-            # Check if the line is a valid domain
-            if line.split('.')[-1] not in tlds:
-                continue
-            # Add the line to the list
-            hosts.append(line)
+        # Validate the entry
+        # Skip anything missing a period before paying for the regex
+        if '.' not in host:
+            continue
+        # Ensure the entry is a well formed domain
+        if not VALID_HOST.match(host):
+            continue
+        # Check the entry against the TLD list
+        if host.split('.')[-1] not in tlds:
+            continue
+        hosts[host] = None
 
     with open(file_path, 'w') as file:
         for host in hosts:

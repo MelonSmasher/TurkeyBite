@@ -1,6 +1,6 @@
 [
     {
-        "url": "https://github.com/laylavish/uBlockOrigin-HUGE-AI-Blocklist/blob/main/noai_hosts.txt",
+        "url": "https://raw.githubusercontent.com/laylavish/uBlockOrigin-HUGE-AI-Blocklist/main/noai_hosts.txt",
         "categories": ["ai"],
         "file": "lists/ai/laylavish-noai-hosts",
         "name": "laylavish-noai-hosts"
