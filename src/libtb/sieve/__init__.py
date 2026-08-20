@@ -1,14 +1,4 @@
-def dig(data, *keys):
-    """Walks nested dict keys.
-
-    Returns None as soon as a level is missing or is not a dict, so a
-    malformed packet yields None instead of raising.
-    """
-    for key in keys:
-        if not isinstance(data, dict):
-            return None
-        data = data.get(key)
-    return data
+from libtb.util import dig
 
 
 def normalize_host(value):

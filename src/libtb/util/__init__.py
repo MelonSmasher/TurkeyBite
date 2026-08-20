@@ -7,6 +7,19 @@ import json
 import time
 
 
+def dig(data, *keys):
+    """Walks nested dict keys.
+
+    Returns None as soon as a level is missing or is not a dict, so a
+    malformed packet yields None instead of raising.
+    """
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
 def get_host_files():
     host_files = []
     if os.path.exists('lists/host_files.json'):
