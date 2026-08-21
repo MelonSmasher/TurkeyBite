@@ -182,12 +182,16 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      password: "your_valkey_password"
      db: 0
      key: "turkeybite"
-     data_type: "list"
+     datatype: "list"
    ```
 
-   `data_type` has to match the ingestion path you run, and they are not
+   `datatype` has to match the ingestion path you run, and they are not
    interchangeable. `key` must match `redis.channel` in `config.yaml`, which is
    `turkeybite` by default, whichever path you choose.
+
+   Note the spelling: libbeat reads `datatype`, with no underscore. A key
+   spelled `data_type` is not recognised, so the output silently falls back to
+   its default of `list` no matter what value you give it.
 
    **`list`, with `TURKEYBITE_PIPELINE=consume`.** Packetbeat RPUSHes onto a
    Valkey list. Workers claim a batch, sieve and enrich it, index it, and only
