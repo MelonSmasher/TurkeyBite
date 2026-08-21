@@ -58,7 +58,8 @@ def consume(consumer, batch_size):
     processor = Processor(config['processor'], config['redis'])
     worker = Consumer(
         queue, filters, processor,
-        batch_size=batch_size or int(bulk.get('size') or 500)
+        batch_size=batch_size or int(bulk.get('size') or 500),
+        name=name
     )
     worker.install_signal_handlers()
     print(f'Consuming {queue_conf["channel"]} as {name}')

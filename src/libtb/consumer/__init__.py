@@ -32,7 +32,11 @@ import time
 
 class Consumer(object):
 
-    def __init__(self, queue, filters, processor, batch_size=500, block_seconds=1):
+    def __init__(self, queue, filters, processor, batch_size=500, block_seconds=1,
+                 name=None):
+        # Every consumer writes to the same container stdout, so each line has to
+        # identify which one wrote it
+        self.name = name or getattr(queue, 'consumer', 'consumer')
         self.queue = queue
         self.filters = filters
         self.processor = processor
@@ -72,7 +76,7 @@ class Consumer(object):
                     continue
             except Exception as e:
                 # A packet we cannot read costs that packet and no more
-                print(f'Skipped an unreadable packet: {e}', file=sys.stderr)
+                print(f'[{self.name}] skipped an unreadable packet: {e}', file=sys.stderr)
                 self.stats['unreadable'] += 1
                 continue
             try:
@@ -80,14 +84,15 @@ class Consumer(object):
                 kept += 1
             except Exception as e:
                 # An enrichment failure is this event's problem, not the batch's
-                print(f'Failed to process a packet: {e}', file=sys.stderr)
+                print(f'[{self.name}] failed to process a packet: {e}', file=sys.stderr)
                 self.stats['unreadable'] += 1
 
         try:
             self.stats['indexed'] += self.processor.flush_bulk(
                 force=True, raise_on_total_failure=True) or 0
         except Exception as e:
-            print(f'Batch not indexed, requeueing {len(items)} items: {e}', file=sys.stderr)
+            print(f'[{self.name}] batch not indexed, requeueing {len(items)} items: {e}',
+                  file=sys.stderr)
             return None
 
         self.stats['kept'] += kept
@@ -112,7 +117,8 @@ class Consumer(object):
         """Drains the queue until stopped."""
         stranded = self.queue.recover()
         if stranded:
-            print(f'Recovering {len(stranded)} items left in flight by a previous run')
+            print(f'[{self.name}] recovering {len(stranded)} items left in flight '
+                  f'by a previous run')
             acked = self.handle_batch(stranded)
             if acked is None:
                 self.queue.requeue(stranded)
@@ -125,13 +131,14 @@ class Consumer(object):
             now = time.monotonic()
             if now - last_report >= report_seconds:
                 last_report = now
-                print('queue depth {0}, in flight {1}, {2}'.format(
-                    self.queue.depth(), self.queue.in_flight(),
+                print('[{0}] queue depth {1}, in flight {2}, {3}'.format(
+                    self.name, self.queue.depth(), self.queue.in_flight(),
                     ', '.join(f'{k}={v}' for k, v in sorted(self.stats.items()))))
 
         # A clean stop must not leave a batch buffered
         try:
             self.processor.flush_bulk(force=True)
         except Exception as e:
-            print(f'Final flush failed: {e}', file=sys.stderr)
-        print('Stopped. ' + ', '.join(f'{k}={v}' for k, v in sorted(self.stats.items())))
+            print(f'[{self.name}] final flush failed: {e}', file=sys.stderr)
+        print(f'[{self.name}] stopped. ' + ', '.join(
+            f'{k}={v}' for k, v in sorted(self.stats.items())))
