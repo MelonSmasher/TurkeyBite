@@ -179,7 +179,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
     built_at = int(time.time())
     try:
         print('Building domain index')
-        entries, files = collect_entries('lists')
+        entries, files, skipped = collect_entries('lists', exclude_path=target)
         stats = build(entries, path=target, built_at=built_at)
         # A worker sharing this filesystem with the librarian already has the
         # file, so record the generation and save it a pointless 175 MB download
@@ -188,7 +188,8 @@ def build_domain_index(path=None, publish_to_valkey=None):
         print('Built domain index generation ' + str(built_at) + ': '
               + str(stats['domains']) + ' domains from '
               + str(files) + ' files, ' + str(round(stats['bytes'] / 1e6, 1)) + ' MB, '
-              + str(stats['attr_combinations']) + ' attribute combinations')
+              + str(stats['attr_combinations']) + ' attribute combinations, '
+              + str(skipped) + ' lines skipped')
     except Exception as e:
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None

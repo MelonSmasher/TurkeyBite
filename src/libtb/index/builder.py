@@ -13,6 +13,12 @@ from libtb.index import MAGIC, HEADER, reverse_labels
 
 DEFAULT_PATH = 'lists/index/domains.tbidx'
 
+# Directories under lists/ that do not hold host lists. `tld` is the IANA TLD
+# cache. `index` is where this builder writes its own output, and reading that
+# back folds every previous generation into the next one, growing the index by
+# a full copy of itself on every run.
+SKIP_DIRS = frozenset(('tld', 'index'))
+
 
 def build(entries, path=DEFAULT_PATH, built_at=None):
     """Writes an index file.
@@ -116,16 +122,26 @@ def build(entries, path=DEFAULT_PATH, built_at=None):
     }
 
 
-def collect_entries(lists_dir='lists', host_files=None):
+def collect_entries(lists_dir='lists', host_files=None, exclude_path=None):
     """Reads the cleaned list files into the mapping `build` expects.
 
     A source is one list file. A category comes from the `categories` field in
     host_files.json when the file is a configured download, and from the parent
     directory name otherwise, which is how the curated `turkeybite` and `custom`
     files are categorised today.
+
+    `exclude_path` names a file to skip, so a caller writing its output inside
+    lists/ cannot feed that output back in on the next run.
+
+    Returns (entries, files, skipped). `skipped` counts lines the host grammar
+    rejected. A small number is normal; a large one means a source is serving
+    something that is not a host list.
     """
     import glob
     import json
+    # The grammar lives beside the list cleaner so the two cannot drift. The
+    # import is local because util imports this module.
+    from libtb.util import VALID_HOST
 
     configured = {}
     if host_files is None:
@@ -138,22 +154,35 @@ def collect_entries(lists_dir='lists', host_files=None):
     for entry in host_files or []:
         configured[os.path.basename(entry['file'])] = entry.get('categories') or []
 
+    excluded = os.path.abspath(exclude_path) if exclude_path else None
+
     entries = {}
     files = 0
+    skipped = 0
     for path in glob.glob(os.path.join(lists_dir, '*', '*')):
         name = os.path.basename(path)
         if name == '.gitignore' or not os.path.isfile(path):
             continue
-        if os.path.basename(os.path.dirname(path)) == 'tld':
+        if os.path.basename(os.path.dirname(path)) in SKIP_DIRS:
+            continue
+        if excluded is not None and os.path.abspath(path) == excluded:
             continue
         categories = configured.get(name) or [os.path.basename(os.path.dirname(path))]
         files += 1
         with open(path, 'r', errors='replace') as fh:
             for line in fh:
-                domain = line.strip()
+                # Lowercased because the sieve normalises hosts before looking
+                # them up, so a mixed-case entry would never match
+                domain = line.strip().lower()
                 if not domain:
+                    continue
+                # Curated files never pass through clean_list_file, and nothing
+                # stops a download from serving binary, so the grammar is checked
+                # here too. Junk then cannot reach the index whatever its origin.
+                if '.' not in domain or not VALID_HOST.match(domain):
+                    skipped += 1
                     continue
                 cats, srcs = entries.setdefault(domain, (set(), set()))
                 cats.update(categories)
                 srcs.add(name)
-    return entries, files
+    return entries, files, skipped
