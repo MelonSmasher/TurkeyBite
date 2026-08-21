@@ -1,3 +1,4 @@
+import sys
 import yaml
 import urllib.request
 import re
@@ -136,6 +137,28 @@ def usable_tld_list(tlds):
     like the IANA file before trusting it.
     """
     return len(tlds) > 1000 and 'com' in tlds and 'org' in tlds
+
+
+def build_domain_index(path=None):
+    """Builds the memory-mapped domain index from the cleaned list files.
+
+    Kept separate from the Valkey load so both can coexist while the index is
+    on trial. Never raises: a failed index build must not fail a list pull that
+    otherwise succeeded, because the Valkey path is still there.
+    """
+    from libtb.index.builder import build, collect_entries, DEFAULT_PATH
+    target = path or DEFAULT_PATH
+    try:
+        print('Building domain index')
+        entries, files = collect_entries('lists')
+        stats = build(entries, path=target)
+        print('Built domain index: ' + str(stats['domains']) + ' domains from '
+              + str(files) + ' files, ' + str(round(stats['bytes'] / 1e6, 1)) + ' MB, '
+              + str(stats['attr_combinations']) + ' attribute combinations')
+        return stats
+    except Exception as e:
+        print('Failed to build domain index: ' + str(e), file=sys.stderr)
+        return None
 
 
 def pull_tld_list():
@@ -359,6 +382,8 @@ def pull_host_lists():
     tags[new_tag] = 'live'
     r.set('turkey-bite:current-tag', new_tag)
     r.hmset('turkey-bite:tags', tags)
+
+    build_domain_index()
 
     if old_tag:
         print('Purging previous data')

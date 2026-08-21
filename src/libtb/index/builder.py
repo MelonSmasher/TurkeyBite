@@ -75,10 +75,18 @@ def build(entries, path=DEFAULT_PATH, built_at=None):
                 raw = name.encode('utf-8')
                 out.write(struct.pack('<H', len(raw)))
                 out.write(raw)
+        # Offsets first, so the reader can decode one attribute entry without
+        # walking the table
+        attr_blob = bytearray()
+        attr_offsets = bytearray()
         for cats, srcs in attr_table:
-            out.write(struct.pack('<HH', len(cats), len(srcs)))
-            out.write(struct.pack(f'<{len(cats)}H', *cats))
-            out.write(struct.pack(f'<{len(srcs)}H', *srcs))
+            attr_offsets += struct.pack('<I', len(attr_blob))
+            attr_blob += struct.pack('<HH', len(cats), len(srcs))
+            attr_blob += struct.pack(f'<{len(cats)}H', *cats)
+            attr_blob += struct.pack(f'<{len(srcs)}H', *srcs)
+        attr_offsets += struct.pack('<I', len(attr_blob))
+        out.write(attr_offsets)
+        out.write(attr_blob)
 
         # offsets, then the attribute index, then the blob
         offset = 0

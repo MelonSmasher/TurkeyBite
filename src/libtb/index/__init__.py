@@ -18,7 +18,7 @@ nothing.
 
 File layout, little-endian throughout:
 
-    magic        8B    b'TBIDX\\x00\\x00\\x01'
+    magic        8B    b'TBIDX\\x00\\x00\\x02'
     built_at     8B    uint64, unix seconds
     n_domains    4B    uint32
     n_attrs      4B    uint32
@@ -26,6 +26,7 @@ File layout, little-endian throughout:
     n_srcs       2B    uint16
     cat_names          n_cats  x (uint16 length + utf-8 bytes)
     src_names          n_srcs  x (uint16 length + utf-8 bytes)
+    attr_offsets       (n_attrs + 1) x uint32, relative to attr_table
     attr_table   ...   n_attrs x (uint16 n_cat_ids + uint16 n_src_ids
                                  + uint16 per cat id + uint16 per src id)
     offsets            (n_domains + 1) x uint32, into blob
@@ -33,12 +34,11 @@ File layout, little-endian throughout:
     blob         ...   reversed domain names, concatenated, no separators
 """
 
-import bisect
 import mmap
 import os
 import struct
 
-MAGIC = b'TBIDX\x00\x00\x01'
+MAGIC = b'TBIDX\x00\x00\x02'
 HEADER = struct.Struct('<8sQIIHH')
 
 
@@ -76,16 +76,15 @@ class DomainIndex(object):
         self.categories, pos = self._read_names(pos, n_cats)
         self.sources, pos = self._read_names(pos, n_srcs)
 
-        # Attribute table: category ids and source ids per interned combination
-        self._attrs = []
-        for _ in range(n_attrs):
-            n_c, n_s = struct.unpack_from('<HH', self._map, pos)
-            pos += 4
-            cat_ids = struct.unpack_from(f'<{n_c}H', self._map, pos)
-            pos += 2 * n_c
-            src_ids = struct.unpack_from(f'<{n_s}H', self._map, pos)
-            pos += 2 * n_s
-            self._attrs.append((cat_ids, src_ids))
+        # Attribute entries are decoded on demand rather than all at open time.
+        # RQ forks a child per job, so every event pays the open cost, and
+        # eagerly decoding 3,012 entries cost 2.5 ms per open. The offset table
+        # makes an entry directly addressable and the memo means the handful of
+        # combinations that cover 99% of domains are decoded once.
+        self._attr_offsets_at = pos
+        self._attr_table_at = pos + 4 * (n_attrs + 1)
+        self._attr_memo = {}
+        pos = self._attr_table_at + self._attr_table_bytes(n_attrs)
 
         self._offsets_at = pos
         self._attr_index_at = pos + 4 * (n_domains + 1)
@@ -144,9 +143,31 @@ class DomainIndex(object):
             return lo
         return None
 
+    def _attr_table_bytes(self, n_attrs):
+        (end,) = struct.unpack_from('<I', self._map, self._attr_offsets_at + 4 * n_attrs)
+        return end
+
+    def _decode_attr(self, attr_id):
+        cached = self._attr_memo.get(attr_id)
+        if cached is not None:
+            return cached
+        (start,) = struct.unpack_from('<I', self._map, self._attr_offsets_at + 4 * attr_id)
+        pos = self._attr_table_at + start
+        n_c, n_s = struct.unpack_from('<HH', self._map, pos)
+        pos += 4
+        cat_ids = struct.unpack_from(f'<{n_c}H', self._map, pos)
+        pos += 2 * n_c
+        src_ids = struct.unpack_from(f'<{n_s}H', self._map, pos)
+        entry = (
+            tuple(self.categories[c] for c in cat_ids),
+            tuple(self.sources[s] for s in src_ids),
+        )
+        self._attr_memo[attr_id] = entry
+        return entry
+
     def _attrs_at(self, i):
         (attr_id,) = struct.unpack_from('<I', self._map, self._attr_index_at + 4 * i)
-        return self._attrs[attr_id]
+        return self._decode_attr(attr_id)
 
     def lookup(self, host):
         """Categories and sources for a host, including its ancestors.
@@ -167,8 +188,8 @@ class DomainIndex(object):
             for probe in (candidate, '*.' + candidate):
                 found = self._find(reverse_labels(probe))
                 if found is not None:
-                    cat_ids, src_ids = self._attrs_at(found)
-                    cats.update(self.categories[c] for c in cat_ids)
-                    srcs.update(self.sources[s] for s in src_ids)
+                    entry_cats, entry_srcs = self._attrs_at(found)
+                    cats.update(entry_cats)
+                    srcs.update(entry_srcs)
                     matched.append(probe)
         return sorted(cats), sorted(srcs), matched

@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 
 import click
-from libtb.util import read_config, pull_host_lists, process_ignorelist
+from libtb.util import read_config, pull_host_lists, process_ignorelist, build_domain_index
 from libtb.inlet import Inlet
 from libtb.sieve import Filters
 from libtb.processor import Processor
@@ -34,6 +34,12 @@ def hosts():
 @cli.command('ignorelist')
 def ignorelist():
     process_ignorelist()
+
+
+@cli.command('index')
+def index():
+    """Rebuild the memory-mapped domain index from the list files on disk."""
+    build_domain_index()
 
 if __name__ == '__main__':
     cli()

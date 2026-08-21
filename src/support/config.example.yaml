@@ -39,6 +39,15 @@ sieve:
       - kubernetes.default.svc
 
 processor:
+  # Domain category lookups.
+  #   valkey  one Valkey GET per synthesised key, the original behaviour
+  #   index   the memory-mapped index only, no Valkey round trips per event
+  #   compare run both, keep the Valkey answer, record the index answer beside
+  #           it as bite.contexts_index and bite.context_match so agreement can
+  #           be measured on live traffic before switching over
+  domain_index:
+    mode: valkey
+    path: lists/index/domains.tbidx
   dns:
     lookup_ips: true
     resolvers:

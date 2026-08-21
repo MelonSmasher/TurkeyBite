@@ -1,12 +1,34 @@
 import json
+import os
 import sys
 from libtb.tbsyslog import Syslog, Level
+from libtb.index import DomainIndex
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
 from redis import Redis
 from opensearchpy import OpenSearch
 from dns import reversename, resolver, exception
+
+
+# One index handle per process. A read-only mmap survives fork safely, unlike a
+# redis-py connection, so a forked job inherits the parent's map for free. Keyed
+# on pid anyway so a child that opens its own does not hand it back to a sibling.
+_index_handles = {}
+
+
+def domain_index(path):
+    """Returns a per-process DomainIndex, reopening it if the file was swapped."""
+    key = (os.getpid(), path)
+    index = _index_handles.get(key)
+    if index is None:
+        for stale in [k for k in _index_handles if k[0] != key[0]]:
+            del _index_handles[stale]
+        index = DomainIndex(path)
+        _index_handles[key] = index
+    else:
+        index.reload_if_changed()
+    return index
 
 
 class Processor(object):
@@ -24,6 +46,79 @@ class Processor(object):
         else:
             return False
 
+    def index_settings(self):
+        """Domain index configuration, defaulted so an old config still works."""
+        settings = self.config.get('domain_index') or {}
+        return (
+            settings.get('mode', 'valkey'),
+            settings.get('path', 'lists/index/domains.tbidx'),
+        )
+
+    def valkey_contexts(self, searches):
+        """The original lookup: one Valkey GET per synthesised key."""
+        contexts = []
+        r = Redis(
+            host=self.redis_conf['host'],
+            port=self.redis_conf['port'],
+            password=self.redis_conf['password'],
+            db=self.redis_conf['host_list_db']
+        )
+        tag = r.get('turkey-bite:current-tag')
+        if not tag:
+            return contexts
+        tag = tag.decode('utf-8')
+        for entry in searches:
+            key = 'turkey-bite:' + tag + ':' + entry
+            result = r.get(key)
+            if not result:
+                continue
+            try:
+                result = json.loads(result.decode('utf-8'))
+                contexts = contexts + list(set(result['categories']) - set(contexts))
+            except Exception as e:
+                print(f"Malformed host list entry at {key}: {e}", file=sys.stderr)
+        return contexts
+
+    def resolve_contexts(self, searches):
+        """Categories for a set of search terms.
+
+        Returns (contexts, extra) where extra carries index-only fields. Three
+        modes, so the index can be validated against Valkey on live traffic
+        before it takes over:
+
+          valkey   the original behaviour, one GET per synthesised key
+          index    the memory-mapped index only, no Valkey round trips at all
+          compare  both, with the Valkey answer authoritative and the index
+                   answer recorded alongside it for measurement
+        """
+        mode, path = self.index_settings()
+        host = searches[0]
+
+        if mode == 'valkey':
+            return self.valkey_contexts(searches), {}
+
+        try:
+            index = domain_index(path)
+            cats, srcs, matched = index.lookup(host)
+        except Exception as e:
+            # A missing or corrupt index must not cost the event. Fall back.
+            print(f"Domain index unavailable at {path}: {e}", file=sys.stderr)
+            return self.valkey_contexts(searches), {'index_error': str(e)}
+
+        extra = {
+            'sources': srcs,
+            'matched_on': matched,
+            'index_built_at': index.built_at,
+        }
+        if mode == 'index':
+            return cats, extra
+
+        # compare: Valkey stays authoritative while the index is on trial
+        legacy = self.valkey_contexts(searches)
+        extra['contexts_index'] = cats
+        extra['context_match'] = sorted(legacy) == sorted(cats)
+        return legacy, extra
+
     def process_dns_packet(self, data):
         # Related context from lists
         contexts = []
@@ -36,13 +131,6 @@ class Processor(object):
         # Reverse DNS add
         reversed_dns = []
         rev_name = None
-        # Redis DB with host lists
-        r = Redis(
-            host=self.redis_conf['host'],
-            port=self.redis_conf['port'],
-            password=self.redis_conf['password'],
-            db=self.redis_conf['host_list_db']
-        )
 
         # For inbound requests
         if data['network']['direction'] in ['inbound', 'ingress']:
@@ -91,22 +179,7 @@ class Processor(object):
         if not searches:
             return False
 
-        # Get the current tag
-        tag = r.get('turkey-bite:current-tag')
-        if tag:
-            tag = tag.decode('utf-8')
-            for entry in searches:
-                # Build the redis key
-                key = 'turkey-bite:' + tag + ':' + entry
-                # Search redis for the queried domain
-                result = r.get(key)
-                if result:
-                    try:
-                        result = json.loads(result.decode('utf-8'))
-                        # Add any unique categories to the context array
-                        contexts = contexts + list(set(result['categories']) - set(contexts))
-                    except Exception as e:
-                        print(f"Malformed host list entry at {key}: {e}", file=sys.stderr)
+        contexts, extra = self.resolve_contexts(searches)
 
         # Reverse client lookup. This enriches the event with the client's
         # hostname and is never worth failing the event over, so every failure
@@ -160,7 +233,8 @@ class Processor(object):
                 'searches': searches,
                 'contexts': contexts,
                 'request': request,
-                'type': 'dns'
+                'type': 'dns',
+                **extra
             },
             'packet': data
         }
@@ -178,13 +252,6 @@ class Processor(object):
         # The request timestamp
         timestamp = data['data']['@timestamp']
         localtime = data['data']['@timestamp']
-        # Redis DB with host lists
-        r = Redis(
-            host=self.redis_conf['host'],
-            port=self.redis_conf['port'],
-            password=self.redis_conf['password'],
-            db=self.redis_conf['host_list_db']
-        )
 
         if 'data' in data.keys():
 
@@ -246,22 +313,7 @@ class Processor(object):
         if not searches:
             return False
 
-        # Get the current tag
-        tag = r.get('turkey-bite:current-tag')
-        if tag:
-            tag = tag.decode('utf-8')
-            for entry in searches:
-                # Build the redis key
-                key = 'turkey-bite:' + tag + ':' + entry
-                # Search redis for the queried domain
-                result = r.get(key)
-                if result:
-                    try:
-                        result = json.loads(result.decode('utf-8'))
-                        # Add any unique categories to the context array
-                        contexts = contexts + list(set(result['categories']) - set(contexts))
-                    except Exception as e:
-                        print(f"Malformed host list entry at {key}: {e}", file=sys.stderr)
+        contexts, extra = self.resolve_contexts(searches)
 
         bite = {
             '@timestamp': timestamp,
@@ -279,7 +331,8 @@ class Processor(object):
                 'searches': searches,
                 'contexts': contexts,
                 'request': request,
-                'type': 'browser.history'
+                'type': 'browser.history',
+                **extra
             },
             'packet': data
         }
