@@ -68,6 +68,38 @@ def consume(consumer, batch_size, quiet):
     worker.run()
 
 
+@cli.command('queue-recover')
+@click.option('--prefix', default=None,
+              help='Only sweep consumer names starting with this. Use the host prefix so one host does not reclaim another host\'s in-flight work.')
+@click.option('--all', 'sweep_all', is_flag=True, default=False,
+              help='Sweep every processing list regardless of prefix. Only safe when no consumer is running anywhere.')
+def queue_recover(prefix, sweep_all):
+    """Requeue work stranded in processing lists whose consumer no longer exists."""
+    import os
+    from redis import Redis
+    from libtb.queue import recover_orphans
+
+    if not prefix and not sweep_all:
+        prefix = os.environ.get('TURKEYBITE_CONSUMER_PREFIX')
+        if not prefix:
+            print('Refusing to sweep without --prefix or --all: an unscoped sweep '
+                  'can reclaim another host\'s in-flight work.')
+            raise SystemExit(2)
+
+    config = read_config()
+    queue_conf = config['redis']
+    redis = Redis(
+        host=queue_conf['host'],
+        port=queue_conf['port'],
+        db=queue_conf['db'],
+        password=queue_conf['password']
+    )
+    swept, requeued = recover_orphans(
+        redis, queue_conf['channel'], match=None if sweep_all else prefix)
+    scope = 'all consumers' if sweep_all else f'consumers matching {prefix}'
+    print(f'Swept {swept} processing lists for {scope}, requeued {requeued} events')
+
+
 @cli.command('hosts')
 def hosts():
     pull_host_lists()

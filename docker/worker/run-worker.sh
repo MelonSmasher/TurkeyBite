@@ -74,9 +74,18 @@ export TURKEYBITE_INDEX_SYNC_INTERVAL_SEC=${TURKEYBITE_INDEX_SYNC_INTERVAL_SEC:-
 #            acknowledge. One process per event instead of two Redis hops, and
 #            the acknowledgement after the flush is what makes batching safe.
 export TURKEYBITE_PIPELINE=${TURKEYBITE_PIPELINE:-rq}
+# Inside a container $(hostname) is the container id, which changes on every
+# recreate. A consumer only recovers its own in-flight work on restart, so an
+# unstable name strands whatever it had claimed in a processing list nobody will
+# read again. Prefer an explicit prefix; fall back to the container id only so
+# the thing still runs.
 export TURKEYBITE_CONSUMER_PREFIX=${TURKEYBITE_CONSUMER_PREFIX:-$(hostname)}
 
 if [ "${TURKEYBITE_PIPELINE}" = "consume" ]; then
+    # No consumer in this container is running yet, so anything left in a
+    # processing list under our prefix belongs to a previous incarnation.
+    python turkeybite queue-recover --prefix "${TURKEYBITE_CONSUMER_PREFIX}" || true
+
     cat /etc/supervisor/conf.d/tb-consume.template | envsubst | tee /etc/supervisor/conf.d/tb-consume.conf
 else
     cat /etc/supervisor/conf.d/tb-worker.template | envsubst | tee /etc/supervisor/conf.d/tb-worker.conf

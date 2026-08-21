@@ -34,6 +34,39 @@ provide at all.
 PROCESSING_PREFIX = 'processing:'
 
 
+def recover_orphans(redis, key, keep_consumers=(), match=None):
+    """Requeues work stranded in processing lists whose consumer is gone.
+
+    A consumer only recovers its own list on startup, which relies on the
+    consumer name being stable. When a name changes, for instance because it was
+    derived from a container id, the old list is left holding claimed events that
+    nothing will ever acknowledge.
+
+    Call this before any consumer starts, so no live consumer owns a list being
+    swept. `keep_consumers` names lists to leave alone. `match` limits the sweep
+    to names starting with a prefix, which is how one host avoids reclaiming
+    another host's in-flight work.
+
+    Returns (lists_swept, events_requeued).
+    """
+    pattern = f'{key}:{PROCESSING_PREFIX}{match or ""}*'
+    keep = {f'{key}:{PROCESSING_PREFIX}{c}' for c in keep_consumers}
+    swept = requeued = 0
+    for raw in redis.scan_iter(match=pattern, count=100):
+        name = raw.decode('utf-8') if isinstance(raw, bytes) else raw
+        if name in keep:
+            continue
+        items = redis.lrange(name, 0, -1)
+        if items:
+            # LPUSH reverses, so push in reverse to restore the original order
+            for payload in reversed(items):
+                redis.lpush(key, payload)
+            requeued += len(items)
+        redis.delete(name)
+        swept += 1
+    return swept, requeued
+
+
 class ListQueue(object):
 
     def __init__(self, redis, key, consumer):
