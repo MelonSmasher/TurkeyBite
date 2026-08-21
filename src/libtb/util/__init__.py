@@ -442,6 +442,54 @@ def purge_tagged_keyspace(r, batch=1000):
     return removed
 
 
+def download_list(hlist, tlds):
+    """Fetches and cleans one list, replacing the live copy only on success.
+
+    Downloaded beside the live file and renamed into place. urlretrieve opens its
+    destination for writing straight away, so writing directly to the live path
+    meant a download that died part way through truncated a list that was working,
+    and cleaning that remnant turned it into a short but valid-looking list. It
+    also meant a concurrent index build could read a half-written file.
+
+    A result that cleans to nothing is discarded rather than installed. An error
+    page served with a 200 cleans to zero entries, and so does a truncated
+    download; in both cases the copy already on disk is the better one.
+
+    Returns True when the live file was replaced.
+    """
+    pending = hlist['file'] + '.new'
+    try:
+        print('Downloading: ' + hlist['name'])
+        opener = urllib.request.build_opener()
+        opener.addheaders = [
+            (
+                'User-agent',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
+            )
+        ]
+        urllib.request.install_opener(opener)
+        urllib.request.urlretrieve(hlist['url'], pending)
+        print('Downloaded: ' + hlist['name'])
+        print('Cleaning: ' + hlist['name'])
+        clean_list_file(pending, tlds)
+        if os.path.getsize(pending) == 0:
+            print('Discarded: ' + hlist['name'] + ' cleaned to no entries, '
+                  'keeping the copy already on disk')
+            return False
+        os.replace(pending, hlist['file'])
+        print('Cleaned: ' + hlist['name'])
+        return True
+    except Exception as e:
+        print('Failed to download: ' + hlist['name'])
+        print(e)
+        return False
+    finally:
+        # os.replace consumed it on the success path, so this only fires when
+        # something went wrong and would otherwise leave a stray .new behind
+        if os.path.exists(pending):
+            os.remove(pending)
+
+
 def pull_host_lists():
     host_files = get_host_files()
     # Get the list of TLDs
@@ -474,25 +522,7 @@ def pull_host_lists():
         # Skip local lists for downloads
         if hlist['url'] is None:
             continue
-        try:
-            print('Downloading: ' + hlist['name'])
-            opener = urllib.request.build_opener()
-            opener.addheaders = [
-                (
-                    'User-agent',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
-                )
-            ]
-            urllib.request.install_opener(opener)
-            urllib.request.urlretrieve(hlist['url'], hlist['file'])
-            print('Downloaded: ' + hlist['name'])
-            print('Cleaning: ' + hlist['name'])
-            clean_list_file(hlist['file'], tlds)
-            print('Cleaned: ' + hlist['name'])
-        except Exception as e:
-            print('Failed to download: ' + hlist['name'])
-            print(e)
-            pass
+        download_list(hlist, tlds)
 
     config = read_config()
     r = Redis(
