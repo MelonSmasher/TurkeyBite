@@ -64,7 +64,7 @@ export TURKEYBITE_WORKER_PROCS=${TURKEYBITE_WORKER_PROCS:-2}
 # still work: SimpleWorker uses the same UnixSignalDeathPenalty, and perform_job
 # still catches a raising job and fails it rather than taking the worker down.
 # Set to rq.Worker to go back to fork-per-job.
-export TURKEYBITE_WORKER_CLASS=${TURKEYBITE_WORKER_CLASS:-rq.SimpleWorker}
+export TURKEYBITE_WORKER_CLASS=${TURKEYBITE_WORKER_CLASS:-rq.Worker}
 
 export TURKEYBITE_INDEX_SYNC_INTERVAL_SEC=${TURKEYBITE_INDEX_SYNC_INTERVAL_SEC:-300}
 

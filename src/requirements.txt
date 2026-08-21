@@ -4,4 +4,7 @@ CLick~=8.1.0
 rq~=2.3.0
 opensearch-py~=2.8.0
 dnspython~=2.7.0
+# Imported directly by libtb.processor. It has only ever resolved as a
+# transitive dependency of opensearch-py, so a rebuild could drop it.
+python-dateutil~=2.9.0
 setuptools~=80.3.0
