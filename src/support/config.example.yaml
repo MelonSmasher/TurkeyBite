@@ -27,8 +27,11 @@ sieve:
     # Ignore entire domains
     domains:
       # - whitelisted-domain.com
+      # Reverse zones name the octets backwards, so the zone covering
+      # 192.168.0.0/16 is 168.192.in-addr.arpa. A single octet has no order
+      # to get wrong, which is why 10.in-addr.arpa reads the way it does.
       - 10.in-addr.arpa
-      - 192.168.in-addr.arpa
+      - 168.192.in-addr.arpa
       - default.svc
       - kubernetes.default
     # Ignore specific client IP addresses
