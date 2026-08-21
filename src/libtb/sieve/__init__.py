@@ -13,6 +13,28 @@ def normalize_host(value):
     return value.strip().lower().strip('.') or None
 
 
+# Browserbeat legitimately backfills years of history, so old timestamps are
+# expected. But Chrome and Edge store visit times as microseconds since
+# 1601-01-01, and a zero value decodes to exactly that instant. Those are not
+# browse events, and they break date histograms: a histogram spanning 1601 to
+# now tries to allocate millions of buckets and fails outright.
+MIN_PLAUSIBLE_YEAR = 1990
+
+
+def plausible_timestamp(value):
+    """False only when the year is implausibly old.
+
+    Returns True when the value cannot be judged, so an unexpected format is
+    passed along rather than silently dropped.
+    """
+    if not isinstance(value, str) or len(value) < 4:
+        return True
+    try:
+        return int(value[:4]) >= MIN_PLAUSIBLE_YEAR
+    except ValueError:
+        return True
+
+
 def matches_domain(host, domain):
     """True when host is the domain itself or a subdomain of it.
 
@@ -113,6 +135,10 @@ class Filters(object):
         ignore_users = self.config['browserbeat']['ignore']['users']
         ignore_domains = self.browserbeat_ignore_domains
         ignore_hosts = self.browserbeat_ignore_hosts
+
+        # Reject the 1601 sentinel, but keep genuine historical backfill
+        if not plausible_timestamp(dig(data, 'data', '@timestamp')):
+            return False
 
         # Dive down into the data structure. A history event without this
         # much structure carries no URL to look at, and would only fail later

@@ -115,9 +115,37 @@ def process_ignorelist(r=False, tag=False):
     else:
         print('No ignorelist.json file to process.')
 
-def pull_tld_list():
+def read_tld_file(path):
+    """Reads a TLD list file into a list of lowercased suffixes."""
     tlds = []
+    with open(path, 'r') as tld_file:
+        for line in tld_file:
+            if line.startswith('#'):
+                continue
+            tld = line.strip().lower()
+            if tld:
+                tlds.append(tld)
+    return tlds
+
+
+def usable_tld_list(tlds):
+    """Sanity check on a downloaded TLD list.
+
+    A truncated file or an HTML error page will parse without raising and then
+    silently reject every domain in every list, so check that the result looks
+    like the IANA file before trusting it.
+    """
+    return len(tlds) > 1000 and 'com' in tlds and 'org' in tlds
+
+
+def pull_tld_list():
     file = 'lists/tld/tld.txt'
+    fallback = 'lists/tld/fallback.txt'
+    # Download beside the cached copy and only move it into place once it has
+    # been read and sanity checked. The previous version deleted the cache
+    # before downloading, so one failed fetch lost it permanently and every
+    # later run silently fell back to the ageing bundled list.
+    pending = file + '.new'
     try:
         print('Downloading: TLD list')
         opener = urllib.request.build_opener()
@@ -127,25 +155,29 @@ def pull_tld_list():
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
             )
         ]
-        if os.path.exists(file):
-            # remove the file
-            os.remove(file)
         urllib.request.install_opener(opener)
-        urllib.request.urlretrieve('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', file)
-        print('Downloaded: TLD list')
-        
+        urllib.request.urlretrieve('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', pending)
+        tlds = read_tld_file(pending)
+        if not usable_tld_list(tlds):
+            raise ValueError(f'downloaded TLD list looks wrong: {len(tlds)} entries')
+        os.replace(pending, file)
+        print('Downloaded: TLD list (' + str(len(tlds)) + ' entries)')
+        return tlds
     except Exception as e:
         print('Failed to download: TLD list')
         print(e)
-        print('Using fallback TLD list')
-        file = 'lists/tld/fallback.txt'
-    
-    with open(file, 'r') as tld_file:
-        for line in tld_file:
-            if line.startswith('#'):
-                continue
-            tlds.append(line.strip().lower())
-    return tlds
+        if os.path.exists(pending):
+            os.remove(pending)
+
+    if os.path.exists(file):
+        tlds = read_tld_file(file)
+        if usable_tld_list(tlds):
+            print('Using the previously cached TLD list (' + str(len(tlds)) + ' entries)')
+            return tlds
+        print('Cached TLD list looks wrong, ignoring it')
+
+    print('Using fallback TLD list')
+    return read_tld_file(fallback)
     
 # Hosts-file lines put an address, then whitespace, then the domain.
 # The trailing \s+ is required: without it these patterns match the leading

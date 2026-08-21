@@ -1,7 +1,7 @@
 import json
 import sys
 from libtb.tbsyslog import Syslog, Level
-from _datetime import datetime
+from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
 from redis import Redis
@@ -151,7 +151,7 @@ class Processor(object):
                 'version': '0.1.0'
             },
             'bite': {
-                'processed': datetime.now().isoformat(),
+                'processed': datetime.now(timezone.utc).isoformat(),
                 'client': client,
                 'client_hosts': reversed_dns,
                 'ptr': rev_name,
@@ -271,7 +271,7 @@ class Processor(object):
                 'version': '0.1.0'
             },
             'bite': {
-                'processed': datetime.now().isoformat(),
+                'processed': datetime.now(timezone.utc).isoformat(),
                 'event_time_utc': timestamp,
                 'event_time_local': localtime,
                 'url': data['data']['event']['data']['entry']['url'],
@@ -287,6 +287,10 @@ class Processor(object):
 
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
+            # Deliberately local time, not UTC. The index name is the ingestion
+            # day as the operator experiences it, which is what the retention
+            # policy is reasoning about. Only bite.processed needs to be UTC,
+            # because OpenSearch parses that one as a date.
             index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
             for host in self.config['elastic']['hosts']:
                 try:

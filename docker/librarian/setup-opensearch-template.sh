@@ -7,6 +7,9 @@ echo "Setting up OpenSearch index template for TurkeyBite..."
 OPENSEARCH_URL="https://${OPENSEARCH_HOST:-opensearch}:9200"
 OPENSEARCH_USER="${OPENSEARCH_USERNAME:-admin}"
 OPENSEARCH_PASS="${OPENSEARCH_PASSWORD:-Changeit12345!}"
+# A single-node cluster cannot assign replica shards, so leaving this at 1
+# leaves cluster health permanently yellow and therefore useless as a signal.
+OPENSEARCH_REPLICAS="${OPENSEARCH_INDEX_REPLICAS:-0}"
 MAX_RETRIES=120
 RETRY_INTERVAL=5
 
@@ -47,7 +50,7 @@ echo "OpenSearch is available! Creating/updating index template..."
         "template": {
             "settings": {
                 "number_of_shards": 1,
-                "number_of_replicas": 1
+                "number_of_replicas": '"${OPENSEARCH_REPLICAS}"'
             },
             "mappings": {
                 "properties": {
