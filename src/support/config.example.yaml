@@ -53,6 +53,10 @@ processor:
     #   valkey  the librarian publishes it and workers download it, which is
     #           needed because ./vols/lists is a per-node bind mount
     source: file
+    # Set on the node running the librarian when any worker is on another host.
+    # Deliberately independent of `source`: that node's own worker reads the file
+    # directly while a remote worker needs it published.
+    publish: false
     sync_interval_sec: 300
   dns:
     lookup_ips: true

@@ -148,7 +148,14 @@ def index_config(config=None):
     return {
         'mode': settings.get('mode', 'valkey'),
         'path': settings.get('path', DEFAULT_PATH),
+        # Where a worker reads the index from
         'source': settings.get('source', 'file'),
+        # Whether the librarian publishes it for remote workers. Separate from
+        # `source` on purpose: on the node that runs the librarian, the local
+        # worker reads the file directly while a worker on another host still
+        # needs it published. Tying the two together would mean the natural
+        # setting on that node silently starved every remote worker.
+        'publish': bool(settings.get('publish', False)),
         'sync_interval_sec': int(settings.get('sync_interval_sec', 300)),
     }
 
@@ -166,7 +173,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
     settings = index_config(config)
     target = path or settings['path']
     if publish_to_valkey is None:
-        publish_to_valkey = settings['source'] == 'valkey'
+        publish_to_valkey = settings['publish']
     # One generation number for the file, the manifest and the marker, so all
     # three agree and a mismatch anywhere is a real fault rather than clock skew
     built_at = int(time.time())
