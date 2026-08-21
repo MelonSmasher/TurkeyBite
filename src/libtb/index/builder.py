@@ -186,3 +186,47 @@ def collect_entries(lists_dir='lists', host_files=None, exclude_path=None):
                 cats.update(categories)
                 srcs.add(name)
     return entries, files, skipped
+
+
+def apply_ignorelist(entries, lists_dir='lists', ignorelist=None):
+    """Removes deliberately-wrong categories from collected entries.
+
+    lists/ignorelist.json records hosts a category should not apply to. Those are
+    hand-curated corrections for false positives in the upstream lists, so they
+    have to be applied while the index is built. Without this the index
+    over-categorises exactly the entries someone marked as wrong, and it does so
+    silently, because the file sits directly under lists/ where the collector's
+    lists/*/* glob never looks.
+
+    An entry left with no categories is dropped rather than kept empty, so a
+    lookup reports no match instead of a match that carries nothing. Ancestor
+    walking then does the rest: stripping a category from example.com also stops
+    sub.example.com inheriting it.
+
+    Returns (categories_removed, entries_dropped).
+    """
+    import json
+
+    if ignorelist is None:
+        path = os.path.join(lists_dir, 'ignorelist.json')
+        if not os.path.exists(path):
+            return 0, 0
+        with open(path) as fh:
+            ignorelist = json.load(fh)
+
+    removed = 0
+    dropped = 0
+    for context, hosts in (ignorelist or {}).items():
+        for host in hosts or []:
+            key = host.strip().lower()
+            found = entries.get(key)
+            if not found:
+                continue
+            cats, _ = found
+            if context in cats:
+                cats.discard(context)
+                removed += 1
+            if not cats:
+                del entries[key]
+                dropped += 1
+    return removed, dropped

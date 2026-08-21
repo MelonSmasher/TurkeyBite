@@ -80,9 +80,21 @@ def read_config(config_file='config.yaml'):
 
 
 def process_ignorelist(r=False, tag=False):
+    """Strips deliberately-wrong categories from the Valkey host list keyspace.
+
+    Only meaningful for the modes that read that keyspace. In index mode the same
+    corrections are applied by apply_ignorelist while the index is built, so there
+    is nothing here to edit.
+    """
     print('Processing ignorelist')
     if os.path.exists('lists/ignorelist.json'):
         config = read_config()
+        if index_config(config)['mode'] not in VALKEY_BACKED_MODES:
+            # Said plainly, because the alternative is a missing-tag complaint
+            # every time the ignorelist loop runs, which reads like a fault
+            print('Domain index mode is active, the index build applies the '
+                  'ignorelist instead')
+            return
         if not r:
             r = Redis(
                 host=config['redis']['host'],
@@ -91,11 +103,13 @@ def process_ignorelist(r=False, tag=False):
                 db=config['redis']['host_list_db']
             )
             if not tag:
-                try:
-                    tag = r.get('turkey-bite:current-tag').decode('utf-8')
-                except AttributeError:
+                tag = r.get('turkey-bite:current-tag')
+                if tag is None:
+                    # A return rather than exit(): this is library code and the
+                    # caller decides what a missing tag means for it
                     print('No current tag found')
-                    exit()
+                    return
+                tag = tag.decode('utf-8')
                     
         with open('lists/ignorelist.json', 'r') as json_file:
             ignorelist = json.load(json_file)
@@ -167,7 +181,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
     is on trial. Never raises: a failed index build must not fail a list pull
     that otherwise succeeded, because the Valkey path is still there.
     """
-    from libtb.index.builder import build, collect_entries
+    from libtb.index.builder import apply_ignorelist, build, collect_entries
     from libtb.index import transport
     config = read_config()
     settings = index_config(config)
@@ -180,6 +194,9 @@ def build_domain_index(path=None, publish_to_valkey=None):
     try:
         print('Building domain index')
         entries, files, skipped = collect_entries('lists', exclude_path=target)
+        # The curated corrections live outside the collector's glob, so they have
+        # to be applied here or the index keeps categories marked as wrong
+        ignored, dropped = apply_ignorelist(entries, 'lists')
         stats = build(entries, path=target, built_at=built_at)
         # A worker sharing this filesystem with the librarian already has the
         # file, so record the generation and save it a pointless 175 MB download
@@ -189,7 +206,9 @@ def build_domain_index(path=None, publish_to_valkey=None):
               + str(stats['domains']) + ' domains from '
               + str(files) + ' files, ' + str(round(stats['bytes'] / 1e6, 1)) + ' MB, '
               + str(stats['attr_combinations']) + ' attribute combinations, '
-              + str(skipped) + ' lines skipped')
+              + str(skipped) + ' lines skipped, '
+              + str(ignored) + ' categories removed by the ignorelist, '
+              + str(dropped) + ' entries dropped')
     except Exception as e:
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None

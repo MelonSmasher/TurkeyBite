@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from libtb.index import DomainIndex
 from libtb.index import builder
-from libtb.index.builder import SKIP_DIRS, build, collect_entries
+from libtb.index.builder import (SKIP_DIRS, apply_ignorelist, build,
+                                 collect_entries)
 
 
 class CollectEntriesTest(unittest.TestCase):
@@ -185,6 +186,102 @@ class CollectEntriesTest(unittest.TestCase):
         entries, _, _ = collect_entries(self.lists, host_files=host_files)
         cats, _ = entries['tracked.example.com']
         self.assertEqual(cats, {'tracking', 'advertising'})
+
+
+class ApplyIgnorelistTest(unittest.TestCase):
+    """The curated corrections the collector's glob cannot see.
+
+    lists/ignorelist.json sits directly under lists/, so lists/*/* never reaches
+    it. The Valkey path edits those keys after writing them; the index has to
+    apply the same corrections at build time or it keeps categories a human
+    deliberately marked as wrong.
+    """
+
+    def entries(self):
+        return {
+            'evil.example.com': ({'malware', 'porn'}, {'a'}),
+            'shop.example.com': ({'porn'}, {'b'}),
+            'clean.example.com': ({'shopping'}, {'c'}),
+        }
+
+    def test_a_named_category_is_removed(self):
+        entries = self.entries()
+        removed, dropped = apply_ignorelist(
+            entries, ignorelist={'porn': ['evil.example.com']})
+        self.assertEqual((removed, dropped), (1, 0))
+        self.assertEqual(entries['evil.example.com'][0], {'malware'})
+
+    def test_other_categories_on_the_same_host_survive(self):
+        entries = self.entries()
+        apply_ignorelist(entries, ignorelist={'porn': ['evil.example.com']})
+        self.assertIn('malware', entries['evil.example.com'][0])
+
+    def test_an_entry_left_with_nothing_is_dropped(self):
+        entries = self.entries()
+        removed, dropped = apply_ignorelist(
+            entries, ignorelist={'porn': ['shop.example.com']})
+        self.assertEqual((removed, dropped), (1, 1))
+        self.assertNotIn('shop.example.com', entries)
+
+    def test_hosts_not_in_the_index_are_ignored(self):
+        entries = self.entries()
+        removed, dropped = apply_ignorelist(
+            entries, ignorelist={'porn': ['absent.example.net']})
+        self.assertEqual((removed, dropped), (0, 0))
+        self.assertEqual(len(entries), 3)
+
+    def test_a_category_the_host_does_not_have_is_not_counted(self):
+        entries = self.entries()
+        removed, _ = apply_ignorelist(
+            entries, ignorelist={'gambling': ['evil.example.com']})
+        self.assertEqual(removed, 0)
+        self.assertEqual(entries['evil.example.com'][0], {'malware', 'porn'})
+
+    def test_host_names_are_matched_case_insensitively(self):
+        entries = self.entries()
+        removed, _ = apply_ignorelist(
+            entries, ignorelist={'porn': ['Evil.Example.COM ']})
+        self.assertEqual(removed, 1)
+        self.assertEqual(entries['evil.example.com'][0], {'malware'})
+
+    def test_several_contexts_are_applied(self):
+        entries = self.entries()
+        removed, dropped = apply_ignorelist(entries, ignorelist={
+            'porn': ['evil.example.com', 'shop.example.com'],
+            'malware': ['evil.example.com'],
+        })
+        self.assertEqual((removed, dropped), (3, 2))
+        self.assertEqual(list(entries), ['clean.example.com'])
+
+    def test_a_missing_file_is_not_an_error(self):
+        entries = self.entries()
+        removed, dropped = apply_ignorelist(entries, lists_dir='/nonexistent')
+        self.assertEqual((removed, dropped), (0, 0))
+        self.assertEqual(len(entries), 3)
+
+    def test_an_empty_ignorelist_changes_nothing(self):
+        entries = self.entries()
+        self.assertEqual(apply_ignorelist(entries, ignorelist={}), (0, 0))
+        self.assertEqual(len(entries), 3)
+
+    def test_stripping_a_parent_stops_children_inheriting_it(self):
+        # Ancestor walking means a correction on the parent covers subdomains,
+        # which the exact-key Valkey path could never do
+        root = tempfile.mkdtemp(prefix='tb-ignore-')
+        try:
+            path = os.path.join(root, 'domains.tbidx')
+            entries = {'example.com': ({'porn'}, {'a'}),
+                       'other.example.org': ({'shopping'}, {'a'})}
+            apply_ignorelist(entries, ignorelist={'porn': ['example.com']})
+            build(entries, path=path, built_at=1000)
+            index = DomainIndex(path)
+            try:
+                self.assertEqual(index.lookup('deep.sub.example.com')[0], [])
+                self.assertEqual(index.lookup('other.example.org')[0], ['shopping'])
+            finally:
+                index.close()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 class RebuildStabilityTest(unittest.TestCase):
