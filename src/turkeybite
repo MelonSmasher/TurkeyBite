@@ -29,7 +29,8 @@ def run():
 @cli.command('consume')
 @click.option('--consumer', default=None, help='Stable name for this consumer, used to recover its own in-flight work.')
 @click.option('--batch-size', default=None, type=int, help='Maximum events claimed per batch.')
-def consume(consumer, batch_size):
+@click.option('--quiet', is_flag=True, default=False, help='Suppress the per-event Queued/Dropped log lines.')
+def consume(consumer, batch_size, quiet):
     """Drain the durable queue: sieve, enrich, index, then acknowledge."""
     import os
     import socket
@@ -59,7 +60,8 @@ def consume(consumer, batch_size):
     worker = Consumer(
         queue, filters, processor,
         batch_size=batch_size or int(bulk.get('size') or 500),
-        name=name
+        name=name,
+        log_events=not quiet
     )
     worker.install_signal_handlers()
     print(f'Consuming {queue_conf["channel"]} as {name}')

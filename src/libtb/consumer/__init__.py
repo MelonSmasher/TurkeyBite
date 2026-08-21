@@ -29,11 +29,13 @@ import signal
 import sys
 import time
 
+from libtb.inlet import describe
+
 
 class Consumer(object):
 
     def __init__(self, queue, filters, processor, batch_size=500, block_seconds=1,
-                 name=None):
+                 name=None, log_events=True):
         # Every consumer writes to the same container stdout, so each line has to
         # identify which one wrote it
         self.name = name or getattr(queue, 'consumer', 'consumer')
@@ -42,6 +44,11 @@ class Consumer(object):
         self.processor = processor
         self.batch_size = batch_size
         self.block_seconds = block_seconds
+        # The Inlet logged every packet it saw, queued or dropped. This path
+        # replaces the Inlet, so it keeps that behaviour rather than silently
+        # removing the only per-event visibility there was. Turn it off with
+        # --quiet when the volume is not worth the log lines.
+        self.log_events = log_events
         self.running = True
         self.stats = {'claimed': 0, 'kept': 0, 'dropped': 0, 'unreadable': 0,
                       'indexed': 0, 'requeued': 0, 'batches': 0}
@@ -71,13 +78,18 @@ class Consumer(object):
                 self.stats['unreadable'] += 1
                 continue
             try:
-                if not self.filters.should_process(data):
-                    self.stats['dropped'] += 1
-                    continue
+                keep = self.filters.should_process(data)
             except Exception as e:
                 # A packet we cannot read costs that packet and no more
                 print(f'[{self.name}] skipped an unreadable packet: {e}', file=sys.stderr)
                 self.stats['unreadable'] += 1
+                continue
+            if self.log_events:
+                line = describe(data, 'Queued' if keep else 'Dropped')
+                if line:
+                    print(line)
+            if not keep:
+                self.stats['dropped'] += 1
                 continue
             try:
                 self.processor.process_packet(data)
