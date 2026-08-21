@@ -65,6 +65,13 @@ processor:
     lookup_ips: true
     resolvers:
       - 172.172.0.100
+    # Reverse DNS answers are remembered per client address, which only helps
+    # when the process outlives a job: the consume path or rq.SimpleWorker, not
+    # the forking rq.Worker. Only settled answers are kept, so a resolver
+    # failure is retried on the next event rather than pinned for the TTL.
+    cache:
+      ttl_sec: 300
+      max_entries: 20000
   elastic:
     enable: true
     index_prefix: tb-index
