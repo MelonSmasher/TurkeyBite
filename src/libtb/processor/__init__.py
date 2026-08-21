@@ -47,7 +47,15 @@ _ptr_resolvers = {}
 # and hide the recovery, and an unnoticed reverse DNS failure is exactly what
 # went undiagnosed for 15 months.
 PTR_CACHEABLE = frozenset(('ok', 'nxdomain', 'bad_client_address'))
-PTR_CACHE_TTL = 300
+
+# Each consumer process keeps its own cache, and there are dozens of them, so a
+# given process only ever sees a fraction of the traffic. A short TTL expires an
+# address before that process happens to see it again, which is why the first
+# measured hit rate at 300s was far below the repeat ratio in the traffic itself.
+# Fifteen minutes is long enough to accumulate a useful share of the client
+# population and short enough that a reassigned address is not misattributed for
+# long. Raise it for a higher hit rate, at the cost of staleness.
+PTR_CACHE_TTL = 900
 PTR_CACHE_MAX = 20000
 
 

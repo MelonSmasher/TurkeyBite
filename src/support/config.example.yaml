@@ -70,7 +70,7 @@ processor:
     # the forking rq.Worker. Only settled answers are kept, so a resolver
     # failure is retried on the next event rather than pinned for the TTL.
     cache:
-      ttl_sec: 300
+      ttl_sec: 900
       max_entries: 20000
   elastic:
     enable: true
