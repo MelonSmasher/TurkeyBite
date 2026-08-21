@@ -60,5 +60,8 @@ export VALKEY_PORT=${VALKEY_PORT:-6379}
 export VALKEY_DB=${VALKEY_DB:-0}
 export TURKEYBITE_WORKER_PROCS=${TURKEYBITE_WORKER_PROCS:-2}
 
+export TURKEYBITE_INDEX_SYNC_INTERVAL_SEC=${TURKEYBITE_INDEX_SYNC_INTERVAL_SEC:-300}
+
 cat /etc/supervisor/conf.d/tb-worker.template | envsubst | tee /etc/supervisor/conf.d/tb-worker.conf
+cat /etc/supervisor/conf.d/tb-index-sync.template | envsubst | tee /etc/supervisor/conf.d/tb-index-sync.conf
 /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

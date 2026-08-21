@@ -139,26 +139,98 @@ def usable_tld_list(tlds):
     return len(tlds) > 1000 and 'com' in tlds and 'org' in tlds
 
 
-def build_domain_index(path=None):
-    """Builds the memory-mapped domain index from the cleaned list files.
+def index_config(config=None):
+    """Domain index settings, defaulted so an old config still works."""
+    from libtb.index.builder import DEFAULT_PATH
+    if config is None:
+        config = read_config()
+    settings = (config.get('processor') or {}).get('domain_index') or {}
+    return {
+        'mode': settings.get('mode', 'valkey'),
+        'path': settings.get('path', DEFAULT_PATH),
+        'source': settings.get('source', 'file'),
+        'sync_interval_sec': int(settings.get('sync_interval_sec', 300)),
+    }
 
-    Kept separate from the Valkey load so both can coexist while the index is
-    on trial. Never raises: a failed index build must not fail a list pull that
-    otherwise succeeded, because the Valkey path is still there.
+
+def build_domain_index(path=None, publish_to_valkey=None):
+    """Builds the domain index, and publishes it when the workers are remote.
+
+    Kept separate from the Valkey list load so both can coexist while the index
+    is on trial. Never raises: a failed index build must not fail a list pull
+    that otherwise succeeded, because the Valkey path is still there.
     """
-    from libtb.index.builder import build, collect_entries, DEFAULT_PATH
-    target = path or DEFAULT_PATH
+    from libtb.index.builder import build, collect_entries
+    from libtb.index import transport
+    config = read_config()
+    settings = index_config(config)
+    target = path or settings['path']
+    if publish_to_valkey is None:
+        publish_to_valkey = settings['source'] == 'valkey'
+    # One generation number for the file, the manifest and the marker, so all
+    # three agree and a mismatch anywhere is a real fault rather than clock skew
+    built_at = int(time.time())
     try:
         print('Building domain index')
         entries, files = collect_entries('lists')
-        stats = build(entries, path=target)
-        print('Built domain index: ' + str(stats['domains']) + ' domains from '
+        stats = build(entries, path=target, built_at=built_at)
+        # A worker sharing this filesystem with the librarian already has the
+        # file, so record the generation and save it a pointless 175 MB download
+        with open(target + '.generation', 'w') as marker:
+            marker.write(str(built_at))
+        print('Built domain index generation ' + str(built_at) + ': '
+              + str(stats['domains']) + ' domains from '
               + str(files) + ' files, ' + str(round(stats['bytes'] / 1e6, 1)) + ' MB, '
               + str(stats['attr_combinations']) + ' attribute combinations')
-        return stats
     except Exception as e:
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None
+
+    if publish_to_valkey:
+        try:
+            r = Redis(
+                host=config['redis']['host'],
+                port=config['redis']['port'],
+                password=config['redis']['password'],
+                db=config['redis']['host_list_db']
+            )
+            manifest = transport.publish(r, target, built_at)
+            print('Published domain index generation ' + str(manifest['built_at'])
+                  + ' as ' + str(manifest['chunks']) + ' chunks')
+            stats['published'] = manifest
+        except Exception as e:
+            print('Failed to publish domain index: ' + str(e), file=sys.stderr)
+    return stats
+
+
+def sync_domain_index():
+    """Downloads the published index if the local copy is not current.
+
+    Runs in its own loop rather than in the event path. A worker that fetched
+    lazily per job would have every concurrent job downloading the same 175 MB
+    the moment a new generation appeared.
+    """
+    from libtb.index import transport
+    config = read_config()
+    settings = index_config(config)
+    if settings['source'] != 'valkey':
+        print('Domain index source is ' + settings['source'] + ', nothing to sync')
+        return None
+    r = Redis(
+        host=config['redis']['host'],
+        port=config['redis']['port'],
+        password=config['redis']['password'],
+        db=config['redis']['host_list_db']
+    )
+    try:
+        manifest = transport.fetch_if_stale(r, settings['path'])
+    except Exception as e:
+        print('Failed to sync domain index: ' + str(e), file=sys.stderr)
+        return None
+    if manifest:
+        print('Synced domain index generation ' + str(manifest['built_at'])
+              + ', ' + str(round(manifest['bytes'] / 1e6, 1)) + ' MB')
+    return manifest
 
 
 def pull_tld_list():

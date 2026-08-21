@@ -48,6 +48,12 @@ processor:
   domain_index:
     mode: valkey
     path: lists/index/domains.tbidx
+    # Where a worker gets the index file.
+    #   file    it is already on local disk, single-node deployments
+    #   valkey  the librarian publishes it and workers download it, which is
+    #           needed because ./vols/lists is a per-node bind mount
+    source: file
+    sync_interval_sec: 300
   dns:
     lookup_ips: true
     resolvers:
