@@ -23,6 +23,8 @@ services:
       - VALKEY_HOST
       - VALKEY_PORT
       - TURKEYBITE_WORKER_PROCS
+      - TURKEYBITE_WORKER_CLASS
+      - TURKEYBITE_INDEX_SYNC_INTERVAL_SEC
     networks:
       - tb-net
     ulimits:

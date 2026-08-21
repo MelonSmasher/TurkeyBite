@@ -1,6 +1,9 @@
+import atexit
 import json
 import os
+import signal
 import sys
+import time
 from libtb.tbsyslog import Syslog, Level
 from libtb.index import DomainIndex
 from datetime import datetime, timezone
@@ -8,24 +11,91 @@ from dateutil import *
 from dateutil.parser import parse
 from redis import Redis
 from opensearchpy import OpenSearch
+from opensearchpy import helpers as opensearch_helpers
 from dns import reversename, resolver, exception
+from urllib.parse import urlparse
 
 
-# One index handle per process. A read-only mmap survives fork safely, unlike a
-# redis-py connection, so a forked job inherits the parent's map for free. Keyed
-# on pid anyway so a child that opens its own does not hand it back to a sibling.
+# One OpenSearch client per process, per host. Unlike the read-only mmap above,
+# a socket is not fork-safe, so this must never be shared across a fork. Keyed on
+# pid so a forked child builds its own rather than reusing a parent's connection.
+#
+# Under the default RQ worker, which forks a job per event, this saves nothing:
+# the child is discarded after one document. It is worth having anyway because
+# ship_bite previously built a client and completed a TLS handshake per document,
+# and because with rq.SimpleWorker the process persists and the connection is
+# genuinely reused.
+_opensearch_clients = {}
+
+
+def opensearch_client(host):
+    # Username is part of the key so rotated credentials are not served by a
+    # client still holding the old ones
+    key = (os.getpid(), host['uri'], host.get('username'))
+    # Drop anything belonging to another pid first. After a fork the child holds
+    # the parent's client object and its socket fd; using it would interleave two
+    # processes on one connection, and keeping it just leaks the fd.
+    for stale in [k for k in _opensearch_clients if k[0] != key[0]]:
+        del _opensearch_clients[stale]
+    client = _opensearch_clients.get(key)
+    if client is not None:
+        return client
+
+    parsed = urlparse(host['uri'])
+    use_ssl = parsed.scheme == 'https'
+    kwargs = {
+        'hosts': [{'host': parsed.hostname, 'port': parsed.port or (443 if use_ssl else 80)}],
+        'use_ssl': use_ssl,
+        'verify_certs': False,
+        'ssl_show_warn': False,
+        'request_timeout': 30,
+        'retry_on_timeout': True,
+    }
+    if host.get('username') and host.get('password'):
+        kwargs['http_auth'] = (host['username'], host['password'])
+    client = OpenSearch(**kwargs)
+    _opensearch_clients[key] = client
+    return client
+
+
+# Documents waiting to be flushed as one bulk request, keyed by pid for the same
+# reason. Only useful when the worker process outlives a single job.
+_bulk_buffers = {}
+_flush_hooks_installed = set()
+
+
+def _install_flush_hooks(flush):
+    """Flush on exit and on SIGTERM, since supervisor stops workers with TERM."""
+    pid = os.getpid()
+    if pid in _flush_hooks_installed:
+        return
+    _flush_hooks_installed.add(pid)
+    atexit.register(flush)
+
+    def on_term(signum, frame):
+        flush()
+        raise SystemExit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, on_term)
+    except (ValueError, OSError):
+        # Not the main thread, or signals unavailable. atexit still applies.
+        pass
+
+
+# Index handles, keyed on path alone and deliberately not on pid. A read-only
+# mmap is fork-safe, so a child inherits the parent's map and reuses it for free
+# rather than paying to close and reopen. This is the opposite of the right
+# answer for the OpenSearch client above, where the object owns a socket.
 _index_handles = {}
 
 
 def domain_index(path):
-    """Returns a per-process DomainIndex, reopening it if the file was swapped."""
-    key = (os.getpid(), path)
-    index = _index_handles.get(key)
+    """Returns the process's DomainIndex, reopening it if the file was swapped."""
+    index = _index_handles.get(path)
     if index is None:
-        for stale in [k for k in _index_handles if k[0] != key[0]]:
-            del _index_handles[stale]
         index = DomainIndex(path)
-        _index_handles[key] = index
+        _index_handles[path] = index
     else:
         index.reload_if_changed()
     return index
@@ -338,61 +408,78 @@ class Processor(object):
         }
         self.ship_bite(bite)
 
+    def bulk_settings(self):
+        """Bulk buffering settings. Off by default, deliberately.
+
+        Batching only helps when a worker process handles more than one job,
+        which needs rq.SimpleWorker. It also introduces a loss window: RQ marks
+        a job finished when process_packet returns, so anything still sitting in
+        the buffer when a worker dies uncleanly is gone with no record. Flush
+        hooks cover a clean stop and a SIGTERM from supervisor, not a SIGKILL.
+
+        That window closes properly with Redis Streams, where the ack happens
+        after the flush. Until then this stays opt-in.
+        """
+        settings = (self.config['elastic'].get('bulk') or {})
+        return (
+            bool(settings.get('enable', False)),
+            int(settings.get('size', 500)),
+            float(settings.get('interval_sec', 2)),
+        )
+
+    def index_name(self):
+        # Deliberately local time, not UTC. The index name is the ingestion
+        # day as the operator experiences it, which is what the retention
+        # policy is reasoning about. Only bite.processed needs to be UTC,
+        # because OpenSearch parses that one as a date.
+        return ''.join([self.config['elastic']['index_prefix'], '-',
+                        datetime.now().strftime("%Y-%m-%d")])
+
+    def flush_bulk(self, force=True):
+        """Sends buffered documents as one bulk request."""
+        buffer = _bulk_buffers.get(os.getpid())
+        if not buffer or not buffer['docs']:
+            return 0
+        _, size, interval = self.bulk_settings()
+        if not force and len(buffer['docs']) < size and (time.monotonic() - buffer['since']) < interval:
+            return 0
+        docs = buffer['docs']
+        buffer['docs'] = []
+        buffer['since'] = time.monotonic()
+        for host in self.config['elastic']['hosts']:
+            try:
+                ok, errors = opensearch_helpers.bulk(
+                    opensearch_client(host), docs, raise_on_error=False, stats_only=False)
+                for error in errors or []:
+                    print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
+                return ok
+            except Exception as e:
+                print(f"Error bulk sending to OpenSearch at {host['uri']}: {str(e)}",
+                      file=sys.stderr)
+                continue
+        print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
+        return 0
+
     def ship_bite(self, bite):
         if self.config['elastic']['enable']:
-            # Deliberately local time, not UTC. The index name is the ingestion
-            # day as the operator experiences it, which is what the retention
-            # policy is reasoning about. Only bite.processed needs to be UTC,
-            # because OpenSearch parses that one as a date.
-            index = ''.join([self.config['elastic']['index_prefix'], '-', datetime.now().strftime("%Y-%m-%d")])
-            for host in self.config['elastic']['hosts']:
-                try:
-                    # Configure the OpenSearch client based on URI and auth
-                    if host['username'] and host['password']:
-                        # URI parsing to get host and port
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(host['uri'])
-                        use_ssl = parsed_url.scheme == 'https'
-                        host_name = parsed_url.hostname
-                        port = parsed_url.port or (443 if use_ssl else 80)
-                        
-                        # Create OpenSearch client
-                        os_client = OpenSearch(
-                            hosts=[{'host': host_name, 'port': port}],
-                            http_auth=(host['username'], host['password']),
-                            use_ssl=use_ssl,
-                            verify_certs=False,
-                            ssl_show_warn=False,
-                            request_timeout=30,  # Add timeout
-                            retry_on_timeout=True  # Enable retries
-                        )
-                    else:
-                        # URI parsing to get host and port
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(host['uri'])
-                        use_ssl = parsed_url.scheme == 'https'
-                        host_name = parsed_url.hostname
-                        port = parsed_url.port or (443 if use_ssl else 80)
-                        
-                        # Create OpenSearch client
-                        os_client = OpenSearch(
-                            hosts=[{'host': host_name, 'port': port}],
-                            use_ssl=use_ssl,
-                            verify_certs=False,
-                            ssl_show_warn=False,
-                            request_timeout=30,  # Add timeout
-                            retry_on_timeout=True  # Enable retries
-                        )
-                    
-                    # Attempt to index the document
-                    os_client.index(index=index, body=bite)
-                    # If successful, break the loop
-                    break
-                except Exception as e:
-                    # Log the error to stderr but continue processing
-                    print(f"Error sending to OpenSearch at {host['uri']}: {str(e)}", file=sys.stderr)
-                    # Continue to the next host if available, or fall back to syslog
-                    continue
+            bulk_enabled, size, _ = self.bulk_settings()
+            if bulk_enabled:
+                buffer = _bulk_buffers.setdefault(
+                    os.getpid(), {'docs': [], 'since': time.monotonic()})
+                if not buffer['docs']:
+                    _install_flush_hooks(self.flush_bulk)
+                buffer['docs'].append({'_index': self.index_name(), '_source': bite})
+                self.flush_bulk(force=False)
+            else:
+                index = self.index_name()
+                for host in self.config['elastic']['hosts']:
+                    try:
+                        opensearch_client(host).index(index=index, body=bite)
+                        break
+                    except Exception as e:
+                        print(f"Error sending to OpenSearch at {host['uri']}: {str(e)}",
+                              file=sys.stderr)
+                        continue
 
         if self.config['syslog']['enable']:
             try:

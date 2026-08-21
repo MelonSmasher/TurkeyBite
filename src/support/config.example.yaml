@@ -61,6 +61,16 @@ processor:
   elastic:
     enable: true
     index_prefix: tb-index
+    # Batching only helps when a worker handles more than one job, so it needs
+    # TURKEYBITE_WORKER_CLASS=rq.SimpleWorker. It also opens a loss window: RQ
+    # marks a job finished when the processor returns, so buffered documents are
+    # gone if a worker dies uncleanly. Flush hooks cover a clean stop and a
+    # SIGTERM, not a SIGKILL. Leave this off until the queue can acknowledge
+    # after the flush.
+    bulk:
+      enable: false
+      size: 500
+      interval_sec: 2
     hosts:
       - uri: https://opensearch:9200
         username: admin

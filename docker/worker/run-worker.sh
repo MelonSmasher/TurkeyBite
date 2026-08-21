@@ -59,6 +59,12 @@ export VALKEY_HOST=${VALKEY_HOST:-valkey}
 export VALKEY_PORT=${VALKEY_PORT:-6379}
 export VALKEY_DB=${VALKEY_DB:-0}
 export TURKEYBITE_WORKER_PROCS=${TURKEYBITE_WORKER_PROCS:-2}
+# rq.SimpleWorker runs jobs in the worker process instead of forking one per
+# job, so a connection or an mmap opened once is actually reused. Job timeouts
+# still work: SimpleWorker uses the same UnixSignalDeathPenalty, and perform_job
+# still catches a raising job and fails it rather than taking the worker down.
+# Set to rq.Worker to go back to fork-per-job.
+export TURKEYBITE_WORKER_CLASS=${TURKEYBITE_WORKER_CLASS:-rq.SimpleWorker}
 
 export TURKEYBITE_INDEX_SYNC_INTERVAL_SEC=${TURKEYBITE_INDEX_SYNC_INTERVAL_SEC:-300}
 
