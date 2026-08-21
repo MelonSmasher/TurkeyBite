@@ -182,13 +182,29 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      password: "your_valkey_password"
      db: 0
      key: "turkeybite"
-     data_type: "channel"
+     data_type: "list"
    ```
 
-   `data_type` must be `channel`. The core subscribes to a Valkey pub/sub
-   channel, so a `list` output fills a Valkey key that nothing ever reads, and
-   nothing logs an error to tell you why no data arrives. `key` has to match
-   `redis.channel` in `config.yaml`, which is `turkeybite` by default.
+   `data_type` has to match the ingestion path you run, and they are not
+   interchangeable. `key` must match `redis.channel` in `config.yaml`, which is
+   `turkeybite` by default, whichever path you choose.
+
+   **`list`, with `TURKEYBITE_PIPELINE=consume`.** Packetbeat RPUSHes onto a
+   Valkey list. Workers claim a batch, sieve and enrich it, index it, and only
+   then acknowledge. The list persists, so a restart resumes instead of losing
+   what was in flight, `LLEN` gives you a real backlog metric, and a burst makes
+   the list grow visibly rather than disappearing. Delivery is at-least-once, so
+   a crash between indexing and acknowledging can duplicate a batch.
+
+   **`channel`, with `TURKEYBITE_PIPELINE=rq`.** Packetbeat PUBLISHes and the
+   core subscribes. This is the original path and it is lossy by construction:
+   pub/sub has no persistence and no acknowledgement, so every restart drops
+   whatever was in flight, and when the single subscriber falls behind a burst
+   Valkey disconnects it at the 32 MB output-buffer limit with no error and no
+   counter.
+
+   Get this wrong in either direction and you get a healthy-looking Packetbeat,
+   a Valkey key nothing reads, and no events analysed.
 
 2. **Browserbeat**
 

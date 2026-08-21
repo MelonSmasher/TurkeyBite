@@ -26,6 +26,45 @@ def run():
     inlet.open()
 
 
+@cli.command('consume')
+@click.option('--consumer', default=None, help='Stable name for this consumer, used to recover its own in-flight work.')
+@click.option('--batch-size', default=None, type=int, help='Maximum events claimed per batch.')
+def consume(consumer, batch_size):
+    """Drain the durable queue: sieve, enrich, index, then acknowledge."""
+    import os
+    import socket
+    from redis import Redis
+    from libtb.queue import ListQueue
+    from libtb.consumer import Consumer
+
+    config = read_config()
+    queue_conf = config['redis']
+    name = consumer or os.environ.get('TURKEYBITE_CONSUMER_NAME') \
+        or f'{socket.gethostname()}-{os.getpid()}'
+
+    bulk = (config['processor']['elastic'].get('bulk') or {})
+    if config['processor']['elastic'].get('enable') and not bulk.get('enable'):
+        print('Note: processor.elastic.bulk.enable is off. This path acknowledges '
+              'after the flush, so batching is safe here and worth turning on.')
+
+    redis = Redis(
+        host=queue_conf['host'],
+        port=queue_conf['port'],
+        db=queue_conf['db'],
+        password=queue_conf['password']
+    )
+    queue = ListQueue(redis, queue_conf['channel'], name)
+    filters = Filters(config['sieve'])
+    processor = Processor(config['processor'], config['redis'])
+    worker = Consumer(
+        queue, filters, processor,
+        batch_size=batch_size or int(bulk.get('size') or 500)
+    )
+    worker.install_signal_handlers()
+    print(f'Consuming {queue_conf["channel"]} as {name}')
+    worker.run()
+
+
 @cli.command('hosts')
 def hosts():
     pull_host_lists()

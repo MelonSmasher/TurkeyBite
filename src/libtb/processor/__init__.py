@@ -435,8 +435,14 @@ class Processor(object):
         return ''.join([self.config['elastic']['index_prefix'], '-',
                         datetime.now().strftime("%Y-%m-%d")])
 
-    def flush_bulk(self, force=True):
-        """Sends buffered documents as one bulk request."""
+    def flush_bulk(self, force=True, raise_on_total_failure=False):
+        """Sends buffered documents as one bulk request.
+
+        Returns the number accepted. With raise_on_total_failure the caller is
+        told when every host refused, so a consumer that acknowledges after the
+        flush can requeue instead of losing the batch. The RQ path leaves it off
+        because it has nothing to requeue to.
+        """
         buffer = _bulk_buffers.get(os.getpid())
         if not buffer or not buffer['docs']:
             return 0
@@ -457,6 +463,8 @@ class Processor(object):
                 print(f"Error bulk sending to OpenSearch at {host['uri']}: {str(e)}",
                       file=sys.stderr)
                 continue
+        if raise_on_total_failure:
+            raise RuntimeError(f'every OpenSearch host refused {len(docs)} documents')
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
         return 0
 

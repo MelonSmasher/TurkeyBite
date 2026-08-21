@@ -68,6 +68,18 @@ export TURKEYBITE_WORKER_CLASS=${TURKEYBITE_WORKER_CLASS:-rq.SimpleWorker}
 
 export TURKEYBITE_INDEX_SYNC_INTERVAL_SEC=${TURKEYBITE_INDEX_SYNC_INTERVAL_SEC:-300}
 
-cat /etc/supervisor/conf.d/tb-worker.template | envsubst | tee /etc/supervisor/conf.d/tb-worker.conf
+# Which ingestion path this worker runs.
+#   rq       pub/sub into the core, RQ into these workers. The original path.
+#   consume  claim from the durable Redis list, sieve, enrich, index, then
+#            acknowledge. One process per event instead of two Redis hops, and
+#            the acknowledgement after the flush is what makes batching safe.
+export TURKEYBITE_PIPELINE=${TURKEYBITE_PIPELINE:-rq}
+export TURKEYBITE_CONSUMER_PREFIX=${TURKEYBITE_CONSUMER_PREFIX:-$(hostname)}
+
+if [ "${TURKEYBITE_PIPELINE}" = "consume" ]; then
+    cat /etc/supervisor/conf.d/tb-consume.template | envsubst | tee /etc/supervisor/conf.d/tb-consume.conf
+else
+    cat /etc/supervisor/conf.d/tb-worker.template | envsubst | tee /etc/supervisor/conf.d/tb-worker.conf
+fi
 cat /etc/supervisor/conf.d/tb-index-sync.template | envsubst | tee /etc/supervisor/conf.d/tb-index-sync.conf
 /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
