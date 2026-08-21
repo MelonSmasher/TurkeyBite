@@ -28,6 +28,106 @@ from urllib.parse import urlparse
 _opensearch_clients = {}
 
 
+# Reverse DNS answers, keyed on client address. The same handful of clients
+# recur constantly, so most events can be answered without a query at all.
+#
+# Worth having only when the process outlives a job. Under the consume path or
+# rq.SimpleWorker it does; under the forking rq.Worker each child is discarded
+# after one event and this stays empty, which is harmless. Unlike the OpenSearch
+# socket above this needs no pid key: a child inherits a copy of the dict and
+# can read it without corrupting the parent's.
+_ptr_cache = {}
+
+# Resolver objects hold configuration, not a socket, so one per nameserver set
+# is enough and it is safe across a fork.
+_ptr_resolvers = {}
+
+# Outcomes stable enough to remember. Transient failures are deliberately absent:
+# caching NoNameservers or a Timeout would pin a resolver blip for the whole TTL
+# and hide the recovery, and an unnoticed reverse DNS failure is exactly what
+# went undiagnosed for 15 months.
+PTR_CACHEABLE = frozenset(('ok', 'nxdomain', 'bad_client_address'))
+PTR_CACHE_TTL = 300
+PTR_CACHE_MAX = 20000
+
+
+def ptr_resolver(nameservers, timeout=1):
+    key = (tuple(nameservers), timeout)
+    found = _ptr_resolvers.get(key)
+    if found is None:
+        found = resolver.Resolver(configure=False)
+        found.nameservers = list(nameservers)
+        found.timeout = timeout
+        found.lifetime = timeout
+        _ptr_resolvers[key] = found
+    return found
+
+
+def _ptr_remember(client, entry, expires, max_entries):
+    # Reinserting rather than assigning keeps dict order meaningful, so the
+    # eviction below drops the least recently refreshed entry
+    _ptr_cache.pop(client, None)
+    _ptr_cache[client] = (expires, entry)
+    while len(_ptr_cache) > max_entries:
+        _ptr_cache.pop(next(iter(_ptr_cache)))
+
+
+def ptr_lookup(client, nameservers, ttl=PTR_CACHE_TTL, max_entries=PTR_CACHE_MAX,
+               timeout=1, now=None):
+    """Resolves a client address to hostnames. Returns (hosts, ptr_name, status).
+
+    Never raises. Every failure mode lands in `status`, which goes in the
+    document rather than the log so a resolver that stops working shows up in a
+    query instead of a wall of per-event lines.
+    """
+    if not isinstance(client, str):
+        # A malformed packet can put anything in client.ip. A dict or a list is
+        # truthy, so the guard upstream lets it through, and an unhashable value
+        # would fail the cache lookup below before any DNS handler could catch it.
+        return [], '', 'bad_client_address'
+
+    now = time.monotonic() if now is None else now
+    hit = _ptr_cache.get(client)
+    if hit is not None:
+        expires, entry = hit
+        if expires > now:
+            hosts, name, status = entry
+            # A fresh list every time: the caller puts this in the document and
+            # a shared list would let one event's mutation poison the cache
+            return list(hosts), name, status
+        _ptr_cache.pop(client, None)
+
+    hosts = []
+    name = ''
+    try:
+        reverse = reversename.from_address(client)
+        # Recorded before the query so a failure still reports what was asked
+        name = reverse.to_text()
+        for record in ptr_resolver(nameservers, timeout).resolve(reverse, 'PTR'):
+            hosts.append(str(record).rstrip('.'))
+        status = 'ok'
+    except resolver.NXDOMAIN:
+        # The client has no reverse record, which is normal
+        status = 'nxdomain'
+    except exception.SyntaxError:
+        # from_address rejects an address it cannot parse, and dnspython raises
+        # its own SyntaxError rather than ValueError. That is a DNSException, so
+        # this has to come before the handler below or a permanently bad address
+        # is reported as a resolver fault and re-queried on every single event.
+        status = 'bad_client_address'
+    except exception.DNSException as e:
+        # Everything else dnspython raises subclasses DNSException, including
+        # NoNameservers, which is what a resolver answering SERVFAIL produces
+        status = type(e).__name__
+    except ValueError:
+        # Kept for a dnspython that reports a bad address this way instead
+        status = 'bad_client_address'
+
+    if status in PTR_CACHEABLE:
+        _ptr_remember(client, (tuple(hosts), name, status), now + ttl, max_entries)
+    return hosts, name, status
+
+
 def opensearch_client(host):
     # Username is part of the key so rotated credentials are not served by a
     # client still holding the old ones
@@ -257,33 +357,14 @@ class Processor(object):
         # of the log, so a resolver that stops working shows up in a query
         # rather than in a wall of per-event log lines.
         ptr_status = 'skipped'
-        if self.config['dns']['lookup_ips']:
-            if client:
-                ptr_status = 'ok'
-                try:
-                    rev_name = reversename.from_address(client)
-                    tb_resolver = resolver.Resolver(configure=False)
-                    tb_resolver.nameservers = self.config['dns']['resolvers']
-                    tb_resolver.timeout = 1
-                    tb_resolver.lifetime = 1
-                    for a in tb_resolver.resolve(rev_name, 'PTR'):
-                        reversed_dns.append(str(a).rstrip('.'))
-                    rev_name = rev_name.to_text()
-                except resolver.NXDOMAIN:
-                    # The client has no reverse record, which is normal
-                    ptr_status = 'nxdomain'
-                    rev_name = rev_name.to_text() if rev_name else ''
-                except exception.DNSException as e:
-                    # Everything dnspython raises subclasses DNSException,
-                    # including NoNameservers, which is what a resolver
-                    # answering SERVFAIL produces. Catching only Timeout and
-                    # NXDOMAIN here discarded every DNS event for 15 months.
-                    ptr_status = type(e).__name__
-                    rev_name = rev_name.to_text() if rev_name else ''
-                except ValueError:
-                    # from_address rejects an address it cannot parse
-                    ptr_status = 'bad_client_address'
-                    rev_name = ''
+        if self.config['dns']['lookup_ips'] and client:
+            cache = (self.config['dns'] or {}).get('cache') or {}
+            reversed_dns, rev_name, ptr_status = ptr_lookup(
+                client,
+                self.config['dns']['resolvers'],
+                ttl=int(cache.get('ttl_sec', PTR_CACHE_TTL)),
+                max_entries=int(cache.get('max_entries', PTR_CACHE_MAX)),
+            )
 
         # Build the dataset to ship
         bite = {
