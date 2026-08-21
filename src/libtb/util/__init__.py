@@ -355,6 +355,74 @@ def clean_list_file(file_path: str, tlds: list[str]):
         for host in hosts:
             file.write(host + '\n')
 
+# A key in the per-domain host list keyspace: turkey-bite:<unix tag>:<domain>.
+# Anchored on a numeric tag so the index manifest and chunks, which live under
+# turkey-bite:index:, can never be swept by mistake.
+TAGGED_KEY = re.compile(r'^turkey-bite:\d+:')
+
+# Lookup modes that read the tagged keyspace, so the librarian has to populate
+# it. `compare` belongs here because Valkey stays authoritative in that mode;
+# dropping it would make the comparison meaningless rather than merely slower.
+VALKEY_BACKED_MODES = frozenset(('valkey', 'compare'))
+
+
+def unlink_matching(r, match, batch=1000):
+    """UNLINKs every key matching a glob, in batches. Returns the count.
+
+    DEL blocks the server for the whole call, which matters when the pattern
+    covers millions of keys, and one round trip per key makes the sweep the
+    slowest part of a list pull.
+    """
+    removed = 0
+    pending = 0
+    pipe = r.pipeline(transaction=False)
+    for raw in r.scan_iter(match=match, count=1000):
+        pipe.unlink(raw)
+        pending += 1
+        if pending >= batch:
+            pipe.execute()
+            removed += pending
+            pending = 0
+            pipe = r.pipeline(transaction=False)
+    if pending:
+        pipe.execute()
+        removed += pending
+    return removed
+
+
+def purge_tagged_keyspace(r, batch=1000):
+    """Removes the per-domain host list keyspace and its tag bookkeeping.
+
+    Returns the number of keys removed. UNLINK rather than DEL because this can
+    be millions of keys and DEL would block the server for the whole sweep.
+
+    SCAN while deleting is safe here: it may repeat or miss a key, a repeated
+    UNLINK is a no-op, and anything missed is swept on the next run.
+    """
+    removed = 0
+    pending = 0
+    pipe = r.pipeline(transaction=False)
+    for raw in r.scan_iter(match='turkey-bite:*', count=1000):
+        name = raw.decode('utf-8') if isinstance(raw, bytes) else raw
+        if not TAGGED_KEY.match(name):
+            continue
+        pipe.unlink(name)
+        pending += 1
+        if pending >= batch:
+            pipe.execute()
+            removed += pending
+            pending = 0
+            pipe = r.pipeline(transaction=False)
+    if pending:
+        pipe.execute()
+        removed += pending
+    # Without a current tag, valkey_contexts returns no contexts rather than
+    # reading a keyspace that is no longer maintained
+    for key in ('turkey-bite:tags', 'turkey-bite:current-tag', 'turkey-bite:old-tag'):
+        r.unlink(key)
+    return removed
+
+
 def pull_host_lists():
     host_files = get_host_files()
     # Get the list of TLDs
@@ -414,6 +482,21 @@ def pull_host_lists():
         password=config['redis']['password'],
         db=config['redis']['host_list_db']
     )
+
+    # valkey_contexts is the only reader of the tagged keyspace, and it answers
+    # the `valkey` and `compare` modes. `compare` needs it because Valkey stays
+    # authoritative there. `index` does not read it at all, so populating it
+    # spends a GET and a SET per domain on data no query will ever touch.
+    populate_valkey = index_config(config)['mode'] in VALKEY_BACKED_MODES
+
+    if not populate_valkey:
+        print('Domain index mode is active, skipping the Valkey host list')
+        removed = purge_tagged_keyspace(r)
+        if removed:
+            print('Reclaimed ' + str(removed) + ' keys from the unused host list keyspace')
+        build_domain_index()
+        return
+
     print('Adding host entries to redis')
 
     tags = r.hgetall('turkey-bite:tags')
@@ -469,8 +552,7 @@ def pull_host_lists():
         print('Purging previous data')
         tags[old_tag] = 'purging'
         r.hmset('turkey-bite:tags', tags)
-        for key in r.scan_iter('turkey-bite:' + old_tag + ':*'):
-            r.delete(key)
+        unlink_matching(r, 'turkey-bite:' + old_tag + ':*')
         tags[old_tag] = 'purged'
         r.hmset('turkey-bite:tags', tags)
         print('Done purging previous data')
