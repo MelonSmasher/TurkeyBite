@@ -1,6 +1,10 @@
 FROM python:3-alpine
 
 ENV TZ=America/New_York
+# Supervisor sends each program's stdout to a file, and Python buffers when
+# stdout is not a tty, so periodic progress output sat unflushed until 8 KB
+# had accumulated. That defeats the point of a status line.
+ENV PYTHONUNBUFFERED=1
 ENV TB_ROLE=worker
 
 WORKDIR /turkey-bite
