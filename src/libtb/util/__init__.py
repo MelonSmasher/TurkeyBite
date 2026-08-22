@@ -80,9 +80,21 @@ def read_config(config_file='config.yaml'):
 
 
 def process_ignorelist(r=False, tag=False):
+    """Strips deliberately-wrong categories from the Valkey host list keyspace.
+
+    Only meaningful for the modes that read that keyspace. In index mode the same
+    corrections are applied by apply_ignorelist while the index is built, so there
+    is nothing here to edit.
+    """
     print('Processing ignorelist')
     if os.path.exists('lists/ignorelist.json'):
         config = read_config()
+        if index_config(config)['mode'] not in VALKEY_BACKED_MODES:
+            # Said plainly, because the alternative is a missing-tag complaint
+            # every time the ignorelist loop runs, which reads like a fault
+            print('Domain index mode is active, the index build applies the '
+                  'ignorelist instead')
+            return
         if not r:
             r = Redis(
                 host=config['redis']['host'],
@@ -91,11 +103,13 @@ def process_ignorelist(r=False, tag=False):
                 db=config['redis']['host_list_db']
             )
             if not tag:
-                try:
-                    tag = r.get('turkey-bite:current-tag').decode('utf-8')
-                except AttributeError:
+                tag = r.get('turkey-bite:current-tag')
+                if tag is None:
+                    # A return rather than exit(): this is library code and the
+                    # caller decides what a missing tag means for it
                     print('No current tag found')
-                    exit()
+                    return
+                tag = tag.decode('utf-8')
                     
         with open('lists/ignorelist.json', 'r') as json_file:
             ignorelist = json.load(json_file)
@@ -167,7 +181,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
     is on trial. Never raises: a failed index build must not fail a list pull
     that otherwise succeeded, because the Valkey path is still there.
     """
-    from libtb.index.builder import build, collect_entries
+    from libtb.index.builder import apply_ignorelist, build, collect_entries
     from libtb.index import transport
     config = read_config()
     settings = index_config(config)
@@ -179,7 +193,10 @@ def build_domain_index(path=None, publish_to_valkey=None):
     built_at = int(time.time())
     try:
         print('Building domain index')
-        entries, files = collect_entries('lists')
+        entries, files, skipped = collect_entries('lists', exclude_path=target)
+        # The curated corrections live outside the collector's glob, so they have
+        # to be applied here or the index keeps categories marked as wrong
+        ignored, dropped = apply_ignorelist(entries, 'lists')
         stats = build(entries, path=target, built_at=built_at)
         # A worker sharing this filesystem with the librarian already has the
         # file, so record the generation and save it a pointless 175 MB download
@@ -188,7 +205,10 @@ def build_domain_index(path=None, publish_to_valkey=None):
         print('Built domain index generation ' + str(built_at) + ': '
               + str(stats['domains']) + ' domains from '
               + str(files) + ' files, ' + str(round(stats['bytes'] / 1e6, 1)) + ' MB, '
-              + str(stats['attr_combinations']) + ' attribute combinations')
+              + str(stats['attr_combinations']) + ' attribute combinations, '
+              + str(skipped) + ' lines skipped, '
+              + str(ignored) + ' categories removed by the ignorelist, '
+              + str(dropped) + ' entries dropped')
     except Exception as e:
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None
@@ -354,6 +374,122 @@ def clean_list_file(file_path: str, tlds: list[str]):
         for host in hosts:
             file.write(host + '\n')
 
+# A key in the per-domain host list keyspace: turkey-bite:<unix tag>:<domain>.
+# Anchored on a numeric tag so the index manifest and chunks, which live under
+# turkey-bite:index:, can never be swept by mistake.
+TAGGED_KEY = re.compile(r'^turkey-bite:\d+:')
+
+# Lookup modes that read the tagged keyspace, so the librarian has to populate
+# it. `compare` belongs here because Valkey stays authoritative in that mode;
+# dropping it would make the comparison meaningless rather than merely slower.
+VALKEY_BACKED_MODES = frozenset(('valkey', 'compare'))
+
+
+def unlink_matching(r, match, batch=1000):
+    """UNLINKs every key matching a glob, in batches. Returns the count.
+
+    DEL blocks the server for the whole call, which matters when the pattern
+    covers millions of keys, and one round trip per key makes the sweep the
+    slowest part of a list pull.
+    """
+    removed = 0
+    pending = 0
+    pipe = r.pipeline(transaction=False)
+    for raw in r.scan_iter(match=match, count=1000):
+        pipe.unlink(raw)
+        pending += 1
+        if pending >= batch:
+            pipe.execute()
+            removed += pending
+            pending = 0
+            pipe = r.pipeline(transaction=False)
+    if pending:
+        pipe.execute()
+        removed += pending
+    return removed
+
+
+def purge_tagged_keyspace(r, batch=1000):
+    """Removes the per-domain host list keyspace and its tag bookkeeping.
+
+    Returns the number of keys removed. UNLINK rather than DEL because this can
+    be millions of keys and DEL would block the server for the whole sweep.
+
+    SCAN while deleting is safe here: it may repeat or miss a key, a repeated
+    UNLINK is a no-op, and anything missed is swept on the next run.
+    """
+    removed = 0
+    pending = 0
+    pipe = r.pipeline(transaction=False)
+    for raw in r.scan_iter(match='turkey-bite:*', count=1000):
+        name = raw.decode('utf-8') if isinstance(raw, bytes) else raw
+        if not TAGGED_KEY.match(name):
+            continue
+        pipe.unlink(name)
+        pending += 1
+        if pending >= batch:
+            pipe.execute()
+            removed += pending
+            pending = 0
+            pipe = r.pipeline(transaction=False)
+    if pending:
+        pipe.execute()
+        removed += pending
+    # Without a current tag, valkey_contexts returns no contexts rather than
+    # reading a keyspace that is no longer maintained
+    for key in ('turkey-bite:tags', 'turkey-bite:current-tag', 'turkey-bite:old-tag'):
+        r.unlink(key)
+    return removed
+
+
+def download_list(hlist, tlds):
+    """Fetches and cleans one list, replacing the live copy only on success.
+
+    Downloaded beside the live file and renamed into place. urlretrieve opens its
+    destination for writing straight away, so writing directly to the live path
+    meant a download that died part way through truncated a list that was working,
+    and cleaning that remnant turned it into a short but valid-looking list. It
+    also meant a concurrent index build could read a half-written file.
+
+    A result that cleans to nothing is discarded rather than installed. An error
+    page served with a 200 cleans to zero entries, and so does a truncated
+    download; in both cases the copy already on disk is the better one.
+
+    Returns True when the live file was replaced.
+    """
+    pending = hlist['file'] + '.new'
+    try:
+        print('Downloading: ' + hlist['name'])
+        opener = urllib.request.build_opener()
+        opener.addheaders = [
+            (
+                'User-agent',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
+            )
+        ]
+        urllib.request.install_opener(opener)
+        urllib.request.urlretrieve(hlist['url'], pending)
+        print('Downloaded: ' + hlist['name'])
+        print('Cleaning: ' + hlist['name'])
+        clean_list_file(pending, tlds)
+        if os.path.getsize(pending) == 0:
+            print('Discarded: ' + hlist['name'] + ' cleaned to no entries, '
+                  'keeping the copy already on disk')
+            return False
+        os.replace(pending, hlist['file'])
+        print('Cleaned: ' + hlist['name'])
+        return True
+    except Exception as e:
+        print('Failed to download: ' + hlist['name'])
+        print(e)
+        return False
+    finally:
+        # os.replace consumed it on the success path, so this only fires when
+        # something went wrong and would otherwise leave a stray .new behind
+        if os.path.exists(pending):
+            os.remove(pending)
+
+
 def pull_host_lists():
     host_files = get_host_files()
     # Get the list of TLDs
@@ -386,25 +522,7 @@ def pull_host_lists():
         # Skip local lists for downloads
         if hlist['url'] is None:
             continue
-        try:
-            print('Downloading: ' + hlist['name'])
-            opener = urllib.request.build_opener()
-            opener.addheaders = [
-                (
-                    'User-agent',
-                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
-                )
-            ]
-            urllib.request.install_opener(opener)
-            urllib.request.urlretrieve(hlist['url'], hlist['file'])
-            print('Downloaded: ' + hlist['name'])
-            print('Cleaning: ' + hlist['name'])
-            clean_list_file(hlist['file'], tlds)
-            print('Cleaned: ' + hlist['name'])
-        except Exception as e:
-            print('Failed to download: ' + hlist['name'])
-            print(e)
-            pass
+        download_list(hlist, tlds)
 
     config = read_config()
     r = Redis(
@@ -413,6 +531,21 @@ def pull_host_lists():
         password=config['redis']['password'],
         db=config['redis']['host_list_db']
     )
+
+    # valkey_contexts is the only reader of the tagged keyspace, and it answers
+    # the `valkey` and `compare` modes. `compare` needs it because Valkey stays
+    # authoritative there. `index` does not read it at all, so populating it
+    # spends a GET and a SET per domain on data no query will ever touch.
+    populate_valkey = index_config(config)['mode'] in VALKEY_BACKED_MODES
+
+    if not populate_valkey:
+        print('Domain index mode is active, skipping the Valkey host list')
+        removed = purge_tagged_keyspace(r)
+        if removed:
+            print('Reclaimed ' + str(removed) + ' keys from the unused host list keyspace')
+        build_domain_index()
+        return
+
     print('Adding host entries to redis')
 
     tags = r.hgetall('turkey-bite:tags')
@@ -468,8 +601,7 @@ def pull_host_lists():
         print('Purging previous data')
         tags[old_tag] = 'purging'
         r.hmset('turkey-bite:tags', tags)
-        for key in r.scan_iter('turkey-bite:' + old_tag + ':*'):
-            r.delete(key)
+        unlink_matching(r, 'turkey-bite:' + old_tag + ':*')
         tags[old_tag] = 'purged'
         r.hmset('turkey-bite:tags', tags)
         print('Done purging previous data')
