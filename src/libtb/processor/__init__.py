@@ -1,10 +1,12 @@
 import atexit
+import ipaddress
 import json
 import os
 import signal
 import sys
 import time
 from libtb.tbsyslog import Syslog, Level
+from libtb.util import dig
 from libtb.index import DomainIndex
 from datetime import datetime, timezone
 from dateutil import *
@@ -207,6 +209,91 @@ def domain_index(path):
     else:
         index.reload_if_changed()
     return index
+
+
+# Where each flat bite field comes from in the raw browser packet. Browserbeat
+# reports Hostname as a nested object with identical hostname and short values,
+# so only the first is lifted.
+BROWSER_IDENTITY_FIELDS = (
+    ('client_hostname', ('Hostname', 'hostname')),
+    ('client_user', ('user',)),
+    ('client_platform', ('platform',)),
+    ('client_browser', ('browser',)),
+)
+
+
+def routable_addresses(values):
+    """Keeps the client addresses that can actually identify a machine.
+
+    Browserbeat reports every interface. On Windows most of them are 169.254
+    link-local autoconfiguration addresses, which identify nothing and can never
+    match a DNS client, so they are the bulk of what arrives and none of it is
+    usable.
+
+    Private ranges are kept deliberately: those are the campus addresses DNS
+    events carry, so they are the whole point. Only addresses that cannot be a
+    client are dropped.
+
+    Order is preserved and duplicates collapse, so the primary interface stays
+    first.
+    """
+    # JSON puts whatever the beat sent here. A bare int is not iterable at all,
+    # and a string would iterate character by character, so the type is checked
+    # rather than assumed. Matches how the sieve reads the same field.
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return []
+
+    kept = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            address = ipaddress.ip_address(value.strip())
+        except ValueError:
+            continue
+        if (address.is_link_local or address.is_loopback or address.is_multicast
+                or address.is_unspecified or address.is_reserved):
+            continue
+        text = str(address)
+        if text in seen:
+            continue
+        seen.add(text)
+        kept.append(text)
+    return kept
+
+
+def client_identity(event_data):
+    """Lifts the browser client identity into flat bite fields.
+
+    The raw packet carries hostname, user, platform, browser and every interface
+    address, and none of it reached bite, where the rest of the document lives. A
+    browser event could say what was visited but not by whom, and a DNS event has
+    the opposite problem: an address with no identity.
+
+    Names are lower-cased. These are identity keys on a case-sensitive keyword
+    field, so one machine reporting a different case would become two machines to
+    every aggregation and to the identity table this feeds. Live events already
+    mix cases across hosts, and nothing is lost by folding, because the packet
+    retains the value exactly as reported.
+
+    Fields with no value are left out rather than set null, so a query can tell
+    absent from empty.
+    """
+    client = dig(event_data, 'client')
+    if not isinstance(client, dict):
+        return {}
+
+    identity = {}
+    for field, path in BROWSER_IDENTITY_FIELDS:
+        value = dig(client, *path)
+        if isinstance(value, str) and value.strip():
+            identity[field] = value.strip().lower()
+
+    addresses = routable_addresses(client.get('ip_addresses'))
+    if addresses:
+        identity['client_ips'] = addresses
+    return identity
 
 
 class Processor(object):
@@ -415,7 +502,11 @@ class Processor(object):
         if 'data' in data.keys():
 
             if '@processed' in data['data'].keys():
-                if data['data']['event']['data']['client']['browser'] == 'safari':
+                # dig rather than chained subscripts: the sieve guarantees
+                # event.data is a dict but not that a client is attached, and a
+                # KeyError here would lose the event
+                browser = dig(data, 'data', 'event', 'data', 'client', 'browser')
+                if browser == 'safari':
                     # safari stores data in local time not UTC we need to convert
                     # From the processed time we can tell the local time zone of the client
                     # '%Y-%m-%dT%H:%M:%S.%f%z'
@@ -431,7 +522,7 @@ class Processor(object):
                     # Set the UTC time to match other browsers
                     timestamp = utc_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                     data['data']['@timestamp'] = timestamp
-                elif data['data']['event']['data']['client']['browser'] in ['chrome', 'firefox']:
+                elif browser in ['chrome', 'firefox']:
                     # Chrome & Firefox do not provide the local time
                     # From the processed time we can tell the local time zone of the client
                     # '%Y-%m-%dT%H:%M:%S.%f%z'
@@ -473,6 +564,7 @@ class Processor(object):
             return False
 
         contexts, extra = self.resolve_contexts(searches)
+        identity = client_identity(dig(data, 'data', 'event', 'data'))
 
         bite = {
             '@timestamp': timestamp,
@@ -485,6 +577,7 @@ class Processor(object):
                 'processed': datetime.now(timezone.utc).isoformat(),
                 'event_time_utc': timestamp,
                 'event_time_local': localtime,
+                **identity,
                 'url': data['data']['event']['data']['entry']['url'],
                 'requested': [searches[0]],
                 'searches': searches,
