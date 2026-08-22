@@ -85,6 +85,8 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "context_match": { "type": "boolean" },
                             "index_error": { "type": "keyword" },
                             "requested": { "type": "keyword" },
+                            "registrable_domain": { "type": "keyword" },
+                            "psl_fallback": { "type": "boolean" },
                             "searches": { "type": "keyword" },
                             "contexts": { "type": "keyword" },
                             "purpose": { "type": "keyword" },

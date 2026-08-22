@@ -11,6 +11,7 @@ WORKDIR /turkey-bite
 
 COPY docker/worker/run-worker.sh ./run.sh
 COPY docker/worker/index-sync.sh ./index-sync.sh
+COPY docker/worker/psl.sh ./psl.sh
 COPY src/libtb ./libtb
 COPY src/turkeybite .
 COPY src/requirements.txt .
@@ -21,6 +22,7 @@ RUN pip3 install --no-cache --upgrade pip setuptools wheel && \
     apk add --no-cache supervisor envsubst && \
     chmod +x run.sh && \
     chmod +x index-sync.sh && \
+    chmod +x psl.sh && \
     mkdir -p /var/log/turkey-bite && \
     rm -rf /etc/supervisor && \
     mkdir /etc/supervisor

@@ -91,4 +91,5 @@ else
     cat /etc/supervisor/conf.d/tb-worker.template | envsubst | tee /etc/supervisor/conf.d/tb-worker.conf
 fi
 cat /etc/supervisor/conf.d/tb-index-sync.template | envsubst | tee /etc/supervisor/conf.d/tb-index-sync.conf
+cat /etc/supervisor/conf.d/tb-psl.template | envsubst | tee /etc/supervisor/conf.d/tb-psl.conf
 /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

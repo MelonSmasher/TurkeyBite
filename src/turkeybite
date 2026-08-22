@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 
 import click
-from libtb.util import read_config, pull_host_lists, process_ignorelist, build_domain_index, sync_domain_index
+from libtb.util import read_config, pull_host_lists, process_ignorelist, build_domain_index, sync_domain_index, pull_psl
 from libtb.inlet import Inlet
 from libtb.sieve import Filters
 from libtb.processor import Processor
@@ -108,6 +108,12 @@ def hosts():
 @cli.command('ignorelist')
 def ignorelist():
     process_ignorelist()
+
+
+@cli.command('psl')
+def psl():
+    """Refresh the cached Public Suffix List used for registrable domains."""
+    pull_psl()
 
 
 @cli.command('index')

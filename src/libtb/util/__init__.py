@@ -442,6 +442,56 @@ def purge_tagged_keyspace(r, batch=1000):
     return removed
 
 
+def pull_psl():
+    """Fetches the Public Suffix List, replacing the cached copy atomically.
+
+    Fetched at runtime rather than bundled so a newly delegated suffix is picked
+    up without a deploy. Every container fetches its own copy from the one URL
+    the list asks to be pulled from, so nodes converge on the same content and
+    no distribution is needed.
+
+    Same shape as the TLD list fetch: download beside the cache, parse and sanity
+    check, and only then move it into place. A truncated download or an error page
+    parses into a handful of rules, and a short rule set produces quietly wrong
+    registrable domains rather than obvious failures.
+
+    Returns True when the cached copy was replaced.
+    """
+    from libtb.psl import DEFAULT_PATH, SOURCE_URL, parse, usable
+
+    directory = os.path.dirname(DEFAULT_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    pending = DEFAULT_PATH + '.new'
+    try:
+        print('Downloading: public suffix list')
+        opener = urllib.request.build_opener()
+        opener.addheaders = [
+            (
+                'User-agent',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/35.0.1916.47 Safari/537.36'
+            )
+        ]
+        urllib.request.install_opener(opener)
+        urllib.request.urlretrieve(SOURCE_URL, pending)
+        with open(pending, encoding='utf-8', errors='replace') as handle:
+            rules, wildcards, exceptions = parse(handle)
+        if not usable(rules):
+            raise ValueError(f'downloaded list looks wrong: {len(rules)} rules')
+        os.replace(pending, DEFAULT_PATH)
+        print('Downloaded: public suffix list (' + str(len(rules)) + ' rules, '
+              + str(len(wildcards)) + ' wildcards, ' + str(len(exceptions))
+              + ' exceptions)')
+        return True
+    except Exception as e:
+        print('Failed to download: public suffix list')
+        print(e)
+        return False
+    finally:
+        if os.path.exists(pending):
+            os.remove(pending)
+
+
 def download_list(hlist, tlds):
     """Fetches and cleans one list, replacing the live copy only on success.
 

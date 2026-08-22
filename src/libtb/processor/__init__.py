@@ -9,6 +9,7 @@ from libtb.tbsyslog import Syslog, Level
 from libtb.util import dig
 from libtb.sieve import normalize_host
 from libtb.taxonomy import classify
+from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
 from datetime import datetime, timezone
 from dateutil import *
@@ -268,6 +269,29 @@ def routable_addresses(values):
         seen.add(text)
         kept.append(text)
     return kept
+
+
+def domain_fields(host, path=PSL_PATH):
+    """The registrable domain for an event, and a flag when it was guessed.
+
+    This is the unit that means "one owner", so it is what a top-domains panel or
+    a per-domain finding has to group on. co.uk and github.io yield nothing,
+    because neither is a website.
+
+    psl_fallback marks an event whose domain came from the last-two-labels rule
+    because no list was loaded yet, which is true of a container that has not
+    finished its first fetch. Absent means the answer is authoritative, and the
+    difference matters: the fallback is the wrong answer this replaced, so an
+    aggregation over a window containing it is not comparable with one that does
+    not.
+    """
+    domain = registrable_domain(host, path)
+    if not domain:
+        return {}
+    fields = {'registrable_domain': domain}
+    if not using_psl(path):
+        fields['psl_fallback'] = True
+    return fields
 
 
 def taxonomy_fields(contexts):
@@ -611,6 +635,7 @@ class Processor(object):
         # After the chain merge, so a category the chain contributed is faceted
         # like any other
         extra.update(taxonomy_fields(contexts))
+        extra.update(domain_fields(searches[0]))
 
         resolved = resolved_addresses(dig(data, 'dns', 'resolved_ip'))
         if resolved:
@@ -726,11 +751,12 @@ class Processor(object):
                                     searches.append(host)
                                     searches.append("*." + host)
                                     searches.append("*." + host.split('.')[-1])
-                                    domain = host
-                                    if '.' in domain:
-                                        parts = domain.split('.')
-                                        domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
-                                    if domain != host:
+                                    # The registrable domain, not the last two
+                                    # labels. Only used by valkey mode, since the
+                                    # index walks ancestors itself, but wrong is
+                                    # wrong: news.bbc.co.uk reduced to co.uk.
+                                    domain = registrable_domain(host)
+                                    if domain and domain != host:
                                         searches.append(domain)
                                         searches.append("*." + domain)
                                    
@@ -740,6 +766,7 @@ class Processor(object):
 
         contexts, extra = self.resolve_contexts(searches)
         extra.update(taxonomy_fields(contexts))
+        extra.update(domain_fields(searches[0]))
         identity = client_identity(dig(data, 'data', 'event', 'data'))
 
         bite = {

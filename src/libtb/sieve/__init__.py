@@ -200,13 +200,13 @@ class Filters(object):
         # Should we ignore this host
         if host in ignore_hosts:
             return False
-        # Deal with ignored domains
-        domain = host
-        if '.' in domain:
-            parts = domain.split('.')
-            domain = '.'.join([parts[len(parts) - 2], parts[len(parts) - 1]])
-        if domain in ignore_domains:
-            return False
+        # Deal with ignored domains. Matched on label boundaries, the same way
+        # the DNS path does it, rather than by deriving a domain from the last
+        # two labels and comparing that. The old form under-matched: an entry for
+        # bbc.co.uk never fired, because the derived domain was co.uk.
+        for d in ignore_domains:
+            if matches_domain(host, d):
+                return False
 
         # If we made it here, we're good
         return True
