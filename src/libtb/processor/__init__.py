@@ -112,9 +112,14 @@ def ptr_lookup(client, nameservers, ttl=PTR_CACHE_TTL, max_entries=PTR_CACHE_MAX
     try:
         reverse = reversename.from_address(client)
         # Recorded before the query so a failure still reports what was asked
-        name = reverse.to_text()
+        name = reverse.to_text().lower()
         for record in ptr_resolver(nameservers, timeout).resolve(reverse, 'PTR'):
-            hosts.append(str(record).rstrip('.'))
+            # Lower-cased because DNS names are case-insensitive by definition,
+            # so the case carries no meaning, while the field is a case-sensitive
+            # keyword. Resolvers here return the same name in several cases, and
+            # without folding one machine counts as two in any aggregation and
+            # produces two rows in the identity table these feed.
+            hosts.append(str(record).rstrip('.').lower())
         status = 'ok'
     except resolver.NXDOMAIN:
         # The client has no reverse record, which is normal

@@ -90,6 +90,32 @@ class PtrCacheTest(unittest.TestCase):
         hosts, _, _ = self.lookup('192.0.2.1', now=100)
         self.assertEqual(hosts, ['a.example.com', 'b.example.com'])
 
+    # -- case folding -------------------------------------------------------
+
+    def test_a_mixed_case_answer_is_folded(self):
+        self.fake.answers['1.2.0.192.in-addr.arpa.'] = ['Host-A.Example.COM.']
+        hosts, _, _ = self.lookup('192.0.2.1', now=100)
+        self.assertEqual(hosts, ['host-a.example.com'])
+
+    def test_two_cases_of_one_name_collapse_to_one_value(self):
+        # Live resolvers return the same name in several cases. Unfolded, one
+        # machine becomes two in every aggregation.
+        self.fake.answers['1.2.0.192.in-addr.arpa.'] = ['HOST-A.EXAMPLE.COM.']
+        self.fake.answers['2.2.0.192.in-addr.arpa.'] = ['host-a.example.com.']
+        first, _, _ = self.lookup('192.0.2.1', now=100)
+        second, _, _ = self.lookup('192.0.2.2', now=100)
+        self.assertEqual(first, second)
+
+    def test_the_trailing_dot_is_still_stripped(self):
+        self.fake.answers['1.2.0.192.in-addr.arpa.'] = ['HOST-A.EXAMPLE.COM.']
+        hosts, _, _ = self.lookup('192.0.2.1', now=100)
+        self.assertFalse(hosts[0].endswith('.'))
+
+    def test_the_queried_reverse_name_is_lower_case(self):
+        self.fake.answers['1.2.0.192.in-addr.arpa.'] = ['host-a.example.com.']
+        _, name, _ = self.lookup('192.0.2.1', now=100)
+        self.assertEqual(name, name.lower())
+
     # -- the mutation trap --------------------------------------------------
 
     def test_the_caller_cannot_poison_the_cache_by_mutating_the_result(self):
