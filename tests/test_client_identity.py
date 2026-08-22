@@ -104,11 +104,11 @@ class ClientIdentityTest(unittest.TestCase):
         base.update(overrides)
         return base
 
-    def test_all_five_fields_are_lifted(self):
+    def test_every_identity_field_is_lifted(self):
         got = client_identity({'client': self.client()})
         self.assertEqual(sorted(got), ['client_browser', 'client_hostname',
-                                       'client_ips', 'client_platform',
-                                       'client_user'])
+                                       'client_hostname_short', 'client_ips',
+                                       'client_platform', 'client_user'])
 
     def test_the_hostname_comes_from_the_nested_object(self):
         got = client_identity({'client': self.client()})

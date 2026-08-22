@@ -268,6 +268,36 @@ def routable_addresses(values):
     return kept
 
 
+def short_hostname(name):
+    """The first label of a hostname, or '' if there is nothing to take.
+
+    Browserbeat reports a bare machine name and PTR returns an FQDN, so neither
+    feed alone can be matched against the other. Carrying both forms lets a query
+    join on the short name and still report the full one.
+
+    The short form is not a unique key: distinct FQDNs in different subdomains
+    can share a first label. It is a convenience for display and for matching
+    against a source that has no domain, not an identifier, which is why the
+    FQDN is kept alongside rather than replaced.
+    """
+    if not isinstance(name, str):
+        return ''
+    return name.strip().rstrip('.').split('.')[0].lower()
+
+
+def short_hostnames(names):
+    """Short forms for a list of hostnames, de-duplicated, order preserved."""
+    shorts = []
+    seen = set()
+    for name in names or []:
+        short = short_hostname(name)
+        if not short or short in seen:
+            continue
+        seen.add(short)
+        shorts.append(short)
+    return shorts
+
+
 def client_identity(event_data):
     """Lifts the browser client identity into flat bite fields.
 
@@ -294,6 +324,13 @@ def client_identity(event_data):
         value = dig(client, *path)
         if isinstance(value, str) and value.strip():
             identity[field] = value.strip().lower()
+
+    # Browserbeat reports a bare machine name with no domain, so this usually
+    # equals client_hostname. It is emitted regardless so one query works across
+    # both feeds, where the DNS side genuinely has a domain to strip.
+    short = short_hostname(identity.get('client_hostname'))
+    if short:
+        identity['client_hostname_short'] = short
 
     addresses = routable_addresses(client.get('ip_addresses'))
     if addresses:
@@ -478,6 +515,7 @@ class Processor(object):
                 'processed': datetime.now(timezone.utc).isoformat(),
                 'client': client,
                 'client_hosts': reversed_dns,
+                'client_hosts_short': short_hostnames(reversed_dns),
                 'ptr': rev_name,
                 'ptr_status': ptr_status,
                 'requested': [searches[0]],
