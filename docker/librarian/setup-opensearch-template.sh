@@ -87,6 +87,11 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "requested": { "type": "keyword" },
                             "searches": { "type": "keyword" },
                             "contexts": { "type": "keyword" },
+                            "purpose": { "type": "keyword" },
+                            "service": { "type": "keyword" },
+                            "risk": { "type": "keyword" },
+                            "risk_severity": { "type": "keyword" },
+                            "unmapped_contexts": { "type": "keyword" },
                             "request": { "type": "keyword" },
                             "type": { "type": "keyword" }
                         }

@@ -8,6 +8,7 @@ import time
 from libtb.tbsyslog import Syslog, Level
 from libtb.util import dig
 from libtb.sieve import normalize_host
+from libtb.taxonomy import classify
 from libtb.index import DomainIndex
 from datetime import datetime, timezone
 from dateutil import *
@@ -267,6 +268,26 @@ def routable_addresses(values):
         seen.add(text)
         kept.append(text)
     return kept
+
+
+def taxonomy_fields(contexts):
+    """Facet fields for the categories on an event.
+
+    Emitted alongside bite.contexts rather than instead of it, so nothing that
+    reads the flat array breaks while the facets are proven against live data.
+    """
+    facets = classify(contexts)
+    fields = {}
+    for key in ('purpose', 'service', 'risk'):
+        if facets.get(key):
+            fields[key] = facets[key]
+    if facets.get('risk_severity'):
+        fields['risk_severity'] = facets['risk_severity']
+    if facets.get('unmapped'):
+        # Named on the event so a newly added list source shows up as a gap in
+        # the taxonomy rather than quietly contributing to no facet at all
+        fields['unmapped_contexts'] = facets['unmapped']
+    return fields
 
 
 def cname_chain(data):
@@ -587,6 +608,10 @@ class Processor(object):
         if match_source:
             extra['match_source'] = match_source
 
+        # After the chain merge, so a category the chain contributed is faceted
+        # like any other
+        extra.update(taxonomy_fields(contexts))
+
         resolved = resolved_addresses(dig(data, 'dns', 'resolved_ip'))
         if resolved:
             extra['resolved_ips'] = resolved
@@ -714,6 +739,7 @@ class Processor(object):
             return False
 
         contexts, extra = self.resolve_contexts(searches)
+        extra.update(taxonomy_fields(contexts))
         identity = client_identity(dig(data, 'data', 'event', 'data'))
 
         bite = {
