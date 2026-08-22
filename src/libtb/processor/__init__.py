@@ -7,6 +7,7 @@ import sys
 import time
 from libtb.tbsyslog import Syslog, Level
 from libtb.util import dig
+from libtb.sieve import normalize_host
 from libtb.index import DomainIndex
 from datetime import datetime, timezone
 from dateutil import *
@@ -268,6 +269,51 @@ def routable_addresses(values):
     return kept
 
 
+def cname_chain(data):
+    """CNAME targets from the answer section, in order, de-duplicated.
+
+    Packetbeat has already parsed the answers, so this is a lifting exercise
+    rather than a parsing one. The chain matters because a tracker pointed at a
+    first-party subdomain of the site being visited never appears on a blocklist:
+    the first-party name differs for every customer, while the target does not.
+    """
+    chain = []
+    for record in dig(data, 'dns', 'answers') or []:
+        if not isinstance(record, dict) or record.get('type') != 'CNAME':
+            continue
+        target = normalize_host(record.get('data'))
+        if target and target not in chain:
+            chain.append(target)
+    return chain
+
+
+def resolved_addresses(values):
+    """Canonical addresses from the answer section, de-duplicated, order kept.
+
+    Unlike a client address, nothing here is filtered for being unusable. A name
+    resolving to a loopback or unspecified address is a sinkhole, which is a
+    signal worth keeping rather than noise worth dropping. Values are still
+    reparsed, so an ip-typed field cannot be handed something it will reject.
+    """
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return []
+    kept = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            address = ipaddress.ip_address(value.strip())
+        except ValueError:
+            continue
+        text = str(address)
+        if text in seen:
+            continue
+        seen.add(text)
+        kept.append(text)
+    return kept
+
+
 def short_hostname(name):
     """The first label of a hostname, or '' if there is nothing to take.
 
@@ -426,6 +472,34 @@ class Processor(object):
         extra['context_match'] = sorted(legacy) == sorted(cats)
         return legacy, extra
 
+    def resolve_chain(self, chain):
+        """Categories found by running CNAME targets through the same lookup.
+
+        Returns (contexts, sources, matched). Only the memory-mapped index is
+        used: this multiplies lookups per event by the chain length, which is
+        microseconds in memory and several network round trips each against
+        Valkey. In valkey mode the chain is still recorded on the event, it is
+        just not categorised, so nothing regresses for a deployment that has not
+        switched over.
+        """
+        mode, path = self.index_settings()
+        if mode == 'valkey' or not chain:
+            return [], [], []
+        try:
+            index = domain_index(path)
+        except Exception:
+            # resolve_contexts already reported the same failure and recorded
+            # index_error; a second complaint per event would add nothing
+            return [], [], []
+
+        contexts, sources, matched = set(), set(), []
+        for target in chain:
+            cats, srcs, hits = index.lookup(target)
+            contexts.update(cats)
+            sources.update(srcs)
+            matched.extend(h for h in hits if h not in matched)
+        return sorted(contexts), sorted(sources), matched
+
     def process_dns_packet(self, data):
         # Related context from lists
         contexts = []
@@ -487,6 +561,39 @@ class Processor(object):
             return False
 
         contexts, extra = self.resolve_contexts(searches)
+
+        # The answer section, which Packetbeat has already parsed and which bite
+        # has never carried. Merged after resolve_contexts so compare mode keeps
+        # measuring question-for-question agreement rather than comparing a
+        # chain-enriched answer against one that never had a chain.
+        chain = cname_chain(data)
+        match_source = ['question'] if contexts else []
+        if chain:
+            extra['cname_chain'] = chain
+            chain_contexts, chain_sources, chain_matched = self.resolve_chain(chain)
+            if chain_contexts:
+                extra['cname_matched_on'] = chain_matched
+                extra['cname_contexts'] = chain_contexts
+                # In compare mode Valkey stays authoritative and the chain is
+                # recorded without being merged, so that mode measures the index
+                # rather than an index-enriched answer. It doubles as a dry run:
+                # cname_contexts shows what merging would add before it does.
+                if self.index_settings()[0] == 'index':
+                    match_source.append('cname')
+                    contexts = sorted(set(contexts) | set(chain_contexts))
+                    if chain_sources:
+                        extra['sources'] = sorted(set(extra.get('sources') or [])
+                                                  | set(chain_sources))
+        if match_source:
+            extra['match_source'] = match_source
+
+        resolved = resolved_addresses(dig(data, 'dns', 'resolved_ip'))
+        if resolved:
+            extra['resolved_ips'] = resolved
+
+        response_code = dig(data, 'dns', 'response_code')
+        if isinstance(response_code, str) and response_code.strip():
+            extra['response_code'] = response_code.strip().upper()
 
         # Reverse client lookup. This enriches the event with the client's
         # hostname and is never worth failing the event over, so every failure
