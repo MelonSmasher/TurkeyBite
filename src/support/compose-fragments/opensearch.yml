@@ -1,5 +1,15 @@
 services:
   opensearch:
+    # Bounded so the log cannot fill the host. The worker writes a line per
+    # observed packet, which at campus rates is gigabytes a day, and the default
+    # json-file driver rotates nothing. Five files of 100 MB also keeps
+    # `docker logs --since` fast, which it stops being once the file is
+    # gigabytes. Durable logs belong in syslog, configured separately.
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
     image: opensearchproject/opensearch:3
     container_name: ${OPENSEARCH_HOST:-opensearch}
     restart: unless-stopped
@@ -33,6 +43,16 @@ services:
       start_period: 60s
       
   opensearch-dashboards:
+    # Bounded so the log cannot fill the host. The worker writes a line per
+    # observed packet, which at campus rates is gigabytes a day, and the default
+    # json-file driver rotates nothing. Five files of 100 MB also keeps
+    # `docker logs --since` fast, which it stops being once the file is
+    # gigabytes. Durable logs belong in syslog, configured separately.
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
     image: opensearchproject/opensearch-dashboards:3
     container_name: opensearch-dashboards
     restart: unless-stopped
