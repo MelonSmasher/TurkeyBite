@@ -181,7 +181,8 @@ def build_domain_index(path=None, publish_to_valkey=None):
     is on trial. Never raises: a failed index build must not fail a list pull
     that otherwise succeeded, because the Valkey path is still there.
     """
-    from libtb.index.builder import apply_ignorelist, build, collect_entries
+    from libtb.index.builder import (apply_ignorelist, build, collect_entries,
+                                     load_sources, source_table)
     from libtb.index import transport
     config = read_config()
     settings = index_config(config)
@@ -195,9 +196,10 @@ def build_domain_index(path=None, publish_to_valkey=None):
         print('Building domain index')
         entries, files, skipped = collect_entries('lists', exclude_path=target)
         # The curated corrections live outside the collector's glob, so they have
-        # to be applied here or the index keeps categories marked as wrong
-        ignored, dropped = apply_ignorelist(entries, 'lists')
-        stats = build(entries, path=target, built_at=built_at)
+        # to be recorded here or the index keeps categories marked as wrong
+        ignored = apply_ignorelist(entries, 'lists')
+        sources = source_table(load_sources('lists'))
+        stats = build(entries, path=target, built_at=built_at, sources=sources)
         # A worker sharing this filesystem with the librarian already has the
         # file, so record the generation and save it a pointless 175 MB download
         with open(target + '.generation', 'w') as marker:
@@ -207,8 +209,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
               + str(files) + ' files, ' + str(round(stats['bytes'] / 1e6, 1)) + ' MB, '
               + str(stats['attr_combinations']) + ' attribute combinations, '
               + str(skipped) + ' lines skipped, '
-              + str(ignored) + ' categories removed by the ignorelist, '
-              + str(dropped) + ' entries dropped')
+              + str(ignored) + ' ignorelist corrections')
     except Exception as e:
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None
@@ -307,8 +308,10 @@ def pull_tld_list():
 # facebook.com into ook.com.
 IPV4_PREFIX = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}\s+')
 IPV6_PREFIX = re.compile(r'^[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){1,7}(?:%\w+)?\s+')
-# Adblock address markers, '||domain^' and '|domain^'.
+# Adblock address markers. '||domain^' covers the domain and every subdomain;
+# '|domain^' anchors the start of the address, so it names one host.
 ADBLOCK_PREFIX = re.compile(r'^\|\|?')
+ADBLOCK_SUBTREE = '||'
 # A trailing comment introduced by '#' or '!' after whitespace.
 TRAILING_COMMENT = re.compile(r'\s+[#!]')
 # A DNS label: alphanumeric ends, hyphens allowed only in the middle.
@@ -322,6 +325,19 @@ VALID_HOST = re.compile(
 
 
 def clean_list_file(file_path: str, tlds: list[str]):
+    """Rewrites a downloaded list as one entry per line, keeping its scope.
+
+    Each format says how far an entry reaches, and the index needs to know. A
+    hosts-file line can only name one host, so it is written bare. An adblock
+    '||domain^' rule, a '*.domain' wildcard and a squid-style '.domain' all cover
+    the subdomains too, so they are written as '*.domain'. Flattening both to a
+    bare name, as this used to, made every hosts-file entry cover every subdomain
+    of its name, which no hosts file can express.
+
+    A bare line in a plain domain list is left bare. Whether those lines mean one
+    host or a whole domain depends on who publishes the list, so the index build
+    reads that from the source's `match` setting in host_files.json.
+    """
     # Keys of a dict, so duplicate entries collapse and order is kept
     hosts = {}
     # Read the file
@@ -347,21 +363,28 @@ def clean_list_file(file_path: str, tlds: list[str]):
         line = IPV6_PREFIX.sub('', line)
         # Drop adblock markers and anything the '^' separator introduces,
         # e.g. '||example.com^$third-party'
+        subtree = line.startswith(ADBLOCK_SUBTREE)
         line = ADBLOCK_PREFIX.sub('', line)
         line = line.split('^')[0]
         # Some lists put several domains on one line, take the first
         fields = line.split()
         if not fields:
             continue
+        # A leading dot is squid's way of saying the domain and below
+        subtree = subtree or fields[0].startswith('.')
         # Drop the leading dot of '.example.com' and the root dot of an FQDN
         host = fields[0].strip('.')
         if not host:
             continue
 
         # Validate the entry
-        # Skip anything missing a period before paying for the regex
+        # Skip anything missing a period before paying for the regex. Checked
+        # before the wildcard is added, so '||com^' is still rejected rather
+        # than becoming '*.com'
         if '.' not in host:
             continue
+        if subtree and not host.startswith('*.'):
+            host = '*.' + host
         # Ensure the entry is a well formed domain
         if not VALID_HOST.match(host):
             continue
@@ -540,6 +563,23 @@ def download_list(hlist, tlds):
             os.remove(pending)
 
 
+def valkey_host(line, downloaded):
+    """The key a cleaned list line is stored under in the Valkey host list.
+
+    The cleaner now writes an adblock '||ads.example.com^' rule as
+    '*.ads.example.com' so the index knows it covers subdomains. Valkey only
+    matches the exact names valkey_contexts synthesises, the queried host, its
+    registrable domain and their '*.' forms, so '*.ads.example.com' would never
+    match ads.example.com there. A download's entries are stored bare instead,
+    which is what the cleaner used to write for adblock rules. A local '*.edu'
+    is left alone: '*.' plus the TLD is one of the synthesised names.
+    """
+    line = line.strip().lower()
+    if downloaded and line.startswith('*.'):
+        return line[2:]
+    return line
+
+
 def pull_host_lists():
     host_files = get_host_files()
     # Get the list of TLDs
@@ -620,7 +660,7 @@ def pull_host_lists():
             # Open the file
             with open(hostlist['file']) as f:
                 for line in f:
-                    line = line.strip().lower()
+                    line = valkey_host(line, downloaded=hostlist['url'] is not None)
                     key = 'turkey-bite:' + new_tag + ':' + line
                     result = r.get(key)
                     if result:

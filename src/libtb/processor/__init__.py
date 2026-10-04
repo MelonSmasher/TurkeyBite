@@ -11,6 +11,8 @@ from libtb.sieve import normalize_host
 from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
+from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, describe,
+                            matched_keys, resolve, sources_of)
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -452,6 +454,11 @@ class Processor(object):
             settings.get('path', 'lists/index/domains.tbidx'),
         )
 
+    def min_publishers(self):
+        """Independent publishers a medium trust category needs, see libtb.evidence."""
+        settings = self.config.get('evidence') or {}
+        return int(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+
     def valkey_contexts(self, searches):
         """The original lookup: one Valkey GET per synthesised key."""
         contexts = []
@@ -488,6 +495,11 @@ class Processor(object):
           index    the memory-mapped index only, no Valkey round trips at all
           compare  both, with the Valkey answer authoritative and the index
                    answer recorded alongside it for measurement
+
+        Only the index weighs its evidence. Valkey holds a bare category list
+        per key, so it cannot tell one noisy list from three that agree, and in
+        compare mode a disagreement is now mostly the index declining a
+        category Valkey would have asserted.
         """
         mode, path = self.index_settings()
         host = searches[0]
@@ -497,24 +509,33 @@ class Processor(object):
 
         try:
             index = domain_index(path)
-            cats, srcs, matched = index.lookup(host)
+            claims, verdict = categorise(index, host, self.min_publishers())
         except Exception as e:
             # A missing or corrupt index must not cost the event. Fall back.
             print(f"Domain index unavailable at {path}: {e}", file=sys.stderr)
             return self.valkey_contexts(searches), {'index_error': str(e)}
 
+        contexts = verdict['asserted']
         extra = {
-            'sources': srcs,
-            'matched_on': matched,
+            'sources': sources_of(claims),
+            'matched_on': matched_keys(claims),
             'index_built_at': index.built_at,
         }
+        if claims:
+            extra['claims'] = describe(claims)
         if mode == 'index':
-            return cats, extra
+            # Named on the event rather than dropped, so a category the bar
+            # held back can still be searched for and audited
+            if verdict['candidate']:
+                extra['contexts_candidate'] = verdict['candidate']
+            if verdict['suppressed']:
+                extra['contexts_suppressed'] = verdict['suppressed']
+            return contexts, extra
 
         # compare: Valkey stays authoritative while the index is on trial
         legacy = self.valkey_contexts(searches)
-        extra['contexts_index'] = cats
-        extra['context_match'] = sorted(legacy) == sorted(cats)
+        extra['contexts_index'] = contexts
+        extra['context_match'] = sorted(legacy) == sorted(contexts)
         return legacy, extra
 
     def resolve_chain(self, chain):
@@ -537,13 +558,13 @@ class Processor(object):
             # index_error; a second complaint per event would add nothing
             return [], [], []
 
-        contexts, sources, matched = set(), set(), []
+        # Weighed together, so two publishers agreeing about different links
+        # of one chain still corroborate each other
+        claims = []
         for target in chain:
-            cats, srcs, hits = index.lookup(target)
-            contexts.update(cats)
-            sources.update(srcs)
-            matched.extend(h for h in hits if h not in matched)
-        return sorted(contexts), sorted(sources), matched
+            claims.extend(categorise(index, target, self.min_publishers())[0])
+        verdict = resolve(claims, self.min_publishers())
+        return verdict['asserted'], sources_of(claims), matched_keys(claims)
 
     def process_dns_packet(self, data):
         # Related context from lists
@@ -624,8 +645,17 @@ class Processor(object):
                 # rather than an index-enriched answer. It doubles as a dry run:
                 # cname_contexts shows what merging would add before it does.
                 if self.index_settings()[0] == 'index':
-                    match_source.append('cname')
-                    contexts = sorted(set(contexts) | set(chain_contexts))
+                    # A correction on the name that was asked for holds over
+                    # whatever that name happens to be hosted on
+                    added = set(chain_contexts) - set(extra.get('contexts_suppressed') or [])
+                    if added:
+                        match_source.append('cname')
+                    contexts = sorted(set(contexts) | added)
+                    held_back = sorted(set(extra.get('contexts_candidate') or []) - added)
+                    if held_back:
+                        extra['contexts_candidate'] = held_back
+                    else:
+                        extra.pop('contexts_candidate', None)
                     if chain_sources:
                         extra['sources'] = sorted(set(extra.get('sources') or [])
                                                   | set(chain_sources))

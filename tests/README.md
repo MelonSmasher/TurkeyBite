@@ -18,6 +18,9 @@ TB_VENV=~/.cache/tb-venv tests/run.sh
 | `test_index_builder.py` | Which files the domain index reads, and which lines survive the host grammar |
 | `test_host_list_keyspace.py` | Retiring the Valkey host list without taking the published index with it |
 | `test_ptr_cache.py` | Reverse DNS caching, and which outcomes are safe to remember |
+| `test_list_scope.py` | How far a list entry reaches: one host or a whole domain, and never past the registrable domain |
+| `test_evidence.py` | Which claimed categories an event asserts, and what counts as independent agreement |
+| `test_audit.py` | The false positive audit, over a real index so it reports what events will say |
 
 Three habits are worth keeping when adding to these.
 

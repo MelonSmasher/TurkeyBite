@@ -47,6 +47,17 @@ None of the sites listed above are directly related to porn, though they do each
 To enable the ignorelist copy `ignorelist.example.json` to `ignorelist.json` and the next time domains and hosts are loaded into redis the ignorelist will be processed.
 You can also modify `ignorelist.json` to meet your own needs.
 
+## How far an entry reaches
+
+In `index` mode an entry is a correction that is weighed whenever an event is categorised, so it holds however the category arrived: from the host's own list entry, from a parent domain's entry, or from a list that names the whole domain.
+
+*   `example.com` covers `example.com` and `www.example.com`, nothing else.
+*   `*.example.com` covers `example.com` and every subdomain of it.
+
+So the three tenor entries above can be written as one, `*.tenor.com`. A suppressed category is still recorded on the event, in `bite.contexts_suppressed`, so you can see a correction taking effect.
+
+In `valkey` mode an entry only edits the host list key with exactly that name, so a category arriving from a parent domain is not removed.
+
 ## Using example ignorelist as your ignorelist
 
 I'm maintaining my own ignorelist in `ignorelist.example.json` if you wish to use this as your `ignorelist.json`, symlink it instead of copying it.
