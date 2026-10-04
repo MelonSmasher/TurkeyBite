@@ -277,7 +277,7 @@
         "file": "lists/gambling/hagezi-gambling",
         "name": "hagezi-gambling",
         "publisher": "hagezi",
-        "derived_from": ["ut1", "ShadowWhisperer", "bigdargon"],
+        "derived_from": ["ut1", "ShadowWhisperer", "bigdargon", "sinfonietta"],
         "trust": "medium"
     },
     {
