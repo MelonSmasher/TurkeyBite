@@ -56,6 +56,8 @@ In `index` mode an entry is a correction that is weighed whenever an event is ca
 
 So the three tenor entries above can be written as one, `*.tenor.com`. A suppressed category is still recorded on the event, in `bite.contexts_suppressed`, so you can see a correction taking effect.
 
+A correction is read through the same taxonomy the facets use, so it covers every list's spelling of the category: an entry under `fakenews` cancels StevenBlack's `fake-news` too, and one under `piracy` cancels `torrent`. It also cancels a vendor category that would put it back, so `games` on a host cancels `ea` and `minecraft` there. It does not work the other way: an entry under `facebook` leaves `social` alone, since a host can be social media without being Facebook.
+
 In `valkey` mode an entry only edits the host list key with exactly that name, so a category arriving from a parent domain is not removed.
 
 The same works for the incidental mark (see "Incidental lookups" in the README). An entry under `incidental` lifts it, so a host you know people visit on purpose keeps its categories:

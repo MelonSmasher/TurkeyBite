@@ -11,9 +11,9 @@ from libtb.sieve import normalize_host
 from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
-from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, demote_incidental,
-                            describe, disabled_paths, matched_keys, resolve,
-                            sources_of, thresholds)
+from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, cancels, categorise,
+                            demote_incidental, describe, disabled_paths,
+                            matched_keys, resolve, sources_of, thresholds)
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -669,8 +669,10 @@ class Processor(object):
                 # cname_contexts shows what merging would add before it does.
                 if self.index_settings()[0] == 'index':
                     # A correction on the name that was asked for holds over
-                    # whatever that name happens to be hosted on
-                    added = set(chain_contexts) - set(extra.get('contexts_suppressed') or [])
+                    # whatever that name happens to be hosted on, read
+                    # through the taxonomy as resolve() reads it
+                    suppressed = extra.get('contexts_suppressed') or []
+                    added = {c for c in chain_contexts if not cancels(suppressed, c)}
                     demoted = set()
                     if extra.get('incidental'):
                         # So does the incidental mark. connect.facebook.net is

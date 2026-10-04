@@ -250,7 +250,7 @@ The number of independent publishers a `medium` category needs is `processor.evi
 
 * `bite.contexts` the categories the evidence supports, which the facets are built from
 * `bite.contexts_candidate` categories some list claimed without enough support
-* `bite.contexts_suppressed` categories your ignorelist cancelled
+* `bite.contexts_suppressed` categories your ignorelist cancelled, matched through the taxonomy so a correction covers every spelling
 * `bite.claims` which list said what, as `category:list`
 * `bite.incidental` true when the name looked up is marked incidental, see below
 

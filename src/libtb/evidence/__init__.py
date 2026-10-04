@@ -45,7 +45,13 @@ A category that falls short is not thrown away. It is reported as a candidate,
 so it can be searched for, and an audit can see what the bar is holding back.
 
 The ignorelist's corrections arrive as claims too, with the category negated,
-and cancel the category outright whichever source asserted it.
+and cancel the category outright whichever source asserted it. A correction
+is read through the taxonomy like everything else, so correcting `fakenews`
+also cancels `fake-news`. More precisely it cancels every category that would
+put back what the corrected one says: correcting `games` on a host cancels
+`ea` there too, since `ea` says the host is a game platform, while correcting
+`facebook` leaves `social` alone, since a host can be social media without
+being Facebook.
 
 Some lookups are not evidence of what the person was doing. A news article
 with a Facebook pixel makes the browser look up connect.facebook.net, and
@@ -247,6 +253,19 @@ def demote_incidental(categories):
     return kept, [c for c in categories if not is_risk(c)]
 
 
+def cancels(corrections, category):
+    """True when one of the corrected categories rules this category out.
+
+    That is when the category makes every statement a corrected category
+    makes, so asserting it would put the correction back on the event through
+    the facets: `fake-news` for a correction of `fakenews`, or `ea` for one of
+    `games`. A category saying less than the correction is not ruled out,
+    which is why correcting `facebook` leaves `social` standing.
+    """
+    made = set(statements(category))
+    return any(set(statements(corrected)) <= made for corrected in corrections)
+
+
 def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     """Weighs (key, source, category) claims as DomainIndex.match returns them.
 
@@ -264,8 +283,8 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     is done on taxonomy paths, see the module docstring.
     """
     bar = thresholds(min_publishers)
-    cancelled = {category[len(NEGATION):] for _, _, category in claims
-                 if category.startswith(NEGATION)}
+    corrections = {category[len(NEGATION):] for _, _, category in claims
+                   if category.startswith(NEGATION)}
     claimed = set()
     trusted = set()
     backers = {}
@@ -273,7 +292,7 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
         if category.startswith(NEGATION):
             continue
         claimed.add(category)
-        if category in cancelled:
+        if cancels(corrections, category):
             # A claim the ignorelist corrected is wrong, so it must not prop
             # up another spelling of the same judgement either
             continue
@@ -294,9 +313,10 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
 
     # The mark is weighed like a category, so the ignorelist can lift it, and
     # then taken out, since it says nothing about what the host is
-    incidental = INCIDENTAL in asserted and INCIDENTAL not in cancelled
-    for found in (claimed, asserted, cancelled):
+    incidental = INCIDENTAL in asserted and not cancels(corrections, INCIDENTAL)
+    for found in (claimed, asserted):
         found.discard(INCIDENTAL)
+    cancelled = {c for c in claimed if cancels(corrections, c)}
     if incidental:
         asserted = set(demote_incidental(asserted)[0])
     return {

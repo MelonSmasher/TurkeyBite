@@ -165,22 +165,72 @@ class TaxonomyAgreementTest(unittest.TestCase):
             (source('oisd', derived_from=['hagezi']), 'fakenews')))
         self.assertEqual(verdict['asserted'], [])
 
-    def test_a_corrected_claim_does_not_support_another_spelling(self):
-        corrected = resolve(claims((source('local', 'high'), 'fakenews'),
-                                   (source('ignorelist', 'high'), '!fakenews'),
-                                   (source('StevenBlack'), 'fake-news')))
-        self.assertEqual(corrected['asserted'], [])
-        self.assertEqual(corrected['candidate'], ['fake-news'])
-        # The control: the same claims without the correction
-        uncorrected = resolve(claims((source('local', 'high'), 'fakenews'),
-                                     (source('StevenBlack'), 'fake-news')))
-        self.assertEqual(uncorrected['asserted'], ['fake-news', 'fakenews'])
+    def test_an_unmapped_category_is_corrected_only_by_its_own_spelling(self):
+        verdict = resolve(claims((source('a', 'high'), 'politics'),
+                                 (source('b', 'high'), 'opinion'),
+                                 (source('ignorelist', 'high'), '!politics')))
+        self.assertEqual(verdict['asserted'], ['opinion'])
+        self.assertEqual(verdict['suppressed'], ['politics'])
 
     def test_an_unmapped_category_needs_the_same_spelling(self):
         different = resolve(claims((source('a'), 'politics'), (source('b'), 'opinion')))
         self.assertEqual(different['asserted'], [])
         same = resolve(claims((source('a'), 'politics'), (source('b'), 'politics')))
         self.assertEqual(same['asserted'], ['politics'])
+
+
+class CorrectionTest(unittest.TestCase):
+    """The ignorelist's corrections, read through the taxonomy."""
+
+    IGNORELIST = source('ignorelist', 'high')
+
+    def test_a_correction_cancels_every_spelling(self):
+        verdict = resolve(claims((source('local', 'high'), 'fakenews'),
+                                 (source('StevenBlack'), 'fake-news'),
+                                 (self.IGNORELIST, '!fakenews')))
+        self.assertEqual(verdict['asserted'], [])
+        self.assertEqual(verdict['candidate'], [])
+        self.assertEqual(verdict['suppressed'], ['fake-news', 'fakenews'])
+
+    def test_the_same_claims_uncorrected_are_asserted(self):
+        # The control for the one above
+        verdict = resolve(claims((source('local', 'high'), 'fakenews'),
+                                 (source('StevenBlack'), 'fake-news')))
+        self.assertEqual(verdict['asserted'], ['fake-news', 'fakenews'])
+
+    def test_a_correction_cancels_what_would_put_it_back(self):
+        # ea says the host is a game platform, so leaving it would put
+        # gaming.platforms back in bite.purpose
+        verdict = resolve(claims((source('vendor', 'high'), 'ea'),
+                                 (source('vendor', 'high'), 'games'),
+                                 (self.IGNORELIST, '!games')))
+        self.assertEqual(verdict['asserted'], [])
+        self.assertEqual(verdict['suppressed'], ['ea', 'games'])
+
+    def test_correcting_a_vendor_leaves_its_purpose(self):
+        # A host can be social media without being Facebook
+        verdict = resolve(claims((source('vendor', 'high'), 'facebook'),
+                                 (source('vendor', 'high'), 'social'),
+                                 (self.IGNORELIST, '!facebook')))
+        self.assertEqual(verdict['asserted'], ['social'])
+        self.assertEqual(verdict['suppressed'], ['facebook'])
+
+    def test_a_corrected_claim_supports_nothing_that_survives(self):
+        corrected = resolve(claims((source('vendor', 'high'), 'facebook'),
+                                   (source('broad'), 'social'),
+                                   (self.IGNORELIST, '!facebook')))
+        self.assertEqual(corrected['asserted'], [])
+        self.assertEqual(corrected['candidate'], ['social'])
+        # The control: uncorrected, the trusted vendor supports the purpose
+        uncorrected = resolve(claims((source('vendor', 'high'), 'facebook'),
+                                     (source('broad'), 'social')))
+        self.assertEqual(uncorrected['asserted'], ['facebook', 'social'])
+
+    def test_a_different_judgement_is_untouched(self):
+        verdict = resolve(claims((source('vendor', 'high'), 'malware'),
+                                 (source('vendor', 'high'), 'phishing'),
+                                 (self.IGNORELIST, '!malware')))
+        self.assertEqual(verdict['asserted'], ['phishing'])
 
 
 class ThresholdTest(unittest.TestCase):
@@ -461,6 +511,25 @@ class ProcessorWiringTest(IndexFixture):
         self.assertEqual(bite['cname_contexts'], ['porn'])
         self.assertEqual(bite['contexts'], [])
         self.assertNotIn('match_source', bite)
+
+    def test_a_correction_on_the_question_holds_over_every_spelling_in_the_chain(self):
+        # www.corrected.com's fake-news is corrected; the chain says fakenews
+        bite = self.bite('www.corrected.com',
+                         answers=[{'type': 'CNAME', 'data': 'www.opinion.com'}],
+                         evidence={'disabled_categories': []})
+        self.assertEqual(bite['cname_contexts'], ['fake-news', 'fakenews', 'news'])
+        self.assertEqual(bite['contexts'], ['news'])
+
+    def test_without_the_taxonomy_the_chain_would_bring_a_spelling_back(self):
+        # Proves the merge's own check is load-bearing: compare spellings only
+        # and fakenews comes straight back from the chain
+        from unittest import mock
+        same_spelling = lambda corrections, category: category in corrections
+        with mock.patch('libtb.processor.cancels', same_spelling):
+            bite = self.bite('www.corrected.com',
+                             answers=[{'type': 'CNAME', 'data': 'www.opinion.com'}],
+                             evidence={'disabled_categories': []})
+        self.assertEqual(bite['contexts'], ['fakenews', 'news'])
 
     def test_the_chain_can_settle_a_candidate(self):
         bite = self.bite('cdn.pornsite.com',
