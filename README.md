@@ -242,14 +242,29 @@ Every category comes from a domain list, and every list is wrong about something
 | `derived_from` | Publishers whose lists this one copies. A copy never corroborates its original. |
 | `match` | For plain domain lists only: `exact` if a line names one host, `subtree` if it covers subdomains. Default `exact`. |
 
-The number of independent publishers a `medium` category needs is `processor.evidence.min_publishers` in `config.yaml`, 2 by default. Events carry:
+A list file that `host_files.json` does not mention, other than your own `turkeybite` and `custom` lists, is read at `low` trust: recorded on events, never believed. That is usually a download whose entry has since been removed, since the file stays on disk. Block List Project's thirteen lists were removed from `host_files.example.json` because they never decided a category, cost half of every download and more than half of the index, and had stopped updating; if you used them, their `blocklistproject-*` files are still under `vols/lists` and you can delete them. The librarian names every such file each time it builds the index.
+
+Sources agree when their categories mean the same thing, which is decided by the taxonomy behind `bite.purpose`, `bite.service` and `bite.risk` rather than by spelling. StevenBlack's `fake-news` and the local list's `fakenews` corroborate each other, as do `signal` and `whispersystems`. A vendor category says two things, `steam` that the host is Steam and that it is a game storefront, and is believed only when both are supported: a list saying `steam` and another saying `epicgames` agree on the second and not the first, so neither is asserted. Events keep the categories as the lists spelled them.
+
+The number of independent publishers a `medium` category needs is `processor.evidence.min_publishers` in `config.yaml`, 2 by default. It can also be set per taxonomy branch or path, the names `bite.purpose` and `bite.risk` use, as in `{default: 2, threat: 1}`. The most specific key wins. Keys are taxonomy paths rather than category names so that every spelling of one judgement gets the same bar; a key the taxonomy does not know stops the worker at start. Lowering the bar brings false positives back: `threat: 1` takes the Tranco top 10,000 domains carrying a threat category from 5 to 57. Events carry:
 
 * `bite.contexts` the categories the evidence supports, which the facets are built from
 * `bite.contexts_candidate` categories some list claimed without enough support
-* `bite.contexts_suppressed` categories your ignorelist cancelled
+* `bite.contexts_suppressed` categories your ignorelist cancelled, matched through the taxonomy so a correction covers every spelling
 * `bite.claims` which list said what, as `category:list`
+* `bite.incidental` true when the name looked up is marked incidental, see below
+
+Whole categories can be switched off with `processor.evidence.disabled_categories`, a list of taxonomy branches or paths, without deleting the lists that carry them. A disabled category is dropped before anything is weighed, so it appears nowhere on the event, including `bite.claims` and `bite.contexts_suppressed`: the usual reason to switch one off is that its label should not be stored against the people whose traffic it matches. Unlike the rest of this section this holds in every lookup mode, `valkey` and `compare` included, since a switch that worked in one mode only would still store the label in the others.
+
+The `editorial` branch is off by default. It covers the `fakenews`, `fascist` and `zionist` lists and StevenBlack's `fake-news`, which label news and opinion sites by viewpoint, and leaving the key out of `config.yaml` means `[editorial]`. A list you write replaces the default rather than adding to it, so `disabled_categories: []` switches the editorial lists back on, as does the key with every entry under it commented out, and `[editorial, adult.gambling]` keeps them off and gambling too. `turkeybite audit --disable` does the same for one run, and `--disable ""` switches nothing off.
 
 A new index format carries this, so upgrading needs a rebuild. The librarian does that when it starts, or run `python turkeybite index`.
+
+### Incidental lookups
+
+A DNS lookup is not always a choice. A news article with a Facebook pixel makes the browser look up `connect.facebook.net`; Windows looks up `msftconnecttest.com` whenever it joins a network; signing in to Gmail visits `accounts.youtube.com`. None of those says the person used Facebook or YouTube. The curated list [`vols/lists/incidental/turkeybite`](vols/lists/incidental/turkeybite) names hosts like these: social plugins, pixels and embedded players that other sites load, connectivity checks, and sign-in endpoints. It only names hosts that are looked up mostly on someone else's behalf and that are not the service's own site, so `www.youtube.com` is not on it and `youtube-nocookie.com`, which exists only for embeds, is.
+
+On a marked host the categories that say what a host is for or whose service it is, those under `bite.purpose` and `bite.service`, become candidates, and the event carries `bite.incidental: true`. A category stays asserted only if everything it says is a risk: the pixel tracks the person whether or not they use Facebook. A vendor category such as `expressvpn`, which names a service as well as a risk, is demoted, since keeping it would put the service back on the event. The mark reaches the CNAME chain too. `connect.facebook.net` is hosted on `scontent.xx.fbcdn.net`, which every Facebook list names, so what the chain contributes to a marked name is demoted the same way; and a name whose chain passes through a marked host gets no purpose or service from that chain, though its own categories stand. It applies to DNS lookups only. A browser history entry is a page someone opened, which is deliberate whatever its host is otherwise looked up for, so history events are never marked. Like everything in this section it needs `index` mode: the `valkey` loader skips the list. To lift the mark from a host, add it under `incidental` in your [ignorelist](vols/lists/ignorelist.md).
 
 ### Finding false positives
 
@@ -264,3 +279,5 @@ docker compose exec turkeybite-worker python turkeybite audit lists/top-1m.csv -
 `vols/lists` is mounted into the worker as `lists`. A file directly inside it is not read as a domain list; only files in its subdirectories are.
 
 Popular is not the same as harmless, so read the report rather than trusting it: popular sites really are social networks, and some really are adult. A threat category on a top 10,000 domain is a different matter, and the report names the lists behind every one. Then either correct the host in the [ignorelist](vols/lists/ignorelist.md), or, if one list keeps appearing, lower its `trust`.
+
+Corroboration is only worth something between independent lists, and `derived_from` is the only record of which lists copy which. `turkeybite overlap` reads the index and reports every pair of lists where one holds at least half of the other's names, marking with `!` the pairs that are weighed as independent although their agreement may be one opinion counted twice. It also measures each declared `derived_from` against the lists it names. A heavy overlap is a reason to read the publishers' documentation, not proof of copying: two good lists of popular gambling sites will overlap because there are only so many popular gambling sites.

@@ -182,7 +182,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
     that otherwise succeeded, because the Valkey path is still there.
     """
     from libtb.index.builder import (apply_ignorelist, build, collect_entries,
-                                     load_sources, source_table)
+                                     load_sources, source_table, unconfigured_files)
     from libtb.index import transport
     config = read_config()
     settings = index_config(config)
@@ -195,6 +195,13 @@ def build_domain_index(path=None, publish_to_valkey=None):
     try:
         print('Building domain index')
         entries, files, skipped = collect_entries('lists', exclude_path=target)
+        leftover = unconfigured_files('lists', exclude_path=target)
+        if leftover:
+            # Usually downloads whose entry has gone from host_files.json. They
+            # count for nothing, so the only cost is disk and build time.
+            print(str(len(leftover)) + ' list files are not in host_files.json and are '
+                  'recorded at low trust, so they assert nothing; delete them if they '
+                  'are no longer wanted: ' + ', '.join(leftover))
         # The curated corrections live outside the collector's glob, so they have
         # to be recorded here or the index keeps categories marked as wrong
         ignored = apply_ignorelist(entries, 'lists')
@@ -581,6 +588,8 @@ def valkey_host(line, downloaded):
 
 
 def pull_host_lists():
+    from libtb.index import INCIDENTAL
+
     host_files = get_host_files()
     # Get the list of TLDs
     tlds = pull_tld_list()
@@ -588,8 +597,9 @@ def pull_host_lists():
     folders = [f for f in os.listdir('lists') if os.path.isdir(os.path.join('lists', f))]
     #loop over the folders and look for a default turkeybite list and custom list
     for folder in folders:
-        # Skip tld folder
-        if folder in ['tld']:
+        # Skip the tld folder, and the incidental list: it marks hosts rather
+        # than naming a category, and only the index knows what to do with it
+        if folder in ['tld', INCIDENTAL]:
             continue
         # This allows for built in lists to be added to the host_files list
         if os.path.exists('lists/' + folder + '/turkeybite'):

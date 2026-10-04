@@ -301,7 +301,30 @@
     "x.com",
     "api.x.com",
     "ton.x.com",
-    "cf.x.com"
+    "cf.x.com",
+    "*.anime.com",
+    "*.anime-planet.com",
+    "*.bellator.com",
+    "*.ccmixter.org",
+    "*.filmzie.com",
+    "*.kcnawatch.org",
+    "*.popcornflix.com",
+    "*.simkl.com",
+    "*.snagfilms.com",
+    "*.southparkstudios.com",
+    "*.topdocumentaryfilms.com",
+    "*.universalmediaserver.com"
+  ],
+  "proxy": [
+    "*.piracyproxy.net",
+    "*.unblocked.id",
+    "*.unblocked.krd"
+  ],
+  "streaming": [
+    "*.snagfilms.com"
+  ],
+  "streaming-video": [
+    "*.snagfilms.com"
   ],
   "advertising": [
     "x.com",
@@ -318,7 +341,10 @@
   "games": [
     "sites.google.com",
     "www.nytimes.com",
-    "mail.aol.com"
+    "mail.aol.com",
+    "*.mit.edu",
+    "*.watchdocumentaries.com",
+    "*.monkeytype.com"
   ],
   "crypto": [
     "monster.com",

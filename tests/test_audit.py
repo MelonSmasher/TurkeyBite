@@ -14,7 +14,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.audit import audit, format_report, read_reference
+from libtb.audit import audit_settings, audit, format_report, parse_bar, read_reference
+from libtb.evidence import disabled_paths
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import build
 
@@ -39,11 +40,11 @@ class AuditTest(unittest.TestCase):
         shutil.rmtree(self.root, ignore_errors=True)
         psl.forget()
 
-    def run_audit(self, entries, domains):
+    def run_audit(self, entries, domains, **kwargs):
         build(entries, path=self.path, built_at=1000, sources=SOURCES)
         index = DomainIndex(self.path)
         try:
-            return audit(index, domains, psl_path=FIXTURE)
+            return audit(index, domains, psl_path=FIXTURE, **kwargs)
         finally:
             index.close()
 
@@ -56,6 +57,10 @@ class AuditTest(unittest.TestCase):
         with open(path, 'w') as fh:
             fh.write('google.com\nexample.com\n')
         self.assertEqual(read_reference(path), ['google.com', 'example.com'])
+
+    def test_the_bar_reads_as_a_number_or_per_branch(self):
+        self.assertEqual(parse_bar('2'), '2')
+        self.assertEqual(parse_bar('default=2, threat=1'), {'default': '2', 'threat': '1'})
 
     def test_asserted_and_held_back_are_reported_apart(self):
         report = self.run_audit({
@@ -94,11 +99,52 @@ class AuditTest(unittest.TestCase):
         self.assertIn('#1       popular.com', text)
         self.assertRegex(text, r'cyberhost\s+1')
 
+    def test_a_disabled_category_is_audited_as_events_will_carry_it(self):
+        entries = {'*.opinion.com': {'vendor': {'fakenews', 'news'}}}
+        report = self.run_audit(entries, ['opinion.com'],
+                                disabled=disabled_paths(['editorial']))
+        self.assertEqual(sorted(report['asserted']), ['news'])
+        self.assertEqual(sorted(self.run_audit(entries, ['opinion.com'],
+                                               disabled=disabled_paths([]))['asserted']),
+                         ['fakenews', 'news'])
+
     def test_the_report_can_be_limited_to_named_categories(self):
         report = self.run_audit({'*.popular.com': {'vendor': {'games', 'steam'}}}, ['popular.com'])
         text = '\n'.join(format_report(report, 1, categories={'steam'}))
         self.assertIn('steam', text)
         self.assertNotIn('games', text)
+
+
+class AuditSettingsTest(unittest.TestCase):
+    """The audit reads processor.evidence exactly as the workers do."""
+
+    def test_overriding_the_bar_keeps_the_configured_switches(self):
+        # The case that broke: --index and --min-publishers given, so the
+        # config was never read and the default replaced what was configured
+        bar, disabled = audit_settings({'disabled_categories': []}, min_publishers='2')
+        self.assertEqual(disabled, frozenset())
+        self.assertEqual(bar, {'default': 2})
+
+    def test_a_configured_list_survives_an_override_of_the_bar(self):
+        _, disabled = audit_settings({'disabled_categories': ['editorial', 'adult.gambling']},
+                                     min_publishers='default=2,threat=1')
+        self.assertEqual(disabled, frozenset({'editorial', 'adult.gambling'}))
+
+    def test_nothing_configured_means_the_default(self):
+        self.assertEqual(audit_settings({})[1], frozenset({'editorial'}))
+
+    def test_disable_replaces_the_configured_list(self):
+        _, disabled = audit_settings({'disabled_categories': ['editorial']},
+                                     disabled=['adult.gambling'])
+        self.assertEqual(disabled, frozenset({'adult.gambling'}))
+
+    def test_an_empty_disable_switches_nothing_off(self):
+        self.assertEqual(audit_settings({}, disabled=[''])[1], frozenset())
+
+    def test_a_bad_value_is_refused(self):
+        for kwargs in ({'min_publishers': 'default=two'}, {'disabled': ['fakenews']}):
+            with self.assertRaises(ValueError, msg=kwargs):
+                audit_settings({}, **kwargs)
 
 
 if __name__ == '__main__':

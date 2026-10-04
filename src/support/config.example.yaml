@@ -74,8 +74,34 @@ processor:
   # A category that falls short is still recorded on the event, in
   # bite.contexts_candidate, so nothing is lost. 1 lets one medium list assert
   # on its own, which brings back most of the false positives this removes.
+  #
+  # The bar can differ by taxonomy branch or path, the names bite.purpose and
+  # bite.risk use, with `default` for everything not named. The most specific
+  # key wins, and a key the taxonomy does not know stops the worker at start.
+  #   min_publishers:
+  #     default: 2
+  #     threat: 1             # malware, phishing and every other threat
+  #     adult.pornography: 3
+  # Measured on the Tranco top 10,000, `threat: 1` raises the domains carrying
+  # a threat category from 5 to 57, nearly all of them wrong: ad networks,
+  # workers.dev, archive.ph, telegra.ph, bet365.com, bitcoin.org.
+  #
+  # disabled_categories switches whole categories off by taxonomy branch or
+  # path, without deleting the lists that carry them. A disabled category
+  # leaves nothing on the event, not even in bite.claims or
+  # bite.contexts_suppressed, exactly as if its lists were not there. Unlike
+  # the rest of these settings it holds in every lookup mode, valkey included.
+  #
+  # `editorial` is the fakenews, fascist and zionist lists, which label news
+  # and opinion sites by viewpoint. It is off unless you turn it on: leaving
+  # this key out means [editorial] too. A list you write replaces that default
+  # rather than adding to it, so to switch the editorial lists back on, write
+  #   disabled_categories: []
+  # or comment out every entry under the key, which means the same.
   evidence:
     min_publishers: 2
+    disabled_categories:
+      - editorial
   dns:
     lookup_ips: true
     resolvers:

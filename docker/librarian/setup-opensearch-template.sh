@@ -91,6 +91,7 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "contexts": { "type": "keyword" },
                             "contexts_candidate": { "type": "keyword" },
                             "contexts_suppressed": { "type": "keyword" },
+                            "incidental": { "type": "boolean" },
                             "claims": { "type": "keyword" },
                             "purpose": { "type": "keyword" },
                             "service": { "type": "keyword" },

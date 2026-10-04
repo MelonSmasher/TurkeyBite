@@ -11,7 +11,8 @@ from libtb.sieve import normalize_host
 from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
-from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, describe,
+from libtb.evidence import (cancels, categorise, claims_for, demote_incidental,
+                            describe, drop_disabled, evidence_settings,
                             matched_keys, resolve, sources_of)
 from datetime import datetime, timezone
 from dateutil import *
@@ -21,6 +22,12 @@ from opensearchpy import OpenSearch
 from opensearchpy import helpers as opensearch_helpers
 from dns import reversename, resolver, exception
 from urllib.parse import urlparse
+
+
+# The key resolve_contexts uses to hand the ignorelist's corrections on the asked
+# name to its caller. Never part of an event: both callers pop it before
+# shipping, and it is underscored so an oversight is obvious in a document.
+CORRECTED = '_corrected'
 
 
 # One OpenSearch client per process, per host. Unlike the read-only mmap above,
@@ -437,6 +444,9 @@ class Processor(object):
         """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
         self.config = config
         self.redis_conf = redis_conf
+        # Read once here so a mistake in the evidence settings stops the process
+        # at start, and so no event pays to parse them again
+        self._evidence = evidence_settings(config.get('evidence'))
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -455,9 +465,18 @@ class Processor(object):
         )
 
     def min_publishers(self):
-        """Independent publishers a medium trust category needs, see libtb.evidence."""
-        settings = self.config.get('evidence') or {}
-        return int(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+        """Independent publishers a medium trust category needs, see libtb.evidence.
+
+        One number, or a mapping from taxonomy branches or paths to numbers.
+        """
+        return self._evidence[0]
+
+    def disabled_categories(self):
+        """Taxonomy branches or paths switched off, see libtb.evidence.
+
+        Absent means libtb.evidence.DEFAULT_DISABLED, the editorial branch.
+        """
+        return self._evidence[1]
 
     def valkey_contexts(self, searches):
         """The original lookup: one Valkey GET per synthesised key."""
@@ -484,7 +503,7 @@ class Processor(object):
                 print(f"Malformed host list entry at {key}: {e}", file=sys.stderr)
         return contexts
 
-    def resolve_contexts(self, searches):
+    def resolve_contexts(self, searches, navigation=False):
         """Categories for a set of search terms.
 
         Returns (contexts, extra) where extra carries index-only fields. Three
@@ -499,21 +518,31 @@ class Processor(object):
         Only the index weighs its evidence. Valkey holds a bare category list
         per key, so it cannot tell one noisy list from three that agree, and in
         compare mode a disagreement is now mostly the index declining a
-        category Valkey would have asserted.
+        category Valkey would have asserted. Switched-off categories are taken
+        out of every mode's answer, Valkey's included, since keeping them in one
+        mode would store the label the switch exists to keep off the event.
+
+        `navigation` says the host is a page someone opened, which the
+        incidental mark does not apply to. In index mode extra also carries
+        CORRECTED, the ignorelist's corrections on the host, for the caller to
+        hold over a CNAME chain and then pop before the event is shipped.
         """
         mode, path = self.index_settings()
         host = searches[0]
+        disabled = self.disabled_categories()
 
         if mode == 'valkey':
-            return self.valkey_contexts(searches), {}
+            return drop_disabled(self.valkey_contexts(searches), disabled), {}
 
         try:
             index = domain_index(path)
-            claims, verdict = categorise(index, host, self.min_publishers())
+            claims, verdict = categorise(index, host, self.min_publishers(),
+                                         disabled=disabled, navigation=navigation)
         except Exception as e:
             # A missing or corrupt index must not cost the event. Fall back.
             print(f"Domain index unavailable at {path}: {e}", file=sys.stderr)
-            return self.valkey_contexts(searches), {'index_error': str(e)}
+            return (drop_disabled(self.valkey_contexts(searches), disabled),
+                    {'index_error': str(e)})
 
         contexts = verdict['asserted']
         extra = {
@@ -530,10 +559,14 @@ class Processor(object):
                 extra['contexts_candidate'] = verdict['candidate']
             if verdict['suppressed']:
                 extra['contexts_suppressed'] = verdict['suppressed']
+            if verdict['incidental']:
+                extra['incidental'] = True
+            if verdict['corrected']:
+                extra[CORRECTED] = verdict['corrected']
             return contexts, extra
 
         # compare: Valkey stays authoritative while the index is on trial
-        legacy = self.valkey_contexts(searches)
+        legacy = drop_disabled(self.valkey_contexts(searches), disabled)
         extra['contexts_index'] = contexts
         extra['context_match'] = sorted(legacy) == sorted(contexts)
         return legacy, extra
@@ -559,10 +592,13 @@ class Processor(object):
             return [], [], []
 
         # Weighed together, so two publishers agreeing about different links
-        # of one chain still corroborate each other
+        # of one chain still corroborate each other. A link marked incidental
+        # demotes what the chain contributes, but leaves the name that was
+        # asked for alone: that name was not marked.
         claims = []
+        disabled = self.disabled_categories()
         for target in chain:
-            claims.extend(categorise(index, target, self.min_publishers())[0])
+            claims.extend(claims_for(index, target, disabled=disabled))
         verdict = resolve(claims, self.min_publishers())
         return verdict['asserted'], sources_of(claims), matched_keys(claims)
 
@@ -627,6 +663,7 @@ class Processor(object):
             return False
 
         contexts, extra = self.resolve_contexts(searches)
+        corrected = extra.pop(CORRECTED, ())
 
         # The answer section, which Packetbeat has already parsed and which bite
         # has never carried. Merged after resolve_contexts so compare mode keeps
@@ -646,12 +683,27 @@ class Processor(object):
                 # cname_contexts shows what merging would add before it does.
                 if self.index_settings()[0] == 'index':
                     # A correction on the name that was asked for holds over
-                    # whatever that name happens to be hosted on
-                    added = set(chain_contexts) - set(extra.get('contexts_suppressed') or [])
+                    # whatever that name happens to be hosted on, read
+                    # through the taxonomy as resolve() reads it. These are
+                    # the corrections themselves, not what they suppressed on
+                    # the name, since the name may have had no such claim.
+                    cancelled = {c for c in chain_contexts if cancels(corrected, c)}
+                    added = set(chain_contexts) - cancelled
+                    if cancelled:
+                        extra['contexts_suppressed'] = sorted(
+                            set(extra.get('contexts_suppressed') or []) | cancelled)
+                    demoted = set()
+                    if extra.get('incidental'):
+                        # So does the incidental mark. connect.facebook.net is
+                        # hosted on scontent.xx.fbcdn.net, which the lists call
+                        # Facebook, and merging that back would undo the mark.
+                        kept, demoted = demote_incidental(added)
+                        added, demoted = set(kept), set(demoted)
                     if added:
                         match_source.append('cname')
                     contexts = sorted(set(contexts) | added)
-                    held_back = sorted(set(extra.get('contexts_candidate') or []) - added)
+                    held_back = sorted((set(extra.get('contexts_candidate') or []) | demoted)
+                                       - added)
                     if held_back:
                         extra['contexts_candidate'] = held_back
                     else:
@@ -794,7 +846,10 @@ class Processor(object):
         if not searches:
             return False
 
-        contexts, extra = self.resolve_contexts(searches)
+        # A history entry is a page the person opened, so the incidental mark,
+        # which is about lookups made on someone else's behalf, does not apply
+        contexts, extra = self.resolve_contexts(searches, navigation=True)
+        extra.pop(CORRECTED, None)
         extra.update(taxonomy_fields(contexts))
         extra.update(domain_fields(searches[0]))
         identity = client_identity(dig(data, 'data', 'event', 'data'))

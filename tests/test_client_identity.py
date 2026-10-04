@@ -199,7 +199,7 @@ class BrowserHistoryWiringTest(unittest.TestCase):
         self.processor = Processor({}, {})
         self.shipped = []
         self.processor.ship_bite = self.shipped.append
-        self.processor.resolve_contexts = lambda searches: ([], {})
+        self.processor.resolve_contexts = lambda searches, **kwargs: ([], {})
 
     def packet(self, client=None, processed=None):
         event_data = {

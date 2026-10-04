@@ -138,9 +138,14 @@ def index_sync():
               help='Only report these categories. Repeatable.')
 @click.option('--index', 'index_path', default=None,
               help='Index file to audit. Defaults to the configured path.')
-@click.option('--min-publishers', default=None, type=int,
-              help='Override processor.evidence.min_publishers.')
-def audit(reference, top, examples, categories, index_path, min_publishers):
+@click.option('--min-publishers', default=None,
+              help='Override processor.evidence.min_publishers: a number, or '
+                   'taxonomy branches with numbers such as default=2,threat=1.')
+@click.option('--disable', 'disabled', multiple=True,
+              help='Taxonomy branch or path to switch off, as '
+                   'processor.evidence.disabled_categories. Repeatable, and replaces '
+                   'the configured list. --disable "" switches nothing off.')
+def audit(reference, top, examples, categories, index_path, min_publishers, disabled):
     """Report the categories the index asserts on known-good domains.
 
     REFERENCE is a Tranco 'rank,domain' CSV or one domain per line. Fetch the
@@ -150,26 +155,63 @@ def audit(reference, top, examples, categories, index_path, min_publishers):
         curl -L -o top-1m.csv.zip https://tranco-list.eu/top-1m.csv.zip
         unzip -o top-1m.csv.zip -d lists
     """
-    from libtb.audit import audit as run_audit, format_report, read_reference
-    from libtb.evidence import DEFAULT_MIN_PUBLISHERS
+    from libtb.audit import audit as run_audit, audit_settings, format_report, read_reference
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
-    if index_path is None or min_publishers is None:
+    # The configured settings are read whenever anything is left to them, so
+    # an override replaces only the setting it names and the audit otherwise
+    # reports exactly what the workers do
+    configured = {}
+    if index_path is None or min_publishers is None or not disabled:
         config = read_config()
         index_path = index_path or index_config(config)['path']
-        if min_publishers is None:
-            evidence = (config.get('processor') or {}).get('evidence') or {}
-            min_publishers = int(evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+        configured = (config.get('processor') or {}).get('evidence') or {}
+    try:
+        min_publishers, disabled = audit_settings(
+            configured, min_publishers, disabled if disabled else None)
+    except ValueError as e:
+        raise click.BadParameter(str(e))
 
     domains = read_reference(reference, top)
     index = DomainIndex(index_path)
     try:
-        report = run_audit(index, domains, min_publishers)
+        report = run_audit(index, domains, min_publishers, disabled=disabled)
     finally:
         index.close()
     for line in format_report(report, len(domains), examples, set(categories)):
         print(line)
+
+
+@cli.command('overlap')
+@click.option('--index', 'index_path', default=None,
+              help='Index file to measure. Defaults to the configured path.')
+@click.option('--threshold', default=0.5, show_default=True,
+              help='Report pairs where one source holds at least this share of the other.')
+@click.option('--min-entries', default=50, show_default=True,
+              help='Leave out sources with fewer names than this.')
+def overlap(index_path, threshold, min_entries):
+    """Report how much of each list another list repeats.
+
+    Corroboration only counts between independent sources, and derived_from in
+    host_files.json is the only record of which lists copy which. This compares
+    what the lists contain, so a pair that overlaps heavily without a declared
+    relationship, or a declaration the contents do not bear out, stands out.
+    """
+    from libtb.audit.independence import format_report, report
+    from libtb.index import DomainIndex
+    from libtb.util import index_config
+
+    if index_path is None:
+        index_path = index_config(read_config())['path']
+    index = DomainIndex(index_path)
+    try:
+        found = report(index, threshold, min_entries)
+    finally:
+        index.close()
+    for line in format_report(found, threshold):
+        print(line)
+
 
 if __name__ == '__main__':
     cli()
