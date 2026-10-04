@@ -21,6 +21,7 @@ TB_VENV=~/.cache/tb-venv tests/run.sh
 | `test_list_scope.py` | How far a list entry reaches: one host or a whole domain, and never past the registrable domain |
 | `test_evidence.py` | Which claimed categories an event asserts, and what counts as independent agreement |
 | `test_audit.py` | The false positive audit, over a real index so it reports what events will say |
+| `test_independence.py` | The report on how much one list repeats another, and which overlaps it flags |
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
 
 Three habits are worth keeping when adding to these.

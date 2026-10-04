@@ -189,5 +189,36 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
     for line in format_report(report, len(domains), examples, set(categories)):
         print(line)
 
+
+@cli.command('overlap')
+@click.option('--index', 'index_path', default=None,
+              help='Index file to measure. Defaults to the configured path.')
+@click.option('--threshold', default=0.5, show_default=True,
+              help='Report pairs where one source holds at least this share of the other.')
+@click.option('--min-entries', default=50, show_default=True,
+              help='Leave out sources with fewer names than this.')
+def overlap(index_path, threshold, min_entries):
+    """Report how much of each list another list repeats.
+
+    Corroboration only counts between independent sources, and derived_from in
+    host_files.json is the only record of which lists copy which. This compares
+    what the lists contain, so a pair that overlaps heavily without a declared
+    relationship, or a declaration the contents do not bear out, stands out.
+    """
+    from libtb.audit.independence import format_report, report
+    from libtb.index import DomainIndex
+    from libtb.util import index_config
+
+    if index_path is None:
+        index_path = index_config(read_config())['path']
+    index = DomainIndex(index_path)
+    try:
+        found = report(index, threshold, min_entries)
+    finally:
+        index.close()
+    for line in format_report(found, threshold):
+        print(line)
+
+
 if __name__ == '__main__':
     cli()
