@@ -252,7 +252,9 @@ The number of independent publishers a `medium` category needs is `processor.evi
 * `bite.claims` which list said what, as `category:list`
 * `bite.incidental` true when the name looked up is marked incidental, see below
 
-Whole categories can be switched off with `processor.evidence.disabled_categories`, a list of taxonomy branches or paths, without deleting the lists that carry them. `editorial` covers the `fakenews`, `fascist` and `zionist` lists and StevenBlack's `fake-news`. A disabled category is dropped before anything is weighed, so it appears nowhere on the event, including `bite.claims` and `bite.contexts_suppressed`: the usual reason to switch one off is that its label should not be stored against the people whose traffic it matches. Nothing is disabled by default.
+Whole categories can be switched off with `processor.evidence.disabled_categories`, a list of taxonomy branches or paths, without deleting the lists that carry them. A disabled category is dropped before anything is weighed, so it appears nowhere on the event, including `bite.claims` and `bite.contexts_suppressed`: the usual reason to switch one off is that its label should not be stored against the people whose traffic it matches.
+
+The `editorial` branch is off by default. It covers the `fakenews`, `fascist` and `zionist` lists and StevenBlack's `fake-news`, which label news and opinion sites by viewpoint, and leaving the key out of `config.yaml` means `[editorial]`. A list you write replaces the default rather than adding to it, so `disabled_categories: []` switches the editorial lists back on, and `[editorial, adult.gambling]` keeps them off and gambling too. `turkeybite audit --disable` does the same for one run, and `--disable ""` switches nothing off.
 
 A new index format carries this, so upgrading needs a rebuild. The librarian does that when it starts, or run `python turkeybite index`.
 

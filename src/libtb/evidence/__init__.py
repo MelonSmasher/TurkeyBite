@@ -62,6 +62,12 @@ candidate or suppressed, and not in the claims. That is what removing the list
 would do, and it is the point. A category is usually switched off because its
 label should not be stored against the people whose traffic it matches, and
 keeping it anywhere on the event would still store it.
+
+The editorial branch is off unless the operator turns it on. Its lists label
+news and opinion sites by viewpoint, as fake news, fascist or zionist, and
+those labels are stored against identifiable people. That is a decision for
+whoever runs the deployment to make on purpose, not one a default should make
+for them.
 """
 
 from itertools import combinations
@@ -137,14 +143,21 @@ def needed(statement, bar):
     return bar[DEFAULT_KEY]
 
 
+# What is switched off when processor.evidence.disabled_categories is absent
+DEFAULT_DISABLED = ('editorial',)
+
+
 def disabled_paths(setting):
     """processor.evidence.disabled_categories as a frozenset of taxonomy prefixes.
+
+    Absent (None) means DEFAULT_DISABLED. An explicit list replaces the
+    default rather than adding to it, so [] switches everything on.
 
     Raises ValueError for an entry that is no branch or path in the taxonomy,
     as `thresholds` does, so a typo cannot leave a category switched on.
     """
     if setting is None:
-        return frozenset()
+        setting = DEFAULT_DISABLED
     if isinstance(setting, str):
         setting = [setting]
     paths = set()

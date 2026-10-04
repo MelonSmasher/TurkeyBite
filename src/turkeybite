@@ -143,8 +143,8 @@ def index_sync():
                    'taxonomy branches with numbers such as default=2,threat=1.')
 @click.option('--disable', 'disabled', multiple=True,
               help='Taxonomy branch or path to switch off, as '
-                   'processor.evidence.disabled_categories. Repeatable. Defaults to '
-                   'the configured list whenever the configuration is read.')
+                   'processor.evidence.disabled_categories. Repeatable, and replaces '
+                   'the configured list. --disable "" switches nothing off.')
 def audit(reference, top, examples, categories, index_path, min_publishers, disabled):
     """Report the categories the index asserts on known-good domains.
 
@@ -160,7 +160,9 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
-    disabled = list(disabled) or None
+    # Not given means the configured list, or the default when there is none.
+    # Given, it replaces both, and an empty value asks for nothing switched off.
+    disabled = [entry for entry in disabled if entry.strip()] if disabled else None
     if min_publishers is not None:
         min_publishers = parse_bar(min_publishers)
     if index_path is None or min_publishers is None:

@@ -249,9 +249,24 @@ class ThresholdTest(unittest.TestCase):
 class DisabledTest(unittest.TestCase):
     """Switching whole categories off by taxonomy branch or path."""
 
-    def test_nothing_is_disabled_by_default(self):
-        self.assertEqual(disabled_paths(None), frozenset())
-        self.assertFalse(is_disabled('fakenews', disabled_paths(None)))
+    def test_the_editorial_branch_is_disabled_by_default(self):
+        default = disabled_paths(None)
+        self.assertEqual(default, frozenset({'editorial'}))
+        for category in ('fake-news', 'fakenews', 'fascist', 'zionist'):
+            self.assertTrue(is_disabled(category, default), category)
+        # Nothing else is
+        for category in ('news', 'porn', 'malware', 'social'):
+            self.assertFalse(is_disabled(category, default), category)
+
+    def test_an_empty_list_switches_everything_back_on(self):
+        self.assertEqual(disabled_paths([]), frozenset())
+        self.assertFalse(is_disabled('fakenews', disabled_paths([])))
+
+    def test_an_explicit_list_replaces_the_default(self):
+        # Rather than adding to it: naming one thing turns editorial back on
+        off = disabled_paths(['policy.anonymiser'])
+        self.assertTrue(is_disabled('vpn', off))
+        self.assertFalse(is_disabled('fakenews', off))
 
     def test_a_branch_disables_every_spelling_under_it(self):
         off = disabled_paths(['editorial'])
@@ -483,8 +498,22 @@ class ProcessorWiringTest(IndexFixture):
                          evidence={'disabled_categories': ['editorial']})
         self.assertEqual(bite['contexts'], ['news'])
         # The control
-        self.assertEqual(self.bite('www.unlisted.example', answers=answers)['contexts'],
-                         ['fake-news', 'fakenews', 'news'])
+        bite = self.bite('www.unlisted.example', answers=answers,
+                         evidence={'disabled_categories': []})
+        self.assertEqual(bite['contexts'], ['fake-news', 'fakenews', 'news'])
+
+    def test_events_carry_no_editorial_label_unless_it_is_switched_on(self):
+        bite = self.bite('www.opinion.com')
+        self.assertEqual(bite['contexts'], ['news'])
+        self.assertEqual(bite['claims'], ['news:vendor'])
+        bite = self.bite('www.opinion.com', evidence={'disabled_categories': []})
+        self.assertEqual(bite['contexts'], ['fake-news', 'fakenews', 'news'])
+        self.assertEqual(bite['risk'], ['editorial.fakenews'])
+
+    def test_an_explicit_list_on_the_processor_replaces_the_default(self):
+        bite = self.bite('www.opinion.com',
+                         evidence={'disabled_categories': ['adult.pornography']})
+        self.assertEqual(bite['contexts'], ['fake-news', 'fakenews', 'news'])
 
     def test_an_unknown_disabled_entry_stops_the_processor_at_start(self):
         with self.assertRaises(ValueError):

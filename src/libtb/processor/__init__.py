@@ -468,7 +468,10 @@ class Processor(object):
         return thresholds(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
 
     def disabled_categories(self):
-        """Taxonomy branches or paths switched off, see libtb.evidence. None by default."""
+        """Taxonomy branches or paths switched off, see libtb.evidence.
+
+        Absent means libtb.evidence.DEFAULT_DISABLED, the editorial branch.
+        """
         settings = self.config.get('evidence') or {}
         return disabled_paths(settings.get('disabled_categories'))
 

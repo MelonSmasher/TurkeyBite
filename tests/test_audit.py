@@ -104,7 +104,8 @@ class AuditTest(unittest.TestCase):
         report = self.run_audit(entries, ['opinion.com'],
                                 disabled=disabled_paths(['editorial']))
         self.assertEqual(sorted(report['asserted']), ['news'])
-        self.assertEqual(sorted(self.run_audit(entries, ['opinion.com'])['asserted']),
+        self.assertEqual(sorted(self.run_audit(entries, ['opinion.com'],
+                                               disabled=disabled_paths([]))['asserted']),
                          ['fakenews', 'news'])
 
     def test_the_report_can_be_limited_to_named_categories(self):
