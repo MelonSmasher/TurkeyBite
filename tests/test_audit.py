@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
 from libtb.audit import audit, format_report, parse_bar, read_reference
+from libtb.evidence import disabled_paths
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import build
 
@@ -39,11 +40,11 @@ class AuditTest(unittest.TestCase):
         shutil.rmtree(self.root, ignore_errors=True)
         psl.forget()
 
-    def run_audit(self, entries, domains):
+    def run_audit(self, entries, domains, **kwargs):
         build(entries, path=self.path, built_at=1000, sources=SOURCES)
         index = DomainIndex(self.path)
         try:
-            return audit(index, domains, psl_path=FIXTURE)
+            return audit(index, domains, psl_path=FIXTURE, **kwargs)
         finally:
             index.close()
 
@@ -97,6 +98,14 @@ class AuditTest(unittest.TestCase):
         self.assertIn('threat', text)
         self.assertIn('#1       popular.com', text)
         self.assertRegex(text, r'cyberhost\s+1')
+
+    def test_a_disabled_category_is_audited_as_events_will_carry_it(self):
+        entries = {'*.opinion.com': {'vendor': {'fakenews', 'news'}}}
+        report = self.run_audit(entries, ['opinion.com'],
+                                disabled=disabled_paths(['editorial']))
+        self.assertEqual(sorted(report['asserted']), ['news'])
+        self.assertEqual(sorted(self.run_audit(entries, ['opinion.com'])['asserted']),
+                         ['fakenews', 'news'])
 
     def test_the_report_can_be_limited_to_named_categories(self):
         report = self.run_audit({'*.popular.com': {'vendor': {'games', 'steam'}}}, ['popular.com'])

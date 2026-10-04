@@ -56,7 +56,8 @@ def is_threat(category):
     return any(path.startswith('threat.') for path in classify([category]).get('risk', []))
 
 
-def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH):
+def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
+          disabled=frozenset()):
     """Runs the reference domains through the index.
 
     Returns a dict:
@@ -76,7 +77,7 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
         backers = defaultdict(set)
         counted = defaultdict(set)
         for host in (domain, 'www.' + domain):
-            claims, result = categorise(index, host, min_publishers, psl_path)
+            claims, result = categorise(index, host, min_publishers, psl_path, disabled)
             verdict['asserted'].update(result['asserted'])
             verdict['candidate'].update(result['candidate'])
             for _, source, category in claims:

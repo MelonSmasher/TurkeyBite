@@ -85,6 +85,14 @@ processor:
   # Measured on the Tranco top 10,000, `threat: 1` raises the domains carrying
   # a threat category from 5 to 57, nearly all of them wrong: ad networks,
   # workers.dev, archive.ph, telegra.ph, bet365.com, bitcoin.org.
+  #
+  # disabled_categories switches whole categories off by taxonomy branch or
+  # path, without deleting the lists that carry them. `editorial` covers the
+  # fakenews, fascist and zionist lists. A disabled category leaves nothing on
+  # the event, not even in bite.claims or bite.contexts_suppressed, exactly as
+  # if its lists were not there. Nothing is disabled by default.
+  #   disabled_categories:
+  #     - editorial
   evidence:
     min_publishers: 2
   dns:

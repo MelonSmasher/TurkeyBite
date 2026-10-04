@@ -46,6 +46,14 @@ so it can be searched for, and an audit can see what the bar is holding back.
 
 The ignorelist's corrections arrive as claims too, with the category negated,
 and cancel the category outright whichever source asserted it.
+
+An operator can also switch whole categories off, by taxonomy branch or path,
+without deleting the lists that carry them. A disabled category is dropped
+before anything is weighed, so events record nothing of it: not as asserted,
+candidate or suppressed, and not in the claims. That is what removing the list
+would do, and it is the point. A category is usually switched off because its
+label should not be stored against the people whose traffic it matches, and
+keeping it anywhere on the event would still store it.
 """
 
 from itertools import combinations
@@ -119,6 +127,42 @@ def needed(statement, bar):
             if prefix in bar:
                 return bar[prefix]
     return bar[DEFAULT_KEY]
+
+
+def disabled_paths(setting):
+    """processor.evidence.disabled_categories as a frozenset of taxonomy prefixes.
+
+    Raises ValueError for an entry that is no branch or path in the taxonomy,
+    as `thresholds` does, so a typo cannot leave a category switched on.
+    """
+    if setting is None:
+        return frozenset()
+    if isinstance(setting, str):
+        setting = [setting]
+    paths = set()
+    for entry in setting:
+        key = str(entry).strip().lower()
+        if key not in TAXONOMY_PREFIXES:
+            raise ValueError(f'disabled_categories names {key!r}, which is not a taxonomy '
+                             f'branch or path, such as editorial or editorial.fakenews')
+        paths.add(key)
+    return frozenset(paths)
+
+
+def is_disabled(category, disabled):
+    """True when anything the category says falls under a disabled prefix.
+
+    Any rather than all, so switching off `policy.anonymiser` switches off
+    `expressvpn` too. It also names a service, and leaving it on would keep
+    the anonymiser label on the event through bite.risk.
+    """
+    if not disabled:
+        return False
+    if category.startswith(NEGATION):
+        category = category[len(NEGATION):]
+    return any(prefix in disabled
+               for facet, path in statements(category) if facet is not None
+               for prefix in _prefixes(path))
 
 
 def ownership_boundary(host, path=PSL_PATH):
@@ -238,11 +282,15 @@ def matched_keys(claims):
     return keys
 
 
-def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH):
+def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
+               disabled=frozenset()):
     """Claims and verdict for one host, exactly as a worker reaches them.
 
     Shared by the worker and the audit, so what the audit reports is what the
-    events will say.
+    events will say. Claims for a `disabled` category, a set from
+    `disabled_paths`, are dropped here, before anything else sees them.
     """
     claims = index.match(host, ownership_boundary(host, psl_path))
+    if disabled:
+        claims = [claim for claim in claims if not is_disabled(claim[2], disabled)]
     return claims, resolve(claims, min_publishers)

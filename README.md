@@ -251,6 +251,8 @@ The number of independent publishers a `medium` category needs is `processor.evi
 * `bite.contexts_suppressed` categories your ignorelist cancelled
 * `bite.claims` which list said what, as `category:list`
 
+Whole categories can be switched off with `processor.evidence.disabled_categories`, a list of taxonomy branches or paths, without deleting the lists that carry them. `editorial` covers the `fakenews`, `fascist` and `zionist` lists and StevenBlack's `fake-news`. A disabled category is dropped before anything is weighed, so it appears nowhere on the event, including `bite.claims` and `bite.contexts_suppressed`: the usual reason to switch one off is that its label should not be stored against the people whose traffic it matches. Nothing is disabled by default.
+
 A new index format carries this, so upgrading needs a rebuild. The librarian does that when it starts, or run `python turkeybite index`.
 
 ### Finding false positives

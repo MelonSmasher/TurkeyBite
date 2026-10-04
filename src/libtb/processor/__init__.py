@@ -12,7 +12,8 @@ from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
 from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, describe,
-                            matched_keys, resolve, sources_of, thresholds)
+                            disabled_paths, matched_keys, resolve, sources_of,
+                            thresholds)
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -440,6 +441,7 @@ class Processor(object):
         # Read once here so a mistake in the evidence settings stops the process
         # at start, rather than costing every event it handles
         self.min_publishers()
+        self.disabled_categories()
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -464,6 +466,11 @@ class Processor(object):
         """
         settings = self.config.get('evidence') or {}
         return thresholds(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+
+    def disabled_categories(self):
+        """Taxonomy branches or paths switched off, see libtb.evidence. None by default."""
+        settings = self.config.get('evidence') or {}
+        return disabled_paths(settings.get('disabled_categories'))
 
     def valkey_contexts(self, searches):
         """The original lookup: one Valkey GET per synthesised key."""
@@ -515,7 +522,8 @@ class Processor(object):
 
         try:
             index = domain_index(path)
-            claims, verdict = categorise(index, host, self.min_publishers())
+            claims, verdict = categorise(index, host, self.min_publishers(),
+                                         disabled=self.disabled_categories())
         except Exception as e:
             # A missing or corrupt index must not cost the event. Fall back.
             print(f"Domain index unavailable at {path}: {e}", file=sys.stderr)
@@ -567,8 +575,10 @@ class Processor(object):
         # Weighed together, so two publishers agreeing about different links
         # of one chain still corroborate each other
         claims = []
+        disabled = self.disabled_categories()
         for target in chain:
-            claims.extend(categorise(index, target, self.min_publishers())[0])
+            claims.extend(categorise(index, target, self.min_publishers(),
+                                     disabled=disabled)[0])
         verdict = resolve(claims, self.min_publishers())
         return verdict['asserted'], sources_of(claims), matched_keys(claims)
 

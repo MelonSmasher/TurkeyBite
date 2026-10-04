@@ -141,7 +141,11 @@ def index_sync():
 @click.option('--min-publishers', default=None,
               help='Override processor.evidence.min_publishers: a number, or '
                    'taxonomy branches with numbers such as default=2,threat=1.')
-def audit(reference, top, examples, categories, index_path, min_publishers):
+@click.option('--disable', 'disabled', multiple=True,
+              help='Taxonomy branch or path to switch off, as '
+                   'processor.evidence.disabled_categories. Repeatable. Defaults to '
+                   'the configured list whenever the configuration is read.')
+def audit(reference, top, examples, categories, index_path, min_publishers, disabled):
     """Report the categories the index asserts on known-good domains.
 
     REFERENCE is a Tranco 'rank,domain' CSV or one domain per line. Fetch the
@@ -152,27 +156,34 @@ def audit(reference, top, examples, categories, index_path, min_publishers):
         unzip -o top-1m.csv.zip -d lists
     """
     from libtb.audit import audit as run_audit, format_report, parse_bar, read_reference
-    from libtb.evidence import DEFAULT_MIN_PUBLISHERS, thresholds
+    from libtb.evidence import DEFAULT_MIN_PUBLISHERS, disabled_paths, thresholds
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
+    disabled = list(disabled) or None
     if min_publishers is not None:
         min_publishers = parse_bar(min_publishers)
     if index_path is None or min_publishers is None:
         config = read_config()
         index_path = index_path or index_config(config)['path']
+        evidence = (config.get('processor') or {}).get('evidence') or {}
         if min_publishers is None:
-            evidence = (config.get('processor') or {}).get('evidence') or {}
             min_publishers = evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS)
+        if disabled is None:
+            disabled = evidence.get('disabled_categories')
     try:
         min_publishers = thresholds(min_publishers)
     except ValueError as e:
         raise click.BadParameter(str(e), param_hint='--min-publishers')
+    try:
+        disabled = disabled_paths(disabled)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint='--disable')
 
     domains = read_reference(reference, top)
     index = DomainIndex(index_path)
     try:
-        report = run_audit(index, domains, min_publishers)
+        report = run_audit(index, domains, min_publishers, disabled=disabled)
     finally:
         index.close()
     for line in format_report(report, len(domains), examples, set(categories)):

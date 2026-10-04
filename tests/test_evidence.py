@@ -17,8 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.evidence import (categorise, corroborated, dependent, describe, needed, resolve,
-                            thresholds)
+from libtb.evidence import (categorise, corroborated, dependent, describe, disabled_paths,
+                            is_disabled, needed, resolve, thresholds)
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import apply_ignorelist, build
 from libtb.processor import Processor
@@ -243,6 +243,43 @@ class ThresholdTest(unittest.TestCase):
         self.assertEqual(verdict['candidate'], ['expressvpn'])
 
 
+class DisabledTest(unittest.TestCase):
+    """Switching whole categories off by taxonomy branch or path."""
+
+    def test_nothing_is_disabled_by_default(self):
+        self.assertEqual(disabled_paths(None), frozenset())
+        self.assertFalse(is_disabled('fakenews', disabled_paths(None)))
+
+    def test_a_branch_disables_every_spelling_under_it(self):
+        off = disabled_paths(['editorial'])
+        for category in ('fake-news', 'fakenews', 'fascist', 'zionist'):
+            self.assertTrue(is_disabled(category, off), category)
+        # The control: nothing outside the branch
+        for category in ('porn', 'malware', 'news', 'social'):
+            self.assertFalse(is_disabled(category, off), category)
+
+    def test_a_path_disables_only_that_leaf(self):
+        off = disabled_paths('editorial.zionist')
+        self.assertTrue(is_disabled('zionist', off))
+        self.assertFalse(is_disabled('fascist', off))
+
+    def test_a_vendor_goes_when_anything_it_says_is_disabled(self):
+        # Kept, expressvpn would still put policy.anonymiser on the event
+        off = disabled_paths(['policy.anonymiser'])
+        self.assertTrue(is_disabled('expressvpn', off))
+        self.assertTrue(is_disabled('vpn', off))
+
+    def test_a_correction_for_a_disabled_category_goes_too(self):
+        self.assertTrue(is_disabled('!fakenews', disabled_paths(['editorial'])))
+
+    def test_an_unknown_entry_is_refused(self):
+        # Including a category name, which is not a path: a typo here would
+        # leave the category switched on and say nothing
+        for bad in (['editorials'], ['fakenews'], 'news'):
+            with self.assertRaises(ValueError):
+                disabled_paths(bad)
+
+
 class DependenceTest(unittest.TestCase):
 
     def test_dependence_runs_in_both_directions(self):
@@ -290,8 +327,11 @@ class IndexFixture(unittest.TestCase):
             '*.workers.dev': {'cyberhost': {'malicious'}},
             '*.steampowered.com': {'vendor': {'games', 'steam'}},
             '*.tenor.com': {'stevenblack': {'porn'}, 'hagezi': {'porn'}},
+            '*.opinion.com': {'vendor': {'fake-news', 'news'}, 'hagezi': {'fakenews'}},
+            '*.corrected.com': {'vendor': {'fake-news'}},
         }
-        apply_ignorelist(entries, ignorelist={'porn': ['*.tenor.com']})
+        apply_ignorelist(entries, ignorelist={'porn': ['*.tenor.com'],
+                                              'fake-news': ['*.corrected.com']})
         build(entries, path=self.path, built_at=1000, sources=self.SOURCES)
         self.index = DomainIndex(self.path)
 
@@ -327,6 +367,24 @@ class IndexedVerdictTest(IndexFixture):
     def test_a_correction_holds_against_agreement(self):
         self.assertEqual(self.verdict('media.tenor.com'),
                          {'asserted': [], 'candidate': [], 'suppressed': ['porn']})
+
+    def test_a_disabled_category_leaves_no_trace(self):
+        off = disabled_paths(['editorial'])
+        claims, verdict = categorise(self.index, 'www.opinion.com', psl_path=FIXTURE,
+                                     disabled=off)
+        self.assertEqual(verdict, {'asserted': ['news'], 'candidate': [], 'suppressed': []})
+        self.assertEqual(describe(claims), ['news:vendor'])
+        # The control: the same host with nothing disabled
+        claims, verdict = categorise(self.index, 'www.opinion.com', psl_path=FIXTURE)
+        self.assertEqual(verdict['asserted'], ['fake-news', 'fakenews', 'news'])
+
+    def test_a_disabled_category_is_not_reported_as_suppressed(self):
+        # Suppressed means the ignorelist corrected it, and the label would
+        # still be stored against the client
+        off = disabled_paths(['editorial'])
+        verdict = categorise(self.index, 'www.corrected.com', psl_path=FIXTURE,
+                             disabled=off)[1]
+        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': []})
 
 
 class ProcessorWiringTest(IndexFixture):
@@ -402,6 +460,28 @@ class ProcessorWiringTest(IndexFixture):
     def test_a_bad_bar_stops_the_processor_at_start(self):
         with self.assertRaises(ValueError):
             self.processor(evidence={'min_publishers': {'threats': 1}})
+
+    def test_a_disabled_category_never_reaches_the_event(self):
+        bite = self.bite('www.opinion.com', evidence={'disabled_categories': ['editorial']})
+        self.assertEqual(bite['contexts'], ['news'])
+        self.assertEqual(bite['claims'], ['news:vendor'])
+        self.assertEqual(bite['sources'], ['vendor'])
+        self.assertNotIn('risk', bite)
+        for field in ('contexts_candidate', 'contexts_suppressed'):
+            self.assertNotIn(field, bite)
+
+    def test_a_disabled_category_is_not_merged_from_the_chain(self):
+        answers = [{'type': 'CNAME', 'data': 'www.opinion.com'}]
+        bite = self.bite('www.unlisted.example', answers=answers,
+                         evidence={'disabled_categories': ['editorial']})
+        self.assertEqual(bite['contexts'], ['news'])
+        # The control
+        self.assertEqual(self.bite('www.unlisted.example', answers=answers)['contexts'],
+                         ['fake-news', 'fakenews', 'news'])
+
+    def test_an_unknown_disabled_entry_stops_the_processor_at_start(self):
+        with self.assertRaises(ValueError):
+            self.processor(evidence={'disabled_categories': ['fakenews']})
 
     def test_compare_mode_records_the_weighed_answer_beside_valkey(self):
         bite = self.bite('cdn.pornsite.com', mode='compare')
