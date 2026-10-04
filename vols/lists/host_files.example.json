@@ -636,7 +636,7 @@
         "file": "lists/malicious/RPiList-Malware",
         "name": "RPiList-malicious",
         "publisher": "RPiList",
-        "derived_from": ["phishing.army"],
+        "derived_from": ["phishing.army", "ut1"],
         "trust": "medium"
     },
     {
