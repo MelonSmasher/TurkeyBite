@@ -507,7 +507,7 @@
     },
     {
         "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/streaming-video",
-        "categories": ["streaming", "streaming-video"],
+        "categories": ["streaming", "streaming-video", "piracy"],
         "file": "lists/streaming/nextdns-streaming-video",
         "name": "nextdns-streaming-video",
         "publisher": "nextdns",
@@ -516,7 +516,7 @@
     },
     {
         "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/streaming-audio",
-        "categories": ["streaming", "streaming-audio"],
+        "categories": ["streaming", "streaming-audio", "piracy"],
         "file": "lists/streaming/nextdns-streaming-audio",
         "name": "nextdns-streaming-audio",
         "publisher": "nextdns",
