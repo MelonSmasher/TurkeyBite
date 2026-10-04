@@ -32,6 +32,9 @@ MATCHES = ('exact', 'subtree')
 # coinbase.com came to be reported as cryptojacking.
 DEFAULT_TRUST = 'medium'
 
+# A list file nobody configured counts for nothing, see `unconfigured`
+UNCONFIGURED_TRUST = 'low'
+
 # The operator's own lists, the curated `turkeybite` files and any `custom` one.
 # They assert on their own, they mean whole domains, and they are the only lists
 # allowed to make a rule as broad as '*.edu'. Recognised by file name and only
@@ -54,14 +57,20 @@ def unconfigured(name):
 
     Apart from the local lists, such a file is most likely a download whose
     entry has since been removed or renamed, since a download stays on disk
-    after that. It keeps the cautious defaults. Promoting it to a local list
-    would let one stale list assert alone, cover every subdomain of each name,
-    and speak for whole public suffixes such as workers.dev, which is exactly
-    what the trust levels exist to stop.
+    after that. Promoting it to a local list would let one stale list assert
+    alone, cover every subdomain of each name, and speak for whole public
+    suffixes such as workers.dev, which is exactly what the trust levels exist
+    to stop.
+
+    It is recorded at low trust, so it asserts nothing and corroborates
+    nothing. Medium would not be enough: nobody can say who publishes a file
+    with no entry, so each one would count as its own publisher, and the
+    thirteen Block List Project files a deployment keeps after they are taken
+    out of host_files.example.json would corroborate one another.
     """
     if name in LOCAL_NAMES:
         return LOCAL
-    return {'publisher': name, 'derived_from': [], 'trust': DEFAULT_TRUST,
+    return {'publisher': name, 'derived_from': [], 'trust': UNCONFIGURED_TRUST,
             'match': DEFAULT_MATCH, 'local': False}
 
 
@@ -256,6 +265,35 @@ def build(entries, path=DEFAULT_PATH, built_at=None, sources=None):
     }
 
 
+def list_files(lists_dir='lists', exclude_path=None):
+    """Every list file the collector reads, as paths, in a stable order."""
+    import glob
+
+    excluded = os.path.abspath(exclude_path) if exclude_path else None
+    for path in sorted(glob.glob(os.path.join(lists_dir, '*', '*'))):
+        if os.path.basename(path) == '.gitignore' or not os.path.isfile(path):
+            continue
+        if os.path.basename(os.path.dirname(path)) in SKIP_DIRS:
+            continue
+        if excluded is not None and os.path.abspath(path) == excluded:
+            continue
+        yield path
+
+
+def unconfigured_files(lists_dir='lists', host_files=None, exclude_path=None):
+    """List files on disk that host_files.json does not configure and that are not local.
+
+    Usually downloads whose entry was removed. They are read at low trust, see
+    `unconfigured`, and are worth naming so an operator can delete them.
+    Returns paths relative to lists_dir.
+    """
+    configured = load_sources(lists_dir, host_files)
+    return [os.path.relpath(path, lists_dir)
+            for path in list_files(lists_dir, exclude_path)
+            if os.path.basename(path) not in configured
+            and os.path.basename(path) not in LOCAL_NAMES]
+
+
 def collect_entries(lists_dir='lists', host_files=None, exclude_path=None):
     """Reads the cleaned list files into the mapping `build` expects.
 
@@ -266,7 +304,8 @@ def collect_entries(lists_dir='lists', host_files=None, exclude_path=None):
 
     A '*.domain' line covers the domain and its subdomains. A bare line covers
     whatever its source's `match` says: the whole domain for a local list, one
-    host for a download, and one host for any other file nobody configured.
+    host for a download, and one host for any other file nobody configured,
+    which is also recorded at low trust.
 
     `exclude_path` names a file to skip, so a caller writing its output inside
     lists/ cannot feed that output back in on the next run.
@@ -275,25 +314,17 @@ def collect_entries(lists_dir='lists', host_files=None, exclude_path=None):
     rejected. A small number is normal; a large one means a source is serving
     something that is not a host list.
     """
-    import glob
     # The grammar lives beside the list cleaner so the two cannot drift. The
     # import is local because util imports this module.
     from libtb.util import VALID_HOST
 
     configured = load_sources(lists_dir, host_files)
-    excluded = os.path.abspath(exclude_path) if exclude_path else None
 
     entries = {}
     files = 0
     skipped = 0
-    for path in glob.glob(os.path.join(lists_dir, '*', '*')):
+    for path in list_files(lists_dir, exclude_path):
         name = os.path.basename(path)
-        if name == '.gitignore' or not os.path.isfile(path):
-            continue
-        if os.path.basename(os.path.dirname(path)) in SKIP_DIRS:
-            continue
-        if excluded is not None and os.path.abspath(path) == excluded:
-            continue
         conf = configured.get(name) or unconfigured(name)
         categories = conf.get('categories') or [os.path.basename(os.path.dirname(path))]
         whole_domains = conf['match'] == 'subtree'
