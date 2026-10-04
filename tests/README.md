@@ -22,6 +22,7 @@ TB_VENV=~/.cache/tb-venv tests/run.sh
 | `test_evidence.py` | Which claimed categories an event asserts, and what counts as independent agreement |
 | `test_audit.py` | The false positive audit, over a real index so it reports what events will say |
 | `test_independence.py` | The report on how much one list repeats another, and which overlaps it flags |
+| `test_resolvers.py` | Public filtering resolvers as a second opinion: when they are asked, what their answers mean, what is remembered, and that they never assert alone |
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
 
 Three habits are worth keeping when adding to these.

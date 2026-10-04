@@ -20,6 +20,7 @@ import csv
 from collections import Counter, defaultdict
 
 from libtb.evidence import DEFAULT_MIN_PUBLISHERS, categorise, evidence_settings
+from libtb.evidence.resolvers import corroborate
 from libtb.psl import DEFAULT_PATH as PSL_PATH
 from libtb.taxonomy import classify
 
@@ -74,7 +75,7 @@ def is_threat(category):
 
 
 def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
-          disabled=frozenset()):
+          disabled=frozenset(), checker=None):
     """Runs the reference domains through the index.
 
     Returns a dict:
@@ -85,6 +86,9 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
                     threat category, the closest thing to a false positive
                     count this can produce. Low trust sources are left out,
                     since they cannot have contributed.
+
+    With a libtb.evidence.resolvers.Checker, resolver votes are added exactly
+    as a worker adds them, and show up in the sources and the blame.
     """
     asserted = defaultdict(list)
     candidate = defaultdict(list)
@@ -95,6 +99,8 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
         counted = defaultdict(set)
         for host in (domain, 'www.' + domain):
             claims, result = categorise(index, host, min_publishers, psl_path, disabled)
+            if checker is not None:
+                claims, result, _ = corroborate(host, claims, result, min_publishers, checker)
             verdict['asserted'].update(result['asserted'])
             verdict['candidate'].update(result['candidate'])
             for _, source, category in claims:

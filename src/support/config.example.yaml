@@ -98,10 +98,35 @@ processor:
   # rather than adding to it, so to switch the editorial lists back on, write
   #   disabled_categories: []
   # or comment out every entry under the key, which means the same.
+  #
+  # resolvers asks public filtering resolvers for a second opinion on a
+  # category one list claims: Quad9 (9.9.9.9) and Cloudflare (1.1.1.2) on
+  # threats, Cloudflare's family resolver (1.1.1.3) on porn. A block counts as
+  # one more independent publisher agreeing, never as evidence on its own, and
+  # a host is only asked about when a medium trust list already claims the
+  # category and it is still a candidate. Off by default: it sends those
+  # domain names, never client addresses, to Quad9 and Cloudflare, and needs
+  # outbound UDP and TCP port 53 to every address below. Unknown keys or bad
+  # values stop the worker at start. See "Asking public resolvers" in the
+  # README for what it sends and how often.
+  #   resolvers:
+  #     enable: true
+  #     timeout_sec: 0.5        # per query; a timeout is recorded, not retried
+  #     cache:
+  #       ttl_sec: 3600         # settled answers only, never a timeout
+  #       max_entries: 50000
+  #     addresses:              # these are the defaults
+  #       quad9: 9.9.9.9
+  #       quad9_unfiltered: 9.9.9.10
+  #       cloudflare_security: 1.1.1.2
+  #       cloudflare_family: 1.1.1.3
+  #       cloudflare_unfiltered: 1.1.1.1
   evidence:
     min_publishers: 2
     disabled_categories:
       - editorial
+    resolvers:
+      enable: false
   dns:
     lookup_ips: true
     resolvers:

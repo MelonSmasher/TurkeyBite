@@ -141,11 +141,16 @@ def index_sync():
 @click.option('--min-publishers', default=None,
               help='Override processor.evidence.min_publishers: a number, or '
                    'taxonomy branches with numbers such as default=2,threat=1.')
+@click.option('--resolvers', 'use_resolvers', is_flag=True, default=False,
+              help='Ask Quad9 and Cloudflare to corroborate candidates, as workers do '
+                   'when processor.evidence.resolvers is enabled. Sends domain names to '
+                   'both, at most 20 queries a second.')
 @click.option('--disable', 'disabled', multiple=True,
               help='Taxonomy branch or path to switch off, as '
                    'processor.evidence.disabled_categories. Repeatable, and replaces '
                    'the configured list. --disable "" switches nothing off.')
-def audit(reference, top, examples, categories, index_path, min_publishers, disabled):
+def audit(reference, top, examples, categories, index_path, min_publishers, disabled,
+          use_resolvers):
     """Report the categories the index asserts on known-good domains.
 
     REFERENCE is a Tranco 'rank,domain' CSV or one domain per line. Fetch the
@@ -156,6 +161,8 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
         unzip -o top-1m.csv.zip -d lists
     """
     from libtb.audit import audit as run_audit, audit_settings, format_report, read_reference
+    from libtb.evidence.resolvers import AUDIT_RATE, Checker
+    from libtb.evidence.resolvers import settings as resolver_settings
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
@@ -163,7 +170,7 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
     # an override replaces only the setting it names and the audit otherwise
     # reports exactly what the workers do
     configured = {}
-    if index_path is None or min_publishers is None or not disabled:
+    if index_path is None or min_publishers is None or not disabled or use_resolvers:
         config = read_config()
         index_path = index_path or index_config(config)['path']
         configured = (config.get('processor') or {}).get('evidence') or {}
@@ -172,15 +179,26 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
             configured, min_publishers, disabled if disabled else None)
     except ValueError as e:
         raise click.BadParameter(str(e))
+    checker = None
+    if use_resolvers:
+        # The configured addresses and timeout if there are any, switched on
+        # for this run whatever the configuration says, and throttled
+        try:
+            conf = resolver_settings(configured.get('resolvers'))._replace(enable=True)
+        except ValueError as e:
+            raise click.BadParameter(str(e), param_hint='--resolvers')
+        checker = Checker(conf, rate=AUDIT_RATE)
 
     domains = read_reference(reference, top)
     index = DomainIndex(index_path)
     try:
-        report = run_audit(index, domains, min_publishers, disabled=disabled)
+        report = run_audit(index, domains, min_publishers, disabled=disabled, checker=checker)
     finally:
         index.close()
     for line in format_report(report, len(domains), examples, set(categories)):
         print(line)
+    if checker is not None:
+        print(f'\nAsked the resolvers {checker.queries} times.')
 
 
 @cli.command('overlap')
