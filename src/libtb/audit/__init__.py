@@ -40,6 +40,18 @@ def read_reference(path, limit=None):
     return domains
 
 
+def parse_bar(text):
+    """A --min-publishers value: '2', or 'default=2,threat=1' for a mapping."""
+    text = str(text).strip()
+    if '=' not in text:
+        return text
+    bar = {}
+    for part in text.split(','):
+        key, _, value = part.partition('=')
+        bar[key.strip()] = value.strip()
+    return bar
+
+
 def is_threat(category):
     return any(path.startswith('threat.') for path in classify([category]).get('risk', []))
 

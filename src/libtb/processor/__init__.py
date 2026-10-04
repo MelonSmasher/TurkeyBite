@@ -12,7 +12,7 @@ from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
 from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, describe,
-                            matched_keys, resolve, sources_of)
+                            matched_keys, resolve, sources_of, thresholds)
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -437,6 +437,9 @@ class Processor(object):
         """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
         self.config = config
         self.redis_conf = redis_conf
+        # Read once here so a mistake in the evidence settings stops the process
+        # at start, rather than costing every event it handles
+        self.min_publishers()
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -455,9 +458,12 @@ class Processor(object):
         )
 
     def min_publishers(self):
-        """Independent publishers a medium trust category needs, see libtb.evidence."""
+        """Independent publishers a medium trust category needs, see libtb.evidence.
+
+        One number, or a mapping from taxonomy branches or paths to numbers.
+        """
         settings = self.config.get('evidence') or {}
-        return int(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+        return thresholds(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
 
     def valkey_contexts(self, searches):
         """The original lookup: one Valkey GET per synthesised key."""

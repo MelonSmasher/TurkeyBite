@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.audit import audit, format_report, read_reference
+from libtb.audit import audit, format_report, parse_bar, read_reference
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import build
 
@@ -56,6 +56,10 @@ class AuditTest(unittest.TestCase):
         with open(path, 'w') as fh:
             fh.write('google.com\nexample.com\n')
         self.assertEqual(read_reference(path), ['google.com', 'example.com'])
+
+    def test_the_bar_reads_as_a_number_or_per_branch(self):
+        self.assertEqual(parse_bar('2'), '2')
+        self.assertEqual(parse_bar('default=2, threat=1'), {'default': '2', 'threat': '1'})
 
     def test_asserted_and_held_back_are_reported_apart(self):
         report = self.run_audit({

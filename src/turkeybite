@@ -138,8 +138,9 @@ def index_sync():
               help='Only report these categories. Repeatable.')
 @click.option('--index', 'index_path', default=None,
               help='Index file to audit. Defaults to the configured path.')
-@click.option('--min-publishers', default=None, type=int,
-              help='Override processor.evidence.min_publishers.')
+@click.option('--min-publishers', default=None,
+              help='Override processor.evidence.min_publishers: a number, or '
+                   'taxonomy branches with numbers such as default=2,threat=1.')
 def audit(reference, top, examples, categories, index_path, min_publishers):
     """Report the categories the index asserts on known-good domains.
 
@@ -150,17 +151,23 @@ def audit(reference, top, examples, categories, index_path, min_publishers):
         curl -L -o top-1m.csv.zip https://tranco-list.eu/top-1m.csv.zip
         unzip -o top-1m.csv.zip -d lists
     """
-    from libtb.audit import audit as run_audit, format_report, read_reference
-    from libtb.evidence import DEFAULT_MIN_PUBLISHERS
+    from libtb.audit import audit as run_audit, format_report, parse_bar, read_reference
+    from libtb.evidence import DEFAULT_MIN_PUBLISHERS, thresholds
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
+    if min_publishers is not None:
+        min_publishers = parse_bar(min_publishers)
     if index_path is None or min_publishers is None:
         config = read_config()
         index_path = index_path or index_config(config)['path']
         if min_publishers is None:
             evidence = (config.get('processor') or {}).get('evidence') or {}
-            min_publishers = int(evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+            min_publishers = evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS)
+    try:
+        min_publishers = thresholds(min_publishers)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint='--min-publishers')
 
     domains = read_reference(reference, top)
     index = DomainIndex(index_path)

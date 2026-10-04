@@ -17,7 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.evidence import categorise, corroborated, dependent, describe, resolve
+from libtb.evidence import (categorise, corroborated, dependent, describe, needed, resolve,
+                            thresholds)
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import apply_ignorelist, build
 from libtb.processor import Processor
@@ -179,6 +180,69 @@ class TaxonomyAgreementTest(unittest.TestCase):
         self.assertEqual(same['asserted'], ['politics'])
 
 
+class ThresholdTest(unittest.TestCase):
+    """A bar per taxonomy branch or path, with one for everything else."""
+
+    def test_a_number_is_the_bar_for_everything(self):
+        self.assertEqual(thresholds(3), {'default': 3})
+        self.assertEqual(thresholds('3'), {'default': 3})
+
+    def test_a_mapping_keeps_the_default_unless_it_is_named(self):
+        self.assertEqual(thresholds({'threat': 1}), {'default': 2, 'threat': 1})
+        self.assertEqual(thresholds({'default': 3, 'threat': 1}), {'default': 3, 'threat': 1})
+
+    def test_below_one_means_one_as_it_always_has(self):
+        self.assertEqual(thresholds(0), {'default': 1})
+
+    def test_a_key_that_is_not_in_the_taxonomy_is_refused(self):
+        # A typo would otherwise apply to nothing and say nothing
+        with self.assertRaises(ValueError):
+            thresholds({'threats': 1})
+        with self.assertRaises(ValueError):
+            thresholds({'fakenews': 1})  # a category, not a path
+
+    def test_a_value_that_is_not_a_number_is_refused(self):
+        for bad in ('one', None, True, 1.5):
+            with self.assertRaises(ValueError):
+                thresholds({'threat': bad})
+
+    def test_the_most_specific_key_wins(self):
+        bar = thresholds({'threat': 1, 'threat.phishing': 3})
+        self.assertEqual(needed(('risk', 'threat.phishing'), bar), 3)
+        self.assertEqual(needed(('risk', 'threat.malware'), bar), 1)
+        self.assertEqual(needed(('purpose', 'adult.pornography'), bar), 2)
+
+    def test_a_key_matches_whole_labels_only(self):
+        bar = thresholds({'media': 1})
+        self.assertEqual(needed(('purpose', 'media.video'), bar), 1)
+        self.assertEqual(needed(('risk', 'policy.piracy'), bar), 2)
+
+    def test_an_unmapped_category_takes_the_default(self):
+        bar = thresholds({'default': 3, 'threat': 1})
+        self.assertEqual(needed((None, 'politics'), bar), 3)
+
+    def test_a_branch_can_be_believed_on_one_list(self):
+        verdict = resolve(claims((source('a'), 'malware'), (source('b'), 'porn')),
+                          min_publishers={'threat': 1})
+        self.assertEqual(verdict['asserted'], ['malware'])
+        # The control: the same claims under the single bar
+        self.assertEqual(resolve(claims((source('a'), 'malware')))['asserted'], [])
+
+    def test_a_branch_can_be_held_to_more(self):
+        two = claims((source('a'), 'porn'), (source('b'), 'porn'))
+        self.assertEqual(resolve(two, {'adult': 3})['asserted'], [])
+        self.assertEqual(resolve(two, {'adult': 3, 'default': 3, 'adult.pornography': 2})
+                         ['asserted'], ['porn'])
+
+    def test_a_vendor_needs_every_statement_over_its_own_bar(self):
+        # Relaxing the anonymiser bar relaxes `vpn`, but `expressvpn` also
+        # names a service, which is still held to the default
+        verdict = resolve(claims((source('a'), 'vpn'), (source('a'), 'expressvpn')),
+                          min_publishers={'policy': 1})
+        self.assertEqual(verdict['asserted'], ['vpn'])
+        self.assertEqual(verdict['candidate'], ['expressvpn'])
+
+
 class DependenceTest(unittest.TestCase):
 
     def test_dependence_runs_in_both_directions(self):
@@ -328,6 +392,16 @@ class ProcessorWiringTest(IndexFixture):
     def test_the_bar_is_configurable(self):
         bite = self.bite('cdn.pornsite.com', evidence={'min_publishers': 1})
         self.assertEqual(bite['contexts'], ['porn'])
+
+    def test_the_bar_can_differ_by_branch(self):
+        bite = self.bite('cdn.pornsite.com', evidence={'min_publishers': {'adult': 1}})
+        self.assertEqual(bite['contexts'], ['porn'])
+        bite = self.bite('cdn.pornsite.com', evidence={'min_publishers': {'threat': 1}})
+        self.assertEqual(bite['contexts'], [])
+
+    def test_a_bad_bar_stops_the_processor_at_start(self):
+        with self.assertRaises(ValueError):
+            self.processor(evidence={'min_publishers': {'threats': 1}})
 
     def test_compare_mode_records_the_weighed_answer_beside_valkey(self):
         bite = self.bite('cdn.pornsite.com', mode='compare')

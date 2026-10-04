@@ -35,6 +35,12 @@ statement it makes is supported, so a list saying `steam` and another saying
 neither is asserted. Events still carry the categories the lists used, so a
 query for `fakenews` means what it meant before.
 
+How many independent publishers a medium claim needs can differ by what is
+being claimed. The bar is set per taxonomy branch or path, the same thing the
+agreement is counted on, so `threat: 1` covers malware, phishing and every other
+threat however a list spells it, and the bar for `fake-news` can never differ
+from the bar for `fakenews`. A flat category name would allow both mistakes.
+
 A category that falls short is not thrown away. It is reported as a candidate,
 so it can be searched for, and an audit can see what the bar is holding back.
 
@@ -49,6 +55,70 @@ from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain
 from libtb.taxonomy import TAXONOMY
 
 DEFAULT_MIN_PUBLISHERS = 2
+
+# The key in a min_publishers mapping that applies to everything not named
+DEFAULT_KEY = 'default'
+
+
+def _prefixes(path):
+    """threat.phishing -> threat.phishing, threat"""
+    labels = path.split('.')
+    return ['.'.join(labels[:i]) for i in range(len(labels), 0, -1)]
+
+
+# Every branch and path a threshold can name. Checked so that a misspelt key,
+# which would otherwise apply to nothing, is refused rather than ignored.
+TAXONOMY_PREFIXES = frozenset(prefix for rows in TAXONOMY.values()
+                              for _, path in rows for prefix in _prefixes(path))
+
+
+def _count(value, name):
+    """A threshold as a number. Below 1 means 1, as it always has."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f'min_publishers {name} must be a whole number, not {value!r}')
+    try:
+        return max(1, int(value))
+    except ValueError:
+        raise ValueError(f'min_publishers {name} must be a whole number, not {value!r}')
+
+
+def thresholds(min_publishers=DEFAULT_MIN_PUBLISHERS):
+    """processor.evidence.min_publishers as {taxonomy prefix or 'default': count}.
+
+    Either one number for everything, or a mapping from taxonomy branches or
+    paths to numbers, with `default` for the rest:
+
+        min_publishers: 2
+        min_publishers: {default: 2, threat: 1, adult.pornography: 3}
+
+    Raises ValueError for a key that is no branch or path in the taxonomy, so a
+    typo fails loudly instead of quietly changing nothing.
+    """
+    if not isinstance(min_publishers, dict):
+        return {DEFAULT_KEY: _count(min_publishers, 'default')}
+    result = {DEFAULT_KEY: DEFAULT_MIN_PUBLISHERS}
+    for key, value in min_publishers.items():
+        key = str(key).strip().lower()
+        if key != DEFAULT_KEY and key not in TAXONOMY_PREFIXES:
+            raise ValueError(f'min_publishers names {key!r}, which is not a taxonomy '
+                             f'branch or path, such as threat or adult.pornography')
+        result[key] = _count(value, key)
+    return result
+
+
+def needed(statement, bar):
+    """Publishers a statement needs under `bar`, a dict from `thresholds`.
+
+    The most specific key wins, so {threat: 1, threat.phishing: 2} asks two
+    publishers for phishing and one for every other threat. A category the
+    taxonomy does not know takes the default.
+    """
+    facet, path = statement
+    if facet is not None:
+        for prefix in _prefixes(path):
+            if prefix in bar:
+                return bar[prefix]
+    return bar[DEFAULT_KEY]
 
 
 def ownership_boundary(host, path=PSL_PATH):
@@ -100,6 +170,7 @@ def statements(category):
 def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     """Weighs (key, source, category) claims as DomainIndex.match returns them.
 
+    `min_publishers` is a number or a mapping, as `thresholds` describes.
     Returns a dict of sorted lists:
 
         asserted    categories the evidence supports
@@ -109,7 +180,7 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     The lists hold categories as the sources spelled them, while the weighing
     is done on taxonomy paths, see the module docstring.
     """
-    needed = max(1, int(min_publishers))
+    bar = thresholds(min_publishers)
     cancelled = {category[len(NEGATION):] for _, _, category in claims
                  if category.startswith(NEGATION)}
     claimed = set()
@@ -133,7 +204,8 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     supported = {}
     for statement in set(trusted) | set(backers):
         supported[statement] = (statement in trusted
-                                or corroborated(backers.get(statement, ()), needed))
+                                or corroborated(backers.get(statement, ()),
+                                                needed(statement, bar)))
     asserted = {c for c in claimed
                 if all(supported.get(statement) for statement in statements(c))}
     return {
