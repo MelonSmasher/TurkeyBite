@@ -48,6 +48,11 @@ processor:
   #   compare run both, keep the Valkey answer, record the index answer beside
   #           it as bite.contexts_index and bite.context_match so agreement can
   #           be measured on live traffic before switching over
+  #
+  # Only the index weighs its evidence (see `evidence` below), so it is the
+  # mode to run if false positives matter. Valkey asserts anything any list
+  # says, and in compare mode most disagreements are the index declining
+  # something Valkey would have asserted.
   domain_index:
     mode: valkey
     path: lists/index/domains.tbidx
@@ -61,6 +66,16 @@ processor:
     # directly while a remote worker needs it published.
     publish: false
     sync_interval_sec: 300
+  # How much agreement a category needs before an event asserts it. Each list
+  # in host_files.json has a trust level:
+  #   high    believed alone: narrow vendor lists and your own curated lists
+  #   medium  believed when this many independent publishers agree
+  #   low     never believed, only recorded
+  # A category that falls short is still recorded on the event, in
+  # bite.contexts_candidate, so nothing is lost. 1 lets one medium list assert
+  # on its own, which brings back most of the false positives this removes.
+  evidence:
+    min_publishers: 2
   dns:
     lookup_ips: true
     resolvers:

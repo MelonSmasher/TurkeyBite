@@ -224,3 +224,43 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 * Check container logs: `docker compose logs -f [service_name]`
 * Restart services: `docker compose restart [service_name]`
 * Verify connectivity between containers: `docker compose exec turkeybite-core ping valkey`
+
+## How traffic is categorised
+
+Every category comes from a domain list, and every list is wrong about something. Asserting whatever any list says adds up the mistakes of all of them: measured against the 10,000 most popular domains, that rule called 291 of them malicious, including coinbase.com, uvm.edu, every site on workers.dev and every site under com.cn. In `index` mode three rules stop that. The `valkey` mode predates them and applies none of them.
+
+**An entry reaches only as far as its list says.** A hosts-file line names one host. An adblock `||example.com^` rule, a `*.example.com` line and a squid-style `.example.com` cover the subdomains too. A plain domain list does not say, so its entry in `host_files.json` does, with `match`. Your own `turkeybite` and `custom` lists always cover subdomains.
+
+**Nothing speaks for a domain it does not own.** Above a domain's registrable name, as the [Public Suffix List](https://publicsuffix.org/) defines it, a parent belongs to someone else. A downloaded list naming `github.io`, `workers.dev` or `com.cn` says nothing about the sites hosted under them. Only your own lists can make a rule that broad, which is how `*.edu` and `*.gov` keep working.
+
+**A category needs evidence.** Each list in `host_files.json` declares how far it is trusted:
+
+| Field | Meaning |
+|---|---|
+| `trust` | `high` is believed alone: narrow vendor lists, and your own lists. `medium` is believed when another independent publisher agrees. `low` is never believed, only recorded. Default `medium`. |
+| `publisher` | Who maintains the list. Lists from one publisher share their mistakes, so they never corroborate each other. Default: the list's own name. |
+| `derived_from` | Publishers whose lists this one copies. A copy never corroborates its original. |
+| `match` | For plain domain lists only: `exact` if a line names one host, `subtree` if it covers subdomains. Default `exact`. |
+
+The number of independent publishers a `medium` category needs is `processor.evidence.min_publishers` in `config.yaml`, 2 by default. Events carry:
+
+* `bite.contexts` the categories the evidence supports, which the facets are built from
+* `bite.contexts_candidate` categories some list claimed without enough support
+* `bite.contexts_suppressed` categories your ignorelist cancelled
+* `bite.claims` which list said what, as `category:list`
+
+A new index format carries this, so upgrading needs a rebuild. The librarian does that when it starts, or run `python turkeybite index`.
+
+### Finding false positives
+
+`turkeybite audit` runs a reference list of domains through exactly the code the workers use and reports what it would assert. The [Tranco list](https://tranco-list.eu/) of popular domains is a good reference:
+
+```bash
+curl -L -o top-1m.csv.zip https://tranco-list.eu/top-1m.csv.zip
+unzip -o top-1m.csv.zip -d vols/lists
+docker compose exec turkeybite-worker python turkeybite audit lists/top-1m.csv --top 10000
+```
+
+`vols/lists` is mounted into the worker as `lists`. A file directly inside it is not read as a domain list; only files in its subdirectories are.
+
+Popular is not the same as harmless, so read the report rather than trusting it: popular sites really are social networks, and some really are adult. A threat category on a top 10,000 domain is a different matter, and the report names the lists behind every one. Then either correct the host in the [ignorelist](vols/lists/ignorelist.md), or, if one list keeps appearing, lower its `trust`.

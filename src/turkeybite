@@ -127,5 +127,49 @@ def index_sync():
     """Download the published domain index if the local copy is out of date."""
     sync_domain_index()
 
+
+@cli.command('audit')
+@click.argument('reference', type=click.Path(exists=True, dir_okay=False))
+@click.option('--top', default=10000, show_default=True,
+              help='How many reference domains to check, from the top.')
+@click.option('--examples', default=5, show_default=True,
+              help='Example domains to print per category.')
+@click.option('--category', 'categories', multiple=True,
+              help='Only report these categories. Repeatable.')
+@click.option('--index', 'index_path', default=None,
+              help='Index file to audit. Defaults to the configured path.')
+@click.option('--min-publishers', default=None, type=int,
+              help='Override processor.evidence.min_publishers.')
+def audit(reference, top, examples, categories, index_path, min_publishers):
+    """Report the categories the index asserts on known-good domains.
+
+    REFERENCE is a Tranco 'rank,domain' CSV or one domain per line. Fetch the
+    current Tranco list with:
+
+    \b
+        curl -L -o top-1m.csv.zip https://tranco-list.eu/top-1m.csv.zip
+        unzip -o top-1m.csv.zip -d lists
+    """
+    from libtb.audit import audit as run_audit, format_report, read_reference
+    from libtb.evidence import DEFAULT_MIN_PUBLISHERS
+    from libtb.index import DomainIndex
+    from libtb.util import index_config
+
+    if index_path is None or min_publishers is None:
+        config = read_config()
+        index_path = index_path or index_config(config)['path']
+        if min_publishers is None:
+            evidence = (config.get('processor') or {}).get('evidence') or {}
+            min_publishers = int(evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+
+    domains = read_reference(reference, top)
+    index = DomainIndex(index_path)
+    try:
+        report = run_audit(index, domains, min_publishers)
+    finally:
+        index.close()
+    for line in format_report(report, len(domains), examples, set(categories)):
+        print(line)
+
 if __name__ == '__main__':
     cli()
