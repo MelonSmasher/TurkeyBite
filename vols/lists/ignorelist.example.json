@@ -332,7 +332,8 @@
     "www.nytimes.com",
     "mail.aol.com",
     "*.mit.edu",
-    "*.watchdocumentaries.com"
+    "*.watchdocumentaries.com",
+    "*.monkeytype.com"
   ],
   "crypto": [
     "monster.com",

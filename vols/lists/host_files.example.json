@@ -265,13 +265,13 @@
     },
 
     {
-        "url": "https://raw.githubusercontent.com/IREK-szef/games-blocklist/main/lists/Adblock-dns/games.txt",
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/games/domains",
         "categories": ["games"],
-        "file": "lists/games/IREK-szef-games",
-        "name": "IREK-szef-games",
-        "publisher": "IREK-szef",
-        "derived_from": ["ut1"],
-        "trust": "medium"
+        "file": "lists/games/olbat-games",
+        "name": "olbat-games",
+        "publisher": "ut1",
+        "trust": "medium",
+        "match": "subtree"
     },
     {
         "url": "https://raw.githubusercontent.com/dkorunic/browser-games-blocklist/main/hosts.txt",
