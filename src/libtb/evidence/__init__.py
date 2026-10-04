@@ -56,10 +56,13 @@ being Facebook.
 Some lookups are not evidence of what the person was doing. A news article
 with a Facebook pixel makes the browser look up connect.facebook.net, and
 Windows looks up msftconnecttest.com whenever it joins a network. The curated
-`incidental` list names such hosts. On them, categories that say what a host is
-for or whose service it is are reported as candidates instead, while risk
-categories stand: the pixel still tracks the person whether or not they use
-Facebook. The verdict says the host was incidental, so an event can too.
+`incidental` list names such hosts. On them, a category stands only if all it
+says is a risk: the pixel still tracks the person whether or not they use
+Facebook. Anything that says what a host is for or whose service it is is
+reported as a candidate instead, including a vendor such as expressvpn that
+names a risk as well, since keeping it would put the service back on the event.
+The verdict says the host was incidental, so an event can too. Only a lookup is
+judged this way: a page someone opened in their browser was opened on purpose.
 
 An operator can also switch whole categories off, by taxonomy branch or path,
 without deleting the lists that carry them. A disabled category is dropped
@@ -76,6 +79,7 @@ whoever runs the deployment to make on purpose, not one a default should make
 for them.
 """
 
+from functools import lru_cache
 from itertools import combinations
 
 from libtb.index import INCIDENTAL, NEGATION
@@ -101,13 +105,39 @@ TAXONOMY_PREFIXES = frozenset(prefix for rows in TAXONOMY.values()
 
 
 def _count(value, name):
-    """A threshold as a number. Below 1 means 1, as it always has."""
+    """A threshold as a whole number. Below 1 means 1, as it always has.
+
+    2.0 is accepted, since YAML and environment templating both produce it and
+    the old int() conversion took it; 2.5 is refused rather than rounded.
+    """
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ValueError(f'min_publishers {name} must be a whole number, not {value!r}')
     try:
         return max(1, int(value))
     except ValueError:
         raise ValueError(f'min_publishers {name} must be a whole number, not {value!r}')
+
+
+def _taxonomy_key(entry, setting, example):
+    """A setting's key as a taxonomy branch or path, refused if it is neither.
+
+    A misspelt key would otherwise apply to nothing and fail silently.
+    """
+    key = str(entry).strip().lower()
+    if key not in TAXONOMY_PREFIXES:
+        raise ValueError(f'{setting} names {key!r}, which is not a taxonomy '
+                         f'branch or path, such as {example}')
+    return key
+
+
+class Bar(dict):
+    """A min_publishers setting already checked by `thresholds`.
+
+    Passed around as is, so the worker validates its settings once at start
+    rather than on every claim of every event.
+    """
 
 
 def thresholds(min_publishers=DEFAULT_MIN_PUBLISHERS):
@@ -122,14 +152,16 @@ def thresholds(min_publishers=DEFAULT_MIN_PUBLISHERS):
     Raises ValueError for a key that is no branch or path in the taxonomy, so a
     typo fails loudly instead of quietly changing nothing.
     """
+    if isinstance(min_publishers, Bar):
+        return min_publishers
     if not isinstance(min_publishers, dict):
-        return {DEFAULT_KEY: _count(min_publishers, 'default')}
-    result = {DEFAULT_KEY: DEFAULT_MIN_PUBLISHERS}
+        return Bar({DEFAULT_KEY: _count(min_publishers, 'default')})
+    result = Bar({DEFAULT_KEY: DEFAULT_MIN_PUBLISHERS})
     for key, value in min_publishers.items():
-        key = str(key).strip().lower()
-        if key != DEFAULT_KEY and key not in TAXONOMY_PREFIXES:
-            raise ValueError(f'min_publishers names {key!r}, which is not a taxonomy '
-                             f'branch or path, such as threat or adult.pornography')
+        if str(key).strip().lower() == DEFAULT_KEY:
+            key = DEFAULT_KEY
+        else:
+            key = _taxonomy_key(key, 'min_publishers', 'threat or adult.pornography')
         result[key] = _count(value, key)
     return result
 
@@ -166,14 +198,32 @@ def disabled_paths(setting):
         setting = DEFAULT_DISABLED
     if isinstance(setting, str):
         setting = [setting]
-    paths = set()
-    for entry in setting:
-        key = str(entry).strip().lower()
-        if key not in TAXONOMY_PREFIXES:
-            raise ValueError(f'disabled_categories names {key!r}, which is not a taxonomy '
-                             f'branch or path, such as editorial or editorial.fakenews')
-        paths.add(key)
-    return frozenset(paths)
+    if not isinstance(setting, (list, tuple, set, frozenset)):
+        raise ValueError(f'disabled_categories must be a list of taxonomy branches or '
+                         f'paths, such as [editorial], not {setting!r}')
+    return frozenset(_taxonomy_key(entry, 'disabled_categories',
+                                   'editorial or editorial.fakenews')
+                     for entry in setting)
+
+
+def evidence_settings(settings):
+    """(bar, disabled) from processor.evidence, checked. Raises ValueError.
+
+    The one reading of these settings, shared by the worker and the audit so
+    the audit always reports what the workers do. disabled_categories absent
+    means DEFAULT_DISABLED; present but empty, as YAML reads a key whose
+    entries are all commented out, means nothing is switched off, which is
+    how every other list in config.yaml behaves.
+    """
+    settings = settings or {}
+    if not isinstance(settings, dict):
+        raise ValueError(f'processor.evidence must be a mapping, not {settings!r}')
+    bar = thresholds(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+    if 'disabled_categories' in settings:
+        disabled = disabled_paths(settings['disabled_categories'] or [])
+    else:
+        disabled = disabled_paths(None)
+    return bar, disabled
 
 
 def is_disabled(category, disabled):
@@ -187,9 +237,30 @@ def is_disabled(category, disabled):
         return False
     if category.startswith(NEGATION):
         category = category[len(NEGATION):]
-    return any(prefix in disabled
-               for facet, path in statements(category) if facet is not None
-               for prefix in _prefixes(path))
+    return category.strip().lower() in _disabled_spellings(disabled)
+
+
+@lru_cache(maxsize=16)
+def _disabled_spellings(disabled):
+    """Every category spelling the disabled prefixes switch off.
+
+    Worked out once per setting, since it depends on nothing else, so the
+    filter costs one set lookup per claim. A category the taxonomy does not
+    know names no branch, so it is never switched off.
+    """
+    return frozenset(category for category, rows in TAXONOMY.items()
+                     if any(prefix in disabled
+                            for facet, path in rows if facet is not None
+                            for prefix in _prefixes(path)))
+
+
+def drop_disabled(categories, disabled):
+    """The categories with every disabled one taken out.
+
+    For answers that never went through the claims, such as the Valkey
+    lookup, so switching a category off holds in every lookup mode.
+    """
+    return [category for category in categories if not is_disabled(category, disabled)]
 
 
 def ownership_boundary(host, path=PSL_PATH):
@@ -235,16 +306,19 @@ def statements(category):
     A category the taxonomy does not know is a statement of its own, so it is
     corroborated only by the same spelling, as every category was before.
     """
-    return TAXONOMY.get(category.lower()) or ((None, category),)
+    key = category.strip().lower()
+    return TAXONOMY.get(key) or ((None, key),)
 
 
 def is_risk(category):
-    """True when a category names a risk, which an incidental lookup still carries.
+    """True when all a category says is a risk, which an incidental lookup keeps.
 
-    A category the taxonomy does not know is not one, so it is demoted with
-    the rest: an unknown label is not a reason to keep asserting something.
+    All rather than any: expressvpn names a service as well as an anonymiser,
+    and keeping it would put the service on the event through bite.service.
+    A category the taxonomy does not know is not a risk either, so it is
+    demoted with the rest: an unknown label is no reason to keep asserting.
     """
-    return any(facet == RISK for facet, _ in statements(category))
+    return all(facet == RISK for facet, _ in statements(category))
 
 
 def demote_incidental(categories):
@@ -266,18 +340,23 @@ def cancels(corrections, category):
     return any(set(statements(corrected)) <= made for corrected in corrections)
 
 
-def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
+def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS, navigation=False):
     """Weighs (key, source, category) claims as DomainIndex.match returns them.
 
-    `min_publishers` is a number or a mapping, as `thresholds` describes.
-    Returns a dict of sorted lists:
+    `min_publishers` is a number, a mapping or a Bar, as `thresholds`
+    describes. Returns a dict of sorted lists:
 
         asserted    categories the evidence supports
         candidate   categories some list claims, but not convincingly enough
         suppressed  categories the ignorelist cancelled
+        corrected   the categories the ignorelist corrects on this host,
+                    claimed or not, so a caller can hold them over anything
+                    else it merges in, such as a CNAME chain
 
     and `incidental`, True when the host is marked incidental, in which case
-    only risk categories are asserted and the rest are candidates.
+    only risk categories are asserted and the rest are candidates. With
+    `navigation` the mark is not applied: a page someone opened in a browser
+    was opened on purpose, whatever its host is otherwise looked up for.
 
     The lists hold categories as the sources spelled them, while the weighing
     is done on taxonomy paths, see the module docstring.
@@ -313,7 +392,7 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
 
     # The mark is weighed like a category, so the ignorelist can lift it, and
     # then taken out, since it says nothing about what the host is
-    incidental = INCIDENTAL in asserted and not cancels(corrections, INCIDENTAL)
+    incidental = INCIDENTAL in asserted and not navigation
     for found in (claimed, asserted):
         found.discard(INCIDENTAL)
     cancelled = {c for c in claimed if cancels(corrections, c)}
@@ -323,6 +402,7 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
         'asserted': sorted(asserted - cancelled),
         'candidate': sorted(claimed - asserted - cancelled),
         'suppressed': sorted(claimed & cancelled),
+        'corrected': sorted(corrections),
         'incidental': incidental,
     }
 
@@ -350,15 +430,24 @@ def matched_keys(claims):
     return keys
 
 
-def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
-               disabled=frozenset()):
-    """Claims and verdict for one host, exactly as a worker reaches them.
+def claims_for(index, host, psl_path=PSL_PATH, disabled=frozenset()):
+    """The claims that apply to one host, with disabled categories dropped.
 
-    Shared by the worker and the audit, so what the audit reports is what the
-    events will say. Claims for a `disabled` category, a set from
-    `disabled_paths`, are dropped here, before anything else sees them.
+    Claims for a `disabled` category, a set from `disabled_paths`, go here,
+    before anything else sees them.
     """
     claims = index.match(host, ownership_boundary(host, psl_path))
     if disabled:
         claims = [claim for claim in claims if not is_disabled(claim[2], disabled)]
-    return claims, resolve(claims, min_publishers)
+    return claims
+
+
+def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
+               disabled=frozenset(), navigation=False):
+    """Claims and verdict for one host, exactly as a worker reaches them.
+
+    Shared by the worker and the audit, so what the audit reports is what the
+    events will say.
+    """
+    claims = claims_for(index, host, psl_path, disabled)
+    return claims, resolve(claims, min_publishers, navigation)

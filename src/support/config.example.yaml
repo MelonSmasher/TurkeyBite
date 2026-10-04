@@ -89,13 +89,15 @@ processor:
   # disabled_categories switches whole categories off by taxonomy branch or
   # path, without deleting the lists that carry them. A disabled category
   # leaves nothing on the event, not even in bite.claims or
-  # bite.contexts_suppressed, exactly as if its lists were not there.
+  # bite.contexts_suppressed, exactly as if its lists were not there. Unlike
+  # the rest of these settings it holds in every lookup mode, valkey included.
   #
   # `editorial` is the fakenews, fascist and zionist lists, which label news
   # and opinion sites by viewpoint. It is off unless you turn it on: leaving
   # this key out means [editorial] too. A list you write replaces that default
   # rather than adding to it, so to switch the editorial lists back on, write
   #   disabled_categories: []
+  # or comment out every entry under the key, which means the same.
   evidence:
     min_publishers: 2
     disabled_categories:

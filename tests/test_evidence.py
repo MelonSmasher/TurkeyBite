@@ -17,11 +17,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.evidence import (categorise, corroborated, dependent, describe, disabled_paths,
-                            is_disabled, needed, resolve, thresholds)
+from libtb.evidence import (Bar, categorise, corroborated, dependent, describe,
+                            disabled_paths, evidence_settings, is_disabled, needed,
+                            resolve, statements, thresholds)
+from libtb.taxonomy import TAXONOMY
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import apply_ignorelist, build
-from libtb.processor import Processor
+from libtb.processor import CORRECTED, Processor
 
 FIXTURE = os.path.join(HERE, 'fixture_public_suffix_list.dat')
 
@@ -88,12 +90,14 @@ class ResolveTest(unittest.TestCase):
         verdict = resolve(claims((source('vendor', 'high'), 'porn'),
                                  (source('ignorelist', 'high'), '!porn')))
         self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': ['porn'],
-                                   'incidental': False})
+                                   'corrected': ['porn'], 'incidental': False})
 
-    def test_a_cancellation_for_an_unclaimed_category_reports_nothing(self):
+    def test_a_cancellation_for_an_unclaimed_category_suppresses_nothing(self):
+        # It is still named as a correction, so a caller can hold it over a
+        # CNAME chain whose target does make the claim
         verdict = resolve(claims((source('ignorelist', 'high'), '!porn')))
         self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': [],
-                                   'incidental': False})
+                                   'corrected': ['porn'], 'incidental': False})
 
     def test_one_publisher_is_enough_when_configured(self):
         verdict = resolve(claims((source('broad'), 'porn')), min_publishers=1)
@@ -107,7 +111,7 @@ class ResolveTest(unittest.TestCase):
 
     def test_no_claims_is_no_verdict(self):
         self.assertEqual(resolve([]), {'asserted': [], 'candidate': [], 'suppressed': [],
-                                       'incidental': False})
+                                       'corrected': [], 'incidental': False})
 
 
 class TaxonomyAgreementTest(unittest.TestCase):
@@ -428,7 +432,7 @@ class IndexedVerdictTest(IndexFixture):
     def test_a_public_suffix_entry_says_nothing_about_its_tenants(self):
         verdict = self.verdict('shop.workers.dev')
         self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': [],
-                                   'incidental': False})
+                                   'corrected': [], 'incidental': False})
 
     def test_a_vendor_list_asserts_alone(self):
         self.assertEqual(self.verdict('store.steampowered.com')['asserted'], ['games', 'steam'])
@@ -436,14 +440,14 @@ class IndexedVerdictTest(IndexFixture):
     def test_a_correction_holds_against_agreement(self):
         self.assertEqual(self.verdict('media.tenor.com'),
                          {'asserted': [], 'candidate': [], 'suppressed': ['porn'],
-                          'incidental': False})
+                          'corrected': ['porn'], 'incidental': False})
 
     def test_a_disabled_category_leaves_no_trace(self):
         off = disabled_paths(['editorial'])
         claims, verdict = categorise(self.index, 'www.opinion.com', psl_path=FIXTURE,
                                      disabled=off)
         self.assertEqual(verdict, {'asserted': ['news'], 'candidate': [], 'suppressed': [],
-                                   'incidental': False})
+                                   'corrected': [], 'incidental': False})
         self.assertEqual(describe(claims), ['news:vendor'])
         # The control: the same host with nothing disabled
         claims, verdict = categorise(self.index, 'www.opinion.com', psl_path=FIXTURE)
@@ -456,7 +460,7 @@ class IndexedVerdictTest(IndexFixture):
         verdict = categorise(self.index, 'www.corrected.com', psl_path=FIXTURE,
                              disabled=off)[1]
         self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': [],
-                                   'incidental': False})
+                                   'corrected': [], 'incidental': False})
 
 
 class ProcessorWiringTest(IndexFixture):
@@ -599,6 +603,213 @@ class ProcessorWiringTest(IndexFixture):
         bite = self.bite('www.unlisted.example')
         self.assertEqual(bite['contexts'], [])
         self.assertNotIn('claims', bite)
+
+
+class SettingsTest(unittest.TestCase):
+    """Reading processor.evidence, which the worker and the audit share."""
+
+    def test_a_whole_number_written_as_a_float_is_accepted(self):
+        # The old int() conversion took 2.0, and so does a templated config
+        self.assertEqual(thresholds(2.0), {'default': 2})
+        self.assertEqual(thresholds({'threat': 1.0})['threat'], 1)
+
+    def test_a_fraction_is_refused_rather_than_rounded(self):
+        with self.assertRaises(ValueError):
+            thresholds(2.5)
+
+    def test_a_checked_bar_is_passed_through_as_is(self):
+        bar = thresholds({'threat': 1})
+        self.assertIsInstance(bar, Bar)
+        self.assertIs(thresholds(bar), bar)
+
+    def test_absent_means_the_default(self):
+        _, disabled = evidence_settings({})
+        self.assertEqual(disabled, frozenset({'editorial'}))
+        self.assertEqual(evidence_settings(None)[1], frozenset({'editorial'}))
+
+    def test_present_but_empty_switches_nothing_off(self):
+        # What YAML reads when every entry under the key is commented out,
+        # which is how every other list in config.yaml means "none"
+        for empty in (None, [], False):
+            self.assertEqual(evidence_settings({'disabled_categories': empty})[1],
+                             frozenset(), empty)
+
+    def test_a_setting_that_is_not_a_list_is_refused_with_a_clear_error(self):
+        for bad in (True, 5, {'editorial': True}):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                evidence_settings({'disabled_categories': bad})
+
+    def test_evidence_that_is_not_a_mapping_is_refused(self):
+        with self.assertRaises(ValueError):
+            evidence_settings(['editorial'])
+
+    def test_spelling_is_normalised_the_way_the_facets_normalise_it(self):
+        self.assertEqual(statements(' FakeNews '), statements('fakenews'))
+        self.assertEqual(statements(' Politics '), statements('politics'))
+
+    def test_the_spelling_lookup_agrees_with_the_taxonomy_for_every_category(self):
+        # is_disabled works from a precomputed set; this checks it against the
+        # definition it replaced, statement by statement, for every category
+        def by_definition(category, disabled):
+            return any(prefix in disabled
+                       for facet, path in TAXONOMY[category]
+                       for prefix in ['.'.join(path.split('.')[:i])
+                                      for i in range(len(path.split('.')), 0, -1)])
+        for setting in (['editorial'], ['policy.anonymiser'], ['threat'],
+                        ['adult.pornography', 'media'], []):
+            disabled = disabled_paths(setting)
+            for category in TAXONOMY:
+                self.assertEqual(is_disabled(category, disabled),
+                                 by_definition(category, disabled), (setting, category))
+
+    def test_the_verdict_names_corrections_whether_or_not_they_were_claimed(self):
+        verdict = resolve(claims((source('a', 'high'), 'news'),
+                                 (source('ignorelist', 'high'), '!porn')))
+        self.assertEqual(verdict['corrected'], ['porn'])
+        self.assertEqual(verdict['suppressed'], [])
+
+
+class LookupModeTest(unittest.TestCase):
+    """Switching a category off holds in every lookup mode, not just the index."""
+
+    def bite(self, mode, evidence=None, path='/nonexistent/x.tbidx'):
+        config = {'dns': {'lookup_ips': False},
+                  'domain_index': {'mode': mode, 'path': path}}
+        if evidence is not None:
+            config['evidence'] = evidence
+        processor = Processor(config, {})
+        shipped = []
+        processor.ship_bite = shipped.append
+        processor.valkey_contexts = lambda searches: ['fakenews', 'news']
+        processor.process_dns_packet({
+            'type': 'dns', 'resource': 'www.opinion.com',
+            'dns': {'question': {'name': 'www.opinion.com'}},
+            'network': {'direction': 'ingress'}, 'client': {'ip': '10.0.0.5'},
+            '@timestamp': '2026-10-04T12:00:00Z'})
+        return shipped[0]['bite']
+
+    def test_valkey_mode_drops_a_disabled_category(self):
+        bite = self.bite('valkey')
+        self.assertEqual(bite['contexts'], ['news'])
+        self.assertNotIn('risk', bite)
+
+    def test_valkey_mode_keeps_it_when_switched_back_on(self):
+        # The control
+        bite = self.bite('valkey', evidence={'disabled_categories': []})
+        self.assertEqual(bite['contexts'], ['fakenews', 'news'])
+        self.assertEqual(bite['risk'], ['editorial.fakenews'])
+
+    def test_the_fallback_when_the_index_is_missing_drops_it_too(self):
+        bite = self.bite('index')
+        self.assertIn('index_error', bite)
+        self.assertEqual(bite['contexts'], ['news'])
+
+
+class CompareModeDisabledTest(IndexFixture):
+
+    def test_the_authoritative_valkey_answer_drops_a_disabled_category(self):
+        processor = Processor({'dns': {'lookup_ips': False},
+                               'domain_index': {'mode': 'compare', 'path': self.path}}, {})
+        shipped = []
+        processor.ship_bite = shipped.append
+        processor.valkey_contexts = lambda searches: ['fakenews', 'news']
+        processor.process_dns_packet({
+            'type': 'dns', 'resource': 'www.opinion.com',
+            'dns': {'question': {'name': 'www.opinion.com'}},
+            'network': {'direction': 'ingress'}, 'client': {'ip': '10.0.0.5'},
+            '@timestamp': '2026-10-04T12:00:00Z'})
+        bite = shipped[0]['bite']
+        self.assertEqual(bite['contexts'], ['news'])
+        self.assertEqual(bite['contexts_index'], ['news'])
+
+
+class ChainCorrectionTest(unittest.TestCase):
+    """A correction on the asked name holds over its CNAME chain.
+
+    The merge used to filter the chain by what the correction suppressed on
+    the asked name, which misses a correction more general than the claim it
+    suppressed, and any correction on a name with no claim to suppress.
+    """
+
+    SOURCES = {'vendor': source('vendor', 'high', 'nextdns')}
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='tb-chain-')
+        self.path = os.path.join(self.root, 'domains.tbidx')
+        entries = {
+            '*.app.example.com': {'vendor': {'facebook'}},
+            '*.fbhost.example.net': {'vendor': {'social'}},
+            '*.site.example.com': {'vendor': {'news'}},
+            '*.adult.example.net': {'vendor': {'porn'}},
+        }
+        apply_ignorelist(entries, ignorelist={'social': ['*.app.example.com'],
+                                              'porn': ['*.site.example.com']})
+        build(entries, path=self.path, built_at=1000, sources=self.SOURCES)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def bite(self, name, target):
+        processor = Processor({'dns': {'lookup_ips': False},
+                               'domain_index': {'mode': 'index', 'path': self.path}}, {})
+        shipped = []
+        processor.ship_bite = shipped.append
+        processor.process_dns_packet({
+            'type': 'dns', 'resource': name,
+            'dns': {'question': {'name': name},
+                    'answers': [{'type': 'CNAME', 'data': target}]},
+            'network': {'direction': 'ingress'}, 'client': {'ip': '10.0.0.5'},
+            '@timestamp': '2026-10-04T12:00:00Z'})
+        return shipped[0]['bite']
+
+    def test_a_correction_broader_than_what_it_suppressed_holds_over_the_chain(self):
+        # social is corrected; the name says facebook, which social rules out,
+        # and the chain says social itself
+        bite = self.bite('www.app.example.com', 'cdn.fbhost.example.net')
+        self.assertEqual(bite['contexts'], [])
+        self.assertEqual(bite['contexts_suppressed'], ['facebook', 'social'])
+        self.assertNotIn('purpose', bite)
+
+    def test_a_correction_on_a_name_with_no_such_claim_holds_over_the_chain(self):
+        bite = self.bite('www.site.example.com', 'www.adult.example.net')
+        self.assertEqual(bite['contexts'], ['news'])
+        self.assertEqual(bite['contexts_suppressed'], ['porn'])
+
+    def test_without_the_corrections_the_chain_would_bring_both_back(self):
+        # The control: hide the corrections from the merge and both leak
+        from unittest import mock
+        import libtb.evidence
+        real = libtb.evidence.resolve
+
+        def without_corrections(*args, **kwargs):
+            return dict(real(*args, **kwargs), corrected=[])
+
+        with mock.patch.object(libtb.evidence, 'resolve', without_corrections):
+            self.assertEqual(self.bite('www.app.example.com', 'cdn.fbhost.example.net')['contexts'],
+                             ['social'])
+            self.assertEqual(self.bite('www.site.example.com', 'www.adult.example.net')['contexts'],
+                             ['news', 'porn'])
+
+    def test_the_hand_off_never_reaches_the_event(self):
+        bite = self.bite('www.site.example.com', 'www.adult.example.net')
+        self.assertNotIn(CORRECTED, bite)
+
+
+class SettingsReadOnceTest(IndexFixture):
+
+    def test_events_do_not_read_the_settings_again(self):
+        from unittest import mock
+        processor = Processor({'dns': {'lookup_ips': False},
+                               'domain_index': {'mode': 'index', 'path': self.path}}, {})
+        shipped = []
+        processor.ship_bite = shipped.append
+        with mock.patch('libtb.processor.evidence_settings', side_effect=AssertionError):
+            processor.process_dns_packet({
+                'type': 'dns', 'resource': 'www.pornsite.com',
+                'dns': {'question': {'name': 'www.pornsite.com'}},
+                'network': {'direction': 'ingress'}, 'client': {'ip': '10.0.0.5'},
+                '@timestamp': '2026-10-04T12:00:00Z'})
+        self.assertEqual(shipped[0]['bite']['contexts'], ['porn'])
 
 
 if __name__ == '__main__':

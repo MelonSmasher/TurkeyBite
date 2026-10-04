@@ -155,32 +155,23 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
         curl -L -o top-1m.csv.zip https://tranco-list.eu/top-1m.csv.zip
         unzip -o top-1m.csv.zip -d lists
     """
-    from libtb.audit import audit as run_audit, format_report, parse_bar, read_reference
-    from libtb.evidence import DEFAULT_MIN_PUBLISHERS, disabled_paths, thresholds
+    from libtb.audit import audit as run_audit, audit_settings, format_report, read_reference
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
-    # Not given means the configured list, or the default when there is none.
-    # Given, it replaces both, and an empty value asks for nothing switched off.
-    disabled = [entry for entry in disabled if entry.strip()] if disabled else None
-    if min_publishers is not None:
-        min_publishers = parse_bar(min_publishers)
-    if index_path is None or min_publishers is None:
+    # The configured settings are read whenever anything is left to them, so
+    # an override replaces only the setting it names and the audit otherwise
+    # reports exactly what the workers do
+    configured = {}
+    if index_path is None or min_publishers is None or not disabled:
         config = read_config()
         index_path = index_path or index_config(config)['path']
-        evidence = (config.get('processor') or {}).get('evidence') or {}
-        if min_publishers is None:
-            min_publishers = evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS)
-        if disabled is None:
-            disabled = evidence.get('disabled_categories')
+        configured = (config.get('processor') or {}).get('evidence') or {}
     try:
-        min_publishers = thresholds(min_publishers)
+        min_publishers, disabled = audit_settings(
+            configured, min_publishers, disabled if disabled else None)
     except ValueError as e:
-        raise click.BadParameter(str(e), param_hint='--min-publishers')
-    try:
-        disabled = disabled_paths(disabled)
-    except ValueError as e:
-        raise click.BadParameter(str(e), param_hint='--disable')
+        raise click.BadParameter(str(e))
 
     domains = read_reference(reference, top)
     index = DomainIndex(index_path)

@@ -67,10 +67,23 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(verdict['asserted'], ['malware', 'tracking'])
         self.assertEqual(verdict['candidate'], ['facebook'])
 
-    def test_a_vendor_that_names_a_risk_stays(self):
-        # expressvpn is a service and an anonymiser, and the second still holds
+    def test_a_vendor_that_also_names_a_service_is_demoted(self):
+        # expressvpn is an anonymiser and a service. Kept, it would put the
+        # service on the event through bite.service, which the mark exists to stop
         verdict = resolve(claims((source('vendor'), 'expressvpn'), (LOCAL, INCIDENTAL)))
-        self.assertEqual(verdict['asserted'], ['expressvpn'])
+        self.assertEqual(verdict['asserted'], [])
+        self.assertEqual(verdict['candidate'], ['expressvpn'])
+
+    def test_a_pure_risk_from_the_same_vendor_list_stays(self):
+        verdict = resolve(claims((source('vendor'), 'expressvpn'), (source('vendor'), 'vpn'),
+                                 (LOCAL, INCIDENTAL)))
+        self.assertEqual(verdict['asserted'], ['vpn'])
+
+    def test_a_navigation_is_never_demoted(self):
+        verdict = resolve(claims((FACEBOOK, 'facebook'), (LOCAL, INCIDENTAL)),
+                          navigation=True)
+        self.assertEqual(verdict['asserted'], ['facebook'])
+        self.assertFalse(verdict['incidental'])
 
     def test_an_unknown_category_is_demoted(self):
         verdict = resolve(claims((source('vendor'), 'politics'), (LOCAL, INCIDENTAL)))
@@ -198,15 +211,26 @@ class EventTest(unittest.TestCase):
         self.assertEqual(bite['contexts'], ['legacy'])
         self.assertEqual(bite['contexts_index'], ['tracking'])
 
-    def test_browser_history_is_treated_the_same(self):
+    def history_bite(self, host):
         processor, shipped = self.processor()
         processor.process_browser_history({
             'type': 'browser.history',
             'data': {'@timestamp': '2026-10-04T12:00:00Z',
                      'event': {'data': {'entry': {
-                         'url': 'https://connect.facebook.net/en_US/sdk.js',
-                         'url_data': {'Scheme': 'https', 'Host': 'connect.facebook.net'}}}}}})
-        bite = shipped[0]['bite']
+                         'url': f'https://{host}/',
+                         'url_data': {'Scheme': 'https', 'Host': host}}}}}})
+        return shipped[0]['bite']
+
+    def test_a_page_someone_opened_is_not_incidental(self):
+        # A history entry is a navigation. The mark is about lookups made on
+        # someone else's behalf, so it does not apply
+        bite = self.history_bite('connect.facebook.net')
+        self.assertNotIn('incidental', bite)
+        self.assertEqual(bite['contexts'], ['facebook', 'social', 'tracking'])
+
+    def test_the_same_host_looked_up_is_incidental(self):
+        # The control: only the kind of event differs
+        bite = self.bite('connect.facebook.net')
         self.assertTrue(bite['incidental'])
         self.assertEqual(bite['contexts'], ['tracking'])
 

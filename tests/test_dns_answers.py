@@ -96,7 +96,7 @@ class DnsPacketWiringTest(unittest.TestCase):
         self.processor.ship_bite = self.shipped.append
 
     def stub_lookups(self, question=(), chain=()):
-        self.processor.resolve_contexts = lambda s: (list(question), {})
+        self.processor.resolve_contexts = lambda s, **kwargs: (list(question), {})
         self.processor.resolve_chain = lambda c: (list(chain), [], list(c))
 
     def packet(self, answers=None, resolved=None, rcode='NOERROR'):
@@ -217,7 +217,7 @@ class CompareModeTest(unittest.TestCase):
                                    'domain_index': {'mode': 'compare'}}, {})
         self.shipped = []
         self.processor.ship_bite = self.shipped.append
-        self.processor.resolve_contexts = lambda s: (['news'], {})
+        self.processor.resolve_contexts = lambda s, **kwargs: (['news'], {})
         self.processor.resolve_chain = lambda c: (['tracking'], [], list(c))
 
     def packet(self):

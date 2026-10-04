@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.audit import audit, format_report, parse_bar, read_reference
+from libtb.audit import audit_settings, audit, format_report, parse_bar, read_reference
 from libtb.evidence import disabled_paths
 from libtb.index import DomainIndex, Source
 from libtb.index.builder import build
@@ -113,6 +113,38 @@ class AuditTest(unittest.TestCase):
         text = '\n'.join(format_report(report, 1, categories={'steam'}))
         self.assertIn('steam', text)
         self.assertNotIn('games', text)
+
+
+class AuditSettingsTest(unittest.TestCase):
+    """The audit reads processor.evidence exactly as the workers do."""
+
+    def test_overriding_the_bar_keeps_the_configured_switches(self):
+        # The case that broke: --index and --min-publishers given, so the
+        # config was never read and the default replaced what was configured
+        bar, disabled = audit_settings({'disabled_categories': []}, min_publishers='2')
+        self.assertEqual(disabled, frozenset())
+        self.assertEqual(bar, {'default': 2})
+
+    def test_a_configured_list_survives_an_override_of_the_bar(self):
+        _, disabled = audit_settings({'disabled_categories': ['editorial', 'adult.gambling']},
+                                     min_publishers='default=2,threat=1')
+        self.assertEqual(disabled, frozenset({'editorial', 'adult.gambling'}))
+
+    def test_nothing_configured_means_the_default(self):
+        self.assertEqual(audit_settings({})[1], frozenset({'editorial'}))
+
+    def test_disable_replaces_the_configured_list(self):
+        _, disabled = audit_settings({'disabled_categories': ['editorial']},
+                                     disabled=['adult.gambling'])
+        self.assertEqual(disabled, frozenset({'adult.gambling'}))
+
+    def test_an_empty_disable_switches_nothing_off(self):
+        self.assertEqual(audit_settings({}, disabled=[''])[1], frozenset())
+
+    def test_a_bad_value_is_refused(self):
+        for kwargs in ({'min_publishers': 'default=two'}, {'disabled': ['fakenews']}):
+            with self.assertRaises(ValueError, msg=kwargs):
+                audit_settings({}, **kwargs)
 
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ workers call, so the report is what live events will say.
 import csv
 from collections import Counter, defaultdict
 
-from libtb.evidence import DEFAULT_MIN_PUBLISHERS, categorise
+from libtb.evidence import DEFAULT_MIN_PUBLISHERS, categorise, evidence_settings
 from libtb.psl import DEFAULT_PATH as PSL_PATH
 from libtb.taxonomy import classify
 
@@ -50,6 +50,23 @@ def parse_bar(text):
         key, _, value = part.partition('=')
         bar[key.strip()] = value.strip()
     return bar
+
+
+def audit_settings(configured, min_publishers=None, disabled=None):
+    """(bar, disabled) for an audit: the configured evidence settings, overridden.
+
+    `configured` is processor.evidence from config.yaml. Each override replaces
+    its setting only when given, so an audit with --index and --min-publishers
+    still switches off what the workers switch off. An empty `disabled`
+    switches nothing off. Read through libtb.evidence.evidence_settings, the
+    function the workers use. Raises ValueError for a bad value.
+    """
+    settings = dict(configured or {})
+    if min_publishers is not None:
+        settings['min_publishers'] = parse_bar(min_publishers)
+    if disabled is not None:
+        settings['disabled_categories'] = [entry for entry in disabled if entry.strip()]
+    return evidence_settings(settings)
 
 
 def is_threat(category):
