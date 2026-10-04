@@ -315,6 +315,17 @@
     "*.topdocumentaryfilms.com",
     "*.universalmediaserver.com"
   ],
+  "proxy": [
+    "*.piracyproxy.net",
+    "*.unblocked.id",
+    "*.unblocked.krd"
+  ],
+  "streaming": [
+    "*.snagfilms.com"
+  ],
+  "streaming-video": [
+    "*.snagfilms.com"
+  ],
   "advertising": [
     "x.com",
     "api.x.com",

@@ -65,7 +65,7 @@
         "file": "lists/piracy/nextdns-torrent-websites",
         "name": "nextdns-torrent-websites",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
     {
@@ -74,7 +74,7 @@
         "file": "lists/piracy/nextdns-torrent-trackers",
         "name": "nextdns-torrent-trackers",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
     {
@@ -83,7 +83,7 @@
         "file": "lists/piracy/nextdns-torrent-clients",
         "name": "nextdns-torrent-clients",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
 
@@ -494,7 +494,7 @@
         "file": "lists/streaming/nextdns-streaming-video",
         "name": "nextdns-streaming-video",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
     {
@@ -503,7 +503,7 @@
         "file": "lists/streaming/nextdns-streaming-audio",
         "name": "nextdns-streaming-audio",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
 
@@ -647,7 +647,7 @@
         "file": "lists/advertising/AdAway",
         "name": "advertising-AdAway",
         "publisher": "AdAway",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://v.firebog.net/hosts/AdguardDNS.txt",
