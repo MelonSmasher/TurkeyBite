@@ -61,36 +61,36 @@ class CollectEntriesTest(unittest.TestCase):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('index', 'domains.tbidx', ['smuggled.example.net'])
         entries, files, _ = self.collect()
-        self.assertIn('evil.example.com', entries)
-        self.assertNotIn('smuggled.example.net', entries)
+        self.assertIn('*.evil.example.com', entries)
+        self.assertNotIn('*.smuggled.example.net', entries)
         self.assertEqual(files, 1)
 
     def test_generation_marker_beside_the_index_is_not_read(self):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('index', 'domains.tbidx.generation', ['1787333025'])
         entries, files, _ = self.collect()
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
         self.assertEqual(files, 1)
 
     def test_tld_directory_is_not_read(self):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('tld', 'iana', ['com', 'org'])
         entries, files, _ = self.collect()
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
         self.assertEqual(files, 1)
 
     def test_gitignore_is_not_read(self):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('malware', '.gitignore', ['*'])
         entries, files, _ = self.collect()
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
         self.assertEqual(files, 1)
 
     def test_exclude_path_covers_an_output_written_outside_the_index_dir(self):
         self.write('malware', 'good', ['evil.example.com'])
         stray = self.write('custom', 'domains.tbidx', ['smuggled.example.net'])
         entries, files, _ = self.collect(exclude_path=stray)
-        self.assertNotIn('smuggled.example.net', entries)
+        self.assertNotIn('*.smuggled.example.net', entries)
         self.assertEqual(files, 1)
 
     def test_exclude_path_is_compared_by_real_path_not_string(self):
@@ -98,12 +98,12 @@ class CollectEntriesTest(unittest.TestCase):
         stray = self.write('custom', 'domains.tbidx', ['smuggled.example.net'])
         awkward = os.path.join(os.path.dirname(stray), '.', 'domains.tbidx')
         entries, _, _ = self.collect(exclude_path=awkward)
-        self.assertNotIn('smuggled.example.net', entries)
+        self.assertNotIn('*.smuggled.example.net', entries)
 
     def test_exclude_path_none_still_works(self):
         self.write('malware', 'good', ['evil.example.com'])
         entries, files, skipped = self.collect(exclude_path=None)
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
         self.assertEqual((files, skipped), (1, 0))
 
     # -- the entry grammar --------------------------------------------------
@@ -113,14 +113,14 @@ class CollectEntriesTest(unittest.TestCase):
         self.write_bytes('advertising', 'poisoned',
                          b'\x00\x00=\x03\xff\xfe' + bytes(range(1, 255)) * 40)
         entries, files, skipped = self.collect()
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
         self.assertEqual(files, 2)
         self.assertGreater(skipped, 0)
 
     def test_nul_and_replacement_characters_are_rejected(self):
         self.write('malware', 'junk', ['\x00', '���', 'ok.example.com'])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['ok.example.com'])
+        self.assertEqual(list(entries), ['*.ok.example.com'])
         self.assertEqual(skipped, 2)
 
     def test_a_single_absurdly_long_line_is_rejected(self):
@@ -128,13 +128,13 @@ class CollectEntriesTest(unittest.TestCase):
         entries, _, skipped = self.collect()
         # 500k of 'a' is a syntactically legal label, so length alone is not the
         # test; what matters is that a line with no dots or bad bytes is dropped
-        self.assertIn('ok.example.com', entries)
+        self.assertIn('*.ok.example.com', entries)
         self.assertEqual(skipped, 0)
 
     def test_bare_label_with_no_dot_is_rejected(self):
         self.write('malware', 'junk', ['localhost', 'com', 'ok.example.com'])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['ok.example.com'])
+        self.assertEqual(list(entries), ['*.ok.example.com'])
         self.assertEqual(skipped, 2)
 
     def test_wildcard_entries_are_kept(self):
@@ -146,28 +146,28 @@ class CollectEntriesTest(unittest.TestCase):
     def test_entries_are_lowercased(self):
         self.write('malware', 'mixed', ['EVIL.Example.COM'])
         entries, _, _ = self.collect()
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
 
     def test_lowercasing_merges_case_variants(self):
         self.write('malware', 'a', ['Evil.Example.com'])
         self.write('porn', 'b', ['evil.example.COM'])
         entries, _, _ = self.collect()
-        self.assertEqual(list(entries), ['evil.example.com'])
-        cats, srcs = entries['evil.example.com']
-        self.assertEqual(cats, {'malware', 'porn'})
-        self.assertEqual(srcs, {'a', 'b'})
+        self.assertEqual(list(entries), ['*.evil.example.com'])
+        # Kept per source rather than as two unions, so the evidence can be
+        # weighed by who said what
+        self.assertEqual(entries['*.evil.example.com'], {'a': {'malware'}, 'b': {'porn'}})
 
     def test_blank_lines_are_not_counted_as_skipped(self):
         self.write('malware', 'spaced', ['', '   ', 'ok.example.com', ''])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['ok.example.com'])
+        self.assertEqual(list(entries), ['*.ok.example.com'])
         self.assertEqual(skipped, 0)
 
     def test_leading_underscore_and_other_bad_labels_are_rejected(self):
         self.write('malware', 'junk', ['-bad.example.com', 'bad-.example.com',
                                        'ok.example.com'])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['ok.example.com'])
+        self.assertEqual(list(entries), ['*.ok.example.com'])
         self.assertEqual(skipped, 2)
 
     # -- categories and sources still behave -------------------------------
@@ -175,113 +175,112 @@ class CollectEntriesTest(unittest.TestCase):
     def test_category_comes_from_the_directory_when_unconfigured(self):
         self.write('gambling', 'somelist', ['bet.example.com'])
         entries, _, _ = collect_entries(self.lists, host_files=[])
-        cats, srcs = entries['bet.example.com']
-        self.assertEqual(cats, {'gambling'})
-        self.assertEqual(srcs, {'somelist'})
+        self.assertEqual(entries['*.bet.example.com'], {'somelist': {'gambling'}})
 
     def test_configured_categories_override_the_directory(self):
         self.write('misc', 'vendorlist', ['tracked.example.com'])
         host_files = [{'file': 'lists/misc/vendorlist',
                        'categories': ['tracking', 'advertising']}]
         entries, _, _ = collect_entries(self.lists, host_files=host_files)
-        cats, _ = entries['tracked.example.com']
-        self.assertEqual(cats, {'tracking', 'advertising'})
+        self.assertEqual(entries['tracked.example.com'],
+                         {'vendorlist': {'tracking', 'advertising'}})
 
 
 class ApplyIgnorelistTest(unittest.TestCase):
     """The curated corrections the collector's glob cannot see.
 
     lists/ignorelist.json sits directly under lists/, so lists/*/* never reaches
-    it. The Valkey path edits those keys after writing them; the index has to
-    apply the same corrections at build time or it keeps categories a human
-    deliberately marked as wrong.
+    it. The corrections are recorded as claims that cancel a category, so they
+    are weighed at lookup time and hold however the category arrived.
     """
 
-    def entries(self):
-        return {
-            'evil.example.com': ({'malware', 'porn'}, {'a'}),
-            'shop.example.com': ({'porn'}, {'b'}),
-            'clean.example.com': ({'shopping'}, {'c'}),
-        }
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='tb-ignore-')
+        self.path = os.path.join(self.root, 'domains.tbidx')
 
-    def test_a_named_category_is_removed(self):
-        entries = self.entries()
-        removed, dropped = apply_ignorelist(
-            entries, ignorelist={'porn': ['evil.example.com']})
-        self.assertEqual((removed, dropped), (1, 0))
-        self.assertEqual(entries['evil.example.com'][0], {'malware'})
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_other_categories_on_the_same_host_survive(self):
-        entries = self.entries()
-        apply_ignorelist(entries, ignorelist={'porn': ['evil.example.com']})
-        self.assertIn('malware', entries['evil.example.com'][0])
+    def lookup_after(self, entries, ignorelist, host):
+        apply_ignorelist(entries, ignorelist=ignorelist)
+        build(entries, path=self.path, built_at=1000)
+        index = DomainIndex(self.path)
+        try:
+            return index.lookup(host)[0]
+        finally:
+            index.close()
 
-    def test_an_entry_left_with_nothing_is_dropped(self):
-        entries = self.entries()
-        removed, dropped = apply_ignorelist(
-            entries, ignorelist={'porn': ['shop.example.com']})
-        self.assertEqual((removed, dropped), (1, 1))
-        self.assertNotIn('shop.example.com', entries)
+    def test_a_correction_is_recorded_under_its_own_source(self):
+        entries = {'evil.example.com': {'a': {'malware', 'porn'}}}
+        recorded = apply_ignorelist(entries, ignorelist={'porn': ['evil.example.com']})
+        self.assertEqual(recorded, 1)
+        self.assertEqual(entries['evil.example.com']['ignorelist'], {'!porn'})
+        # The list's own claim is left alone; the correction outweighs it later
+        self.assertEqual(entries['evil.example.com']['a'], {'malware', 'porn'})
 
-    def test_hosts_not_in_the_index_are_ignored(self):
-        entries = self.entries()
-        removed, dropped = apply_ignorelist(
-            entries, ignorelist={'porn': ['absent.example.net']})
-        self.assertEqual((removed, dropped), (0, 0))
-        self.assertEqual(len(entries), 3)
+    def test_a_named_category_is_cancelled(self):
+        self.assertEqual(self.lookup_after(
+            {'evil.example.com': {'a': {'malware', 'porn'}}},
+            {'porn': ['evil.example.com']}, 'evil.example.com'), ['malware'])
 
-    def test_a_category_the_host_does_not_have_is_not_counted(self):
-        entries = self.entries()
-        removed, _ = apply_ignorelist(
-            entries, ignorelist={'gambling': ['evil.example.com']})
-        self.assertEqual(removed, 0)
-        self.assertEqual(entries['evil.example.com'][0], {'malware', 'porn'})
+    def test_a_category_inherited_from_a_parent_is_cancelled(self):
+        # The case the old build-time deletion missed: the list named the
+        # parent, the ignorelist named the host, and deleting from the host's
+        # own entry did nothing because it had none
+        self.assertEqual(self.lookup_after(
+            {'*.nytimes.com': {'a': {'games', 'news'}}},
+            {'games': ['www.nytimes.com']}, 'www.nytimes.com'), ['news'])
 
-    def test_host_names_are_matched_case_insensitively(self):
-        entries = self.entries()
-        removed, _ = apply_ignorelist(
-            entries, ignorelist={'porn': ['Evil.Example.COM ']})
-        self.assertEqual(removed, 1)
-        self.assertEqual(entries['evil.example.com'][0], {'malware'})
+    def test_a_bare_correction_names_one_host(self):
+        self.assertEqual(self.lookup_after(
+            {'*.example.com': {'a': {'porn'}}},
+            {'porn': ['example.com']}, 'other.example.com'), ['porn'])
 
-    def test_several_contexts_are_applied(self):
-        entries = self.entries()
-        removed, dropped = apply_ignorelist(entries, ignorelist={
-            'porn': ['evil.example.com', 'shop.example.com'],
-            'malware': ['evil.example.com'],
-        })
-        self.assertEqual((removed, dropped), (3, 2))
-        self.assertEqual(list(entries), ['clean.example.com'])
+    def test_a_bare_correction_also_covers_the_www_spelling(self):
+        self.assertEqual(self.lookup_after(
+            {'*.example.com': {'a': {'porn'}}},
+            {'porn': ['example.com']}, 'www.example.com'), [])
+
+    def test_a_wildcard_correction_covers_the_whole_domain(self):
+        self.assertEqual(self.lookup_after(
+            {'*.example.com': {'a': {'porn'}}, 'other.example.org': {'a': {'shopping'}}},
+            {'porn': ['*.example.com']}, 'deep.sub.example.com'), [])
+
+    def test_a_correction_leaves_other_domains_alone(self):
+        self.assertEqual(self.lookup_after(
+            {'*.example.com': {'a': {'porn'}}, 'other.example.org': {'a': {'shopping'}}},
+            {'porn': ['*.example.com']}, 'other.example.org'), ['shopping'])
+
+    def test_a_correction_for_an_unlisted_host_is_still_recorded(self):
+        # It may be needed against a category arriving from a parent entry
+        entries = {}
+        self.assertEqual(apply_ignorelist(entries, ignorelist={'porn': ['absent.example.net']}), 1)
+        self.assertEqual(entries, {'absent.example.net': {'ignorelist': {'!porn'}}})
+
+    def test_host_names_are_normalised(self):
+        entries = {}
+        apply_ignorelist(entries, ignorelist={'porn': ['Evil.Example.COM. ']})
+        self.assertIn('evil.example.com', entries)
+
+    def test_entries_that_are_not_host_names_are_skipped(self):
+        entries = {}
+        recorded = apply_ignorelist(entries, ignorelist={'porn': ['', 'com', 'bad_label.com', 7]})
+        self.assertEqual((recorded, entries), (0, {}))
+
+    def test_repeats_are_counted_once(self):
+        entries = {}
+        recorded = apply_ignorelist(entries, ignorelist={'porn': ['a.example.com', 'A.example.com']})
+        self.assertEqual(recorded, 1)
 
     def test_a_missing_file_is_not_an_error(self):
-        entries = self.entries()
-        removed, dropped = apply_ignorelist(entries, lists_dir='/nonexistent')
-        self.assertEqual((removed, dropped), (0, 0))
-        self.assertEqual(len(entries), 3)
+        entries = {'evil.example.com': {'a': {'porn'}}}
+        self.assertEqual(apply_ignorelist(entries, lists_dir='/nonexistent'), 0)
+        self.assertEqual(entries, {'evil.example.com': {'a': {'porn'}}})
 
     def test_an_empty_ignorelist_changes_nothing(self):
-        entries = self.entries()
-        self.assertEqual(apply_ignorelist(entries, ignorelist={}), (0, 0))
-        self.assertEqual(len(entries), 3)
-
-    def test_stripping_a_parent_stops_children_inheriting_it(self):
-        # Ancestor walking means a correction on the parent covers subdomains,
-        # which the exact-key Valkey path could never do
-        root = tempfile.mkdtemp(prefix='tb-ignore-')
-        try:
-            path = os.path.join(root, 'domains.tbidx')
-            entries = {'example.com': ({'porn'}, {'a'}),
-                       'other.example.org': ({'shopping'}, {'a'})}
-            apply_ignorelist(entries, ignorelist={'porn': ['example.com']})
-            build(entries, path=path, built_at=1000)
-            index = DomainIndex(path)
-            try:
-                self.assertEqual(index.lookup('deep.sub.example.com')[0], [])
-                self.assertEqual(index.lookup('other.example.org')[0], ['shopping'])
-            finally:
-                index.close()
-        finally:
-            shutil.rmtree(root, ignore_errors=True)
+        entries = {'evil.example.com': {'a': {'porn'}}}
+        self.assertEqual(apply_ignorelist(entries, ignorelist={}), 0)
+        self.assertEqual(entries, {'evil.example.com': {'a': {'porn'}}})
 
 
 class RebuildStabilityTest(unittest.TestCase):
@@ -324,7 +323,7 @@ class RebuildStabilityTest(unittest.TestCase):
             cats, srcs, matched = index.lookup('host7.evil7.example.com')
             self.assertEqual(cats, ['malware'])
             self.assertEqual(srcs, ['list'])
-            self.assertEqual(matched, ['host7.evil7.example.com'])
+            self.assertEqual(matched, ['*.host7.evil7.example.com'])
         finally:
             index.close()
 
@@ -365,14 +364,14 @@ class NegativeControlTest(unittest.TestCase):
             fh.write('smuggled.example.net\n')
 
         entries, _, _ = collect_entries(self.lists, host_files=[])
-        self.assertNotIn('smuggled.example.net', entries)
+        self.assertNotIn('*.smuggled.example.net', entries)
 
         # Drop 'index' from the skip set and the same input leaks straight in,
         # which is exactly the bug this replaced
         patched = frozenset(SKIP_DIRS - {'index'})
         with unittest.mock.patch.object(builder, 'SKIP_DIRS', patched):
             leaked, _, _ = collect_entries(self.lists, host_files=[])
-        self.assertIn('smuggled.example.net', leaked)
+        self.assertIn('*.smuggled.example.net', leaked)
 
     def test_the_grammar_guard_is_what_stops_binary(self):
         payload = b'\x00\x00=\x03' + bytes(range(1, 255)) * 200
@@ -383,7 +382,7 @@ class NegativeControlTest(unittest.TestCase):
         patched = frozenset(SKIP_DIRS - {'index'})
         with unittest.mock.patch.object(builder, 'SKIP_DIRS', patched):
             entries, files, skipped = collect_entries(self.lists, host_files=[])
-        self.assertEqual(list(entries), ['evil.example.com'])
+        self.assertEqual(list(entries), ['*.evil.example.com'])
         self.assertEqual(files, 2)
         self.assertGreater(skipped, 0)
 
