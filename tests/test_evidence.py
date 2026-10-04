@@ -106,6 +106,79 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(resolve([]), {'asserted': [], 'candidate': [], 'suppressed': []})
 
 
+class TaxonomyAgreementTest(unittest.TestCase):
+    """Sources agree on what a category means, not on how it is spelled."""
+
+    def test_two_spellings_of_one_judgement_corroborate(self):
+        verdict = resolve(claims((source('StevenBlack'), 'fake-news'),
+                                 (source('local'), 'fakenews')))
+        self.assertEqual(verdict['asserted'], ['fake-news', 'fakenews'])
+
+    def test_a_service_named_two_ways_corroborates(self):
+        verdict = resolve(claims((source('a'), 'signal'), (source('b'), 'whispersystems')))
+        self.assertEqual(verdict['asserted'], ['signal', 'whispersystems'])
+
+    def test_events_keep_the_spellings_the_lists_used(self):
+        # Nothing is renamed, so a query for a category means what it meant
+        verdict = resolve(claims((source('a'), 'fake-news'), (source('b'), 'fakenews'),
+                                 (source('c'), 'porn')))
+        self.assertEqual(verdict['asserted'], ['fake-news', 'fakenews'])
+        self.assertEqual(verdict['candidate'], ['porn'])
+
+    def test_different_meanings_still_do_not_corroborate(self):
+        # The control for the two above: pooling by path must not pool everything
+        verdict = resolve(claims((source('a'), 'malware'), (source('b'), 'phishing')))
+        self.assertEqual(verdict['asserted'], [])
+
+    def test_vendors_sharing_a_purpose_do_not_confirm_each_other(self):
+        # Both say "a game storefront", which is true, but not whose
+        verdict = resolve(claims((source('a'), 'steam'), (source('b'), 'epicgames')))
+        self.assertEqual(verdict['asserted'], [])
+        self.assertEqual(verdict['candidate'], ['epicgames', 'steam'])
+
+    def test_a_vendor_is_believed_when_two_sources_name_it(self):
+        verdict = resolve(claims((source('a'), 'steam'), (source('b'), 'steam')))
+        self.assertEqual(verdict['asserted'], ['steam'])
+
+    def test_a_trusted_vendor_supports_the_purpose_it_implies(self):
+        # A vendor list naming TikTok says the host is a social network, so a
+        # broad list saying the same needs nothing more. isnssdk.com is one.
+        verdict = resolve(claims((source('vendor', 'high'), 'tiktok'),
+                                 (source('broad'), 'social')))
+        self.assertEqual(verdict['asserted'], ['social', 'tiktok'])
+
+    def test_a_purpose_does_not_support_the_vendor(self):
+        # The converse: two lists agreeing a host is social media says nothing
+        # about which network it is
+        verdict = resolve(claims((source('a'), 'social'), (source('b'), 'social'),
+                                 (source('c'), 'tiktok')))
+        self.assertEqual(verdict['asserted'], ['social'])
+        self.assertEqual(verdict['candidate'], ['tiktok'])
+
+    def test_a_copy_does_not_corroborate_under_another_spelling(self):
+        verdict = resolve(claims(
+            (source('hagezi'), 'fake-news'),
+            (source('oisd', derived_from=['hagezi']), 'fakenews')))
+        self.assertEqual(verdict['asserted'], [])
+
+    def test_a_corrected_claim_does_not_support_another_spelling(self):
+        corrected = resolve(claims((source('local', 'high'), 'fakenews'),
+                                   (source('ignorelist', 'high'), '!fakenews'),
+                                   (source('StevenBlack'), 'fake-news')))
+        self.assertEqual(corrected['asserted'], [])
+        self.assertEqual(corrected['candidate'], ['fake-news'])
+        # The control: the same claims without the correction
+        uncorrected = resolve(claims((source('local', 'high'), 'fakenews'),
+                                     (source('StevenBlack'), 'fake-news')))
+        self.assertEqual(uncorrected['asserted'], ['fake-news', 'fakenews'])
+
+    def test_an_unmapped_category_needs_the_same_spelling(self):
+        different = resolve(claims((source('a'), 'politics'), (source('b'), 'opinion')))
+        self.assertEqual(different['asserted'], [])
+        same = resolve(claims((source('a'), 'politics'), (source('b'), 'politics')))
+        self.assertEqual(same['asserted'], ['politics'])
+
+
 class DependenceTest(unittest.TestCase):
 
     def test_dependence_runs_in_both_directions(self):

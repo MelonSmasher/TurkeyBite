@@ -24,6 +24,17 @@ same goes for a list that copies another: oisd's NSFW list ingests hagezi's, so
 the two agreeing is hagezi's opinion counted twice. Each source names what it
 copies in `derived_from`, and a copy never corroborates its original.
 
+Agreement is counted on what a category means rather than on how a list spells
+it. StevenBlack calls a site `fake-news` and the local list calls it `fakenews`;
+one vendor list says `signal` and another `whispersystems`. Each spelling maps to
+the same taxonomy path, so two sources agree when their categories reach the
+same path. A vendor category makes more than one statement: `steam` says the
+host is Steam and that it is a game storefront. It is believed only when every
+statement it makes is supported, so a list saying `steam` and another saying
+`epicgames` agree that the host sells games but not on whose store it is, and
+neither is asserted. Events still carry the categories the lists used, so a
+query for `fakenews` means what it meant before.
+
 A category that falls short is not thrown away. It is reported as a candidate,
 so it can be searched for, and an audit can see what the bar is holding back.
 
@@ -35,6 +46,7 @@ from itertools import combinations
 
 from libtb.index import NEGATION
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain
+from libtb.taxonomy import TAXONOMY
 
 DEFAULT_MIN_PUBLISHERS = 2
 
@@ -76,6 +88,15 @@ def corroborated(sources, needed):
                for group in combinations(sources, needed))
 
 
+def statements(category):
+    """The (facet, path) pairs a category asserts, which is what sources agree on.
+
+    A category the taxonomy does not know is a statement of its own, so it is
+    corroborated only by the same spelling, as every category was before.
+    """
+    return TAXONOMY.get(category.lower()) or ((None, category),)
+
+
 def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     """Weighs (key, source, category) claims as DomainIndex.match returns them.
 
@@ -84,25 +105,37 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
         asserted    categories the evidence supports
         candidate   categories some list claims, but not convincingly enough
         suppressed  categories the ignorelist cancelled
+
+    The lists hold categories as the sources spelled them, while the weighing
+    is done on taxonomy paths, see the module docstring.
     """
     needed = max(1, int(min_publishers))
+    cancelled = {category[len(NEGATION):] for _, _, category in claims
+                 if category.startswith(NEGATION)}
     claimed = set()
     trusted = set()
-    cancelled = set()
     backers = {}
     for _, source, category in claims:
         if category.startswith(NEGATION):
-            cancelled.add(category[len(NEGATION):])
             continue
         claimed.add(category)
-        if source.trust == 'high':
-            trusted.add(category)
-        elif source.trust == 'medium':
-            backers.setdefault(category, set()).add(source)
+        if category in cancelled:
+            # A claim the ignorelist corrected is wrong, so it must not prop
+            # up another spelling of the same judgement either
+            continue
+        for statement in statements(category):
+            if source.trust == 'high':
+                trusted.add(statement)
+            elif source.trust == 'medium':
+                backers.setdefault(statement, set()).add(source)
         # A low trust claim is recorded and counts towards nothing
 
+    supported = {}
+    for statement in set(trusted) | set(backers):
+        supported[statement] = (statement in trusted
+                                or corroborated(backers.get(statement, ()), needed))
     asserted = {c for c in claimed
-                if c in trusted or corroborated(backers.get(c, ()), needed)}
+                if all(supported.get(statement) for statement in statements(c))}
     return {
         'asserted': sorted(asserted - cancelled),
         'candidate': sorted(claimed - asserted - cancelled),
