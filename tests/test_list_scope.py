@@ -147,6 +147,33 @@ class CollectorScopeTest(Workspace):
         entries, _, _ = collect_entries(self.lists, host_files=[])
         self.assertEqual(list(entries), ['*.example.com'])
 
+    def test_a_custom_list_is_local_too(self):
+        self.write('news', 'custom', ['example.com'])
+        entries, _, _ = collect_entries(self.lists, host_files=[])
+        self.assertEqual(list(entries), ['*.example.com'])
+
+    def test_a_file_nobody_configured_keeps_the_cautious_defaults(self):
+        # Usually a download whose entry was removed from host_files.json; the
+        # file stays on disk and must not be promoted to a local list
+        self.write('porn', 'oldlist', ['example.com'])
+        entries, _, _ = collect_entries(self.lists, host_files=[])
+        self.assertEqual(list(entries), ['example.com'])
+
+    def stale_list_verdict(self, name):
+        """What a list nobody configured says about a tenant of workers.dev."""
+        self.write('malicious', name, ['*.workers.dev'])
+        entries, _, _ = collect_entries(self.lists, host_files=[])
+        index = self.index(entries)
+        return self.categories(index, 'shop.workers.dev', 'shop.workers.dev')
+
+    def test_a_stale_download_cannot_speak_for_a_public_suffix(self):
+        self.assertEqual(self.stale_list_verdict('oldlist'), [])
+
+    def test_the_file_name_is_what_makes_a_list_local(self):
+        # The control for the test above: the same line in a custom list is
+        # the operator's own rule, and is honoured
+        self.assertEqual(self.stale_list_verdict('custom'), ['malicious'])
+
     def test_an_unknown_match_is_refused(self):
         with self.assertRaises(ValueError):
             load_sources(host_files=self.configured('dl', match='everything'))
@@ -271,9 +298,17 @@ class FormatTest(Workspace):
         index = self.index({'example.com': {'dl': {'porn'}}}, {'dl': source})
         self.assertEqual(index.sources['dl'], source)
 
-    def test_an_unlisted_source_is_written_as_local(self):
+    def test_a_curated_list_is_written_as_local(self):
         index = self.index({'example.com': {'turkeybite': {'news'}}})
         self.assertEqual(index.sources['turkeybite'], Source('turkeybite', 'local', 'high', True, ()))
+
+    def test_the_ignorelist_is_written_as_local(self):
+        index = self.index({'example.com': {'ignorelist': {'!news'}}})
+        self.assertEqual(index.sources['ignorelist'], Source('ignorelist', 'local', 'high', True, ()))
+
+    def test_any_other_unlisted_source_is_written_cautiously(self):
+        index = self.index({'example.com': {'oldlist': {'porn'}}})
+        self.assertEqual(index.sources['oldlist'], Source('oldlist', 'oldlist', 'medium', False, ()))
 
     def test_claims_keep_who_said_what(self):
         index = self.index({'example.com': {'a': {'porn'}, 'b': {'malware'}}})

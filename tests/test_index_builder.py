@@ -61,36 +61,36 @@ class CollectEntriesTest(unittest.TestCase):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('index', 'domains.tbidx', ['smuggled.example.net'])
         entries, files, _ = self.collect()
-        self.assertIn('*.evil.example.com', entries)
-        self.assertNotIn('*.smuggled.example.net', entries)
+        self.assertIn('evil.example.com', entries)
+        self.assertNotIn('smuggled.example.net', entries)
         self.assertEqual(files, 1)
 
     def test_generation_marker_beside_the_index_is_not_read(self):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('index', 'domains.tbidx.generation', ['1787333025'])
         entries, files, _ = self.collect()
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         self.assertEqual(files, 1)
 
     def test_tld_directory_is_not_read(self):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('tld', 'iana', ['com', 'org'])
         entries, files, _ = self.collect()
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         self.assertEqual(files, 1)
 
     def test_gitignore_is_not_read(self):
         self.write('malware', 'good', ['evil.example.com'])
         self.write('malware', '.gitignore', ['*'])
         entries, files, _ = self.collect()
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         self.assertEqual(files, 1)
 
     def test_exclude_path_covers_an_output_written_outside_the_index_dir(self):
         self.write('malware', 'good', ['evil.example.com'])
         stray = self.write('custom', 'domains.tbidx', ['smuggled.example.net'])
         entries, files, _ = self.collect(exclude_path=stray)
-        self.assertNotIn('*.smuggled.example.net', entries)
+        self.assertNotIn('smuggled.example.net', entries)
         self.assertEqual(files, 1)
 
     def test_exclude_path_is_compared_by_real_path_not_string(self):
@@ -98,12 +98,12 @@ class CollectEntriesTest(unittest.TestCase):
         stray = self.write('custom', 'domains.tbidx', ['smuggled.example.net'])
         awkward = os.path.join(os.path.dirname(stray), '.', 'domains.tbidx')
         entries, _, _ = self.collect(exclude_path=awkward)
-        self.assertNotIn('*.smuggled.example.net', entries)
+        self.assertNotIn('smuggled.example.net', entries)
 
     def test_exclude_path_none_still_works(self):
         self.write('malware', 'good', ['evil.example.com'])
         entries, files, skipped = self.collect(exclude_path=None)
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         self.assertEqual((files, skipped), (1, 0))
 
     # -- the entry grammar --------------------------------------------------
@@ -113,14 +113,14 @@ class CollectEntriesTest(unittest.TestCase):
         self.write_bytes('advertising', 'poisoned',
                          b'\x00\x00=\x03\xff\xfe' + bytes(range(1, 255)) * 40)
         entries, files, skipped = self.collect()
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         self.assertEqual(files, 2)
         self.assertGreater(skipped, 0)
 
     def test_nul_and_replacement_characters_are_rejected(self):
         self.write('malware', 'junk', ['\x00', '���', 'ok.example.com'])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['*.ok.example.com'])
+        self.assertEqual(list(entries), ['ok.example.com'])
         self.assertEqual(skipped, 2)
 
     def test_a_single_absurdly_long_line_is_rejected(self):
@@ -128,13 +128,13 @@ class CollectEntriesTest(unittest.TestCase):
         entries, _, skipped = self.collect()
         # 500k of 'a' is a syntactically legal label, so length alone is not the
         # test; what matters is that a line with no dots or bad bytes is dropped
-        self.assertIn('*.ok.example.com', entries)
+        self.assertIn('ok.example.com', entries)
         self.assertEqual(skipped, 0)
 
     def test_bare_label_with_no_dot_is_rejected(self):
         self.write('malware', 'junk', ['localhost', 'com', 'ok.example.com'])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['*.ok.example.com'])
+        self.assertEqual(list(entries), ['ok.example.com'])
         self.assertEqual(skipped, 2)
 
     def test_wildcard_entries_are_kept(self):
@@ -146,28 +146,28 @@ class CollectEntriesTest(unittest.TestCase):
     def test_entries_are_lowercased(self):
         self.write('malware', 'mixed', ['EVIL.Example.COM'])
         entries, _, _ = self.collect()
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
 
     def test_lowercasing_merges_case_variants(self):
         self.write('malware', 'a', ['Evil.Example.com'])
         self.write('porn', 'b', ['evil.example.COM'])
         entries, _, _ = self.collect()
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         # Kept per source rather than as two unions, so the evidence can be
         # weighed by who said what
-        self.assertEqual(entries['*.evil.example.com'], {'a': {'malware'}, 'b': {'porn'}})
+        self.assertEqual(entries['evil.example.com'], {'a': {'malware'}, 'b': {'porn'}})
 
     def test_blank_lines_are_not_counted_as_skipped(self):
         self.write('malware', 'spaced', ['', '   ', 'ok.example.com', ''])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['*.ok.example.com'])
+        self.assertEqual(list(entries), ['ok.example.com'])
         self.assertEqual(skipped, 0)
 
     def test_leading_underscore_and_other_bad_labels_are_rejected(self):
         self.write('malware', 'junk', ['-bad.example.com', 'bad-.example.com',
                                        'ok.example.com'])
         entries, _, skipped = self.collect()
-        self.assertEqual(list(entries), ['*.ok.example.com'])
+        self.assertEqual(list(entries), ['ok.example.com'])
         self.assertEqual(skipped, 2)
 
     # -- categories and sources still behave -------------------------------
@@ -175,7 +175,7 @@ class CollectEntriesTest(unittest.TestCase):
     def test_category_comes_from_the_directory_when_unconfigured(self):
         self.write('gambling', 'somelist', ['bet.example.com'])
         entries, _, _ = collect_entries(self.lists, host_files=[])
-        self.assertEqual(entries['*.bet.example.com'], {'somelist': {'gambling'}})
+        self.assertEqual(entries['bet.example.com'], {'somelist': {'gambling'}})
 
     def test_configured_categories_override_the_directory(self):
         self.write('misc', 'vendorlist', ['tracked.example.com'])
@@ -323,7 +323,7 @@ class RebuildStabilityTest(unittest.TestCase):
             cats, srcs, matched = index.lookup('host7.evil7.example.com')
             self.assertEqual(cats, ['malware'])
             self.assertEqual(srcs, ['list'])
-            self.assertEqual(matched, ['*.host7.evil7.example.com'])
+            self.assertEqual(matched, ['host7.evil7.example.com'])
         finally:
             index.close()
 
@@ -364,14 +364,14 @@ class NegativeControlTest(unittest.TestCase):
             fh.write('smuggled.example.net\n')
 
         entries, _, _ = collect_entries(self.lists, host_files=[])
-        self.assertNotIn('*.smuggled.example.net', entries)
+        self.assertNotIn('smuggled.example.net', entries)
 
         # Drop 'index' from the skip set and the same input leaks straight in,
         # which is exactly the bug this replaced
         patched = frozenset(SKIP_DIRS - {'index'})
         with unittest.mock.patch.object(builder, 'SKIP_DIRS', patched):
             leaked, _, _ = collect_entries(self.lists, host_files=[])
-        self.assertIn('*.smuggled.example.net', leaked)
+        self.assertIn('smuggled.example.net', leaked)
 
     def test_the_grammar_guard_is_what_stops_binary(self):
         payload = b'\x00\x00=\x03' + bytes(range(1, 255)) * 200
@@ -382,7 +382,7 @@ class NegativeControlTest(unittest.TestCase):
         patched = frozenset(SKIP_DIRS - {'index'})
         with unittest.mock.patch.object(builder, 'SKIP_DIRS', patched):
             entries, files, skipped = collect_entries(self.lists, host_files=[])
-        self.assertEqual(list(entries), ['*.evil.example.com'])
+        self.assertEqual(list(entries), ['evil.example.com'])
         self.assertEqual(files, 2)
         self.assertGreater(skipped, 0)
 
