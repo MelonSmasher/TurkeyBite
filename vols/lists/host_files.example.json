@@ -281,6 +281,22 @@
         "trust": "medium"
     },
     {
+        "url": "https://raw.githubusercontent.com/PheeLeep/Barikada/main/anti_scatter.txt",
+        "categories": ["gambling"],
+        "file": "lists/gambling/PheeLeep-barikada",
+        "name": "PheeLeep-barikada",
+        "publisher": "PheeLeep",
+        "trust": "medium"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/dancharlton9/gambling-blocklist/main/lists/blocklist-adguard.txt",
+        "categories": ["gambling"],
+        "file": "lists/gambling/dancharlton9-non-gamstop",
+        "name": "dancharlton9-non-gamstop",
+        "publisher": "dancharlton9",
+        "trust": "medium"
+    },
+    {
         "url": "https://blocklistproject.github.io/Lists/alt-version/gambling-nl.txt",
         "categories": ["gambling"],
         "file": "lists/gambling/blocklistproject-gambling-nl",
@@ -296,6 +312,14 @@
         "name": "IREK-szef-games",
         "publisher": "IREK-szef",
         "derived_from": ["ut1"],
+        "trust": "medium"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/dkorunic/browser-games-blocklist/main/hosts.txt",
+        "categories": ["games"],
+        "file": "lists/games/dkorunic-browser-games",
+        "name": "dkorunic-browser-games",
+        "publisher": "dkorunic",
         "trust": "medium"
     },
     {

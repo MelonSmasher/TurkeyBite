@@ -330,7 +330,9 @@
   "games": [
     "sites.google.com",
     "www.nytimes.com",
-    "mail.aol.com"
+    "mail.aol.com",
+    "*.mit.edu",
+    "*.watchdocumentaries.com"
   ],
   "crypto": [
     "monster.com",
