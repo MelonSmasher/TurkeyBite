@@ -47,6 +47,14 @@ so it can be searched for, and an audit can see what the bar is holding back.
 The ignorelist's corrections arrive as claims too, with the category negated,
 and cancel the category outright whichever source asserted it.
 
+Some lookups are not evidence of what the person was doing. A news article
+with a Facebook pixel makes the browser look up connect.facebook.net, and
+Windows looks up msftconnecttest.com whenever it joins a network. The curated
+`incidental` list names such hosts. On them, categories that say what a host is
+for or whose service it is are reported as candidates instead, while risk
+categories stand: the pixel still tracks the person whether or not they use
+Facebook. The verdict says the host was incidental, so an event can too.
+
 An operator can also switch whole categories off, by taxonomy branch or path,
 without deleting the lists that carry them. A disabled category is dropped
 before anything is weighed, so events record nothing of it: not as asserted,
@@ -58,9 +66,9 @@ keeping it anywhere on the event would still store it.
 
 from itertools import combinations
 
-from libtb.index import NEGATION
+from libtb.index import INCIDENTAL, NEGATION
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain
-from libtb.taxonomy import TAXONOMY
+from libtb.taxonomy import RISK, TAXONOMY
 
 DEFAULT_MIN_PUBLISHERS = 2
 
@@ -211,6 +219,21 @@ def statements(category):
     return TAXONOMY.get(category.lower()) or ((None, category),)
 
 
+def is_risk(category):
+    """True when a category names a risk, which an incidental lookup still carries.
+
+    A category the taxonomy does not know is not one, so it is demoted with
+    the rest: an unknown label is not a reason to keep asserting something.
+    """
+    return any(facet == RISK for facet, _ in statements(category))
+
+
+def demote_incidental(categories):
+    """Splits categories into (kept, demoted) for a host marked incidental."""
+    kept = [c for c in categories if is_risk(c)]
+    return kept, [c for c in categories if not is_risk(c)]
+
+
 def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
     """Weighs (key, source, category) claims as DomainIndex.match returns them.
 
@@ -220,6 +243,9 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
         asserted    categories the evidence supports
         candidate   categories some list claims, but not convincingly enough
         suppressed  categories the ignorelist cancelled
+
+    and `incidental`, True when the host is marked incidental, in which case
+    only risk categories are asserted and the rest are candidates.
 
     The lists hold categories as the sources spelled them, while the weighing
     is done on taxonomy paths, see the module docstring.
@@ -252,10 +278,19 @@ def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
                                                 needed(statement, bar)))
     asserted = {c for c in claimed
                 if all(supported.get(statement) for statement in statements(c))}
+
+    # The mark is weighed like a category, so the ignorelist can lift it, and
+    # then taken out, since it says nothing about what the host is
+    incidental = INCIDENTAL in asserted and INCIDENTAL not in cancelled
+    for found in (claimed, asserted, cancelled):
+        found.discard(INCIDENTAL)
+    if incidental:
+        asserted = set(demote_incidental(asserted)[0])
     return {
         'asserted': sorted(asserted - cancelled),
         'candidate': sorted(claimed - asserted - cancelled),
         'suppressed': sorted(claimed & cancelled),
+        'incidental': incidental,
     }
 
 

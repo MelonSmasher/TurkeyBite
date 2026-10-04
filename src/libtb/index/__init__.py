@@ -69,6 +69,11 @@ FLAG_LOCAL = 0x01
 # ignorelist makes them.
 NEGATION = '!'
 
+# Not a category but a mark on a host, made by the curated list of that name:
+# lookups of it are mostly made by other pages or by the operating system, so
+# they say little about what the person was doing. libtb.evidence acts on it.
+INCIDENTAL = 'incidental'
+
 # What the index knows about one list file. `local` marks the operator's own
 # lists, which are the only ones allowed to categorise a whole public suffix.
 # `derived_from` names the publishers whose lists this one copies, since a copy

@@ -11,9 +11,9 @@ from libtb.sieve import normalize_host
 from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
-from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, describe,
-                            disabled_paths, matched_keys, resolve, sources_of,
-                            thresholds)
+from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, demote_incidental,
+                            describe, disabled_paths, matched_keys, resolve,
+                            sources_of, thresholds)
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -544,6 +544,8 @@ class Processor(object):
                 extra['contexts_candidate'] = verdict['candidate']
             if verdict['suppressed']:
                 extra['contexts_suppressed'] = verdict['suppressed']
+            if verdict['incidental']:
+                extra['incidental'] = True
             return contexts, extra
 
         # compare: Valkey stays authoritative while the index is on trial
@@ -573,7 +575,9 @@ class Processor(object):
             return [], [], []
 
         # Weighed together, so two publishers agreeing about different links
-        # of one chain still corroborate each other
+        # of one chain still corroborate each other. A link marked incidental
+        # demotes what the chain contributes, but leaves the name that was
+        # asked for alone: that name was not marked.
         claims = []
         disabled = self.disabled_categories()
         for target in chain:
@@ -664,10 +668,18 @@ class Processor(object):
                     # A correction on the name that was asked for holds over
                     # whatever that name happens to be hosted on
                     added = set(chain_contexts) - set(extra.get('contexts_suppressed') or [])
+                    demoted = set()
+                    if extra.get('incidental'):
+                        # So does the incidental mark. connect.facebook.net is
+                        # hosted on scontent.xx.fbcdn.net, which the lists call
+                        # Facebook, and merging that back would undo the mark.
+                        kept, demoted = demote_incidental(added)
+                        added, demoted = set(kept), set(demoted)
                     if added:
                         match_source.append('cname')
                     contexts = sorted(set(contexts) | added)
-                    held_back = sorted(set(extra.get('contexts_candidate') or []) - added)
+                    held_back = sorted((set(extra.get('contexts_candidate') or []) | demoted)
+                                       - added)
                     if held_back:
                         extra['contexts_candidate'] = held_back
                     else:

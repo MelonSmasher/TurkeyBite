@@ -58,6 +58,14 @@ So the three tenor entries above can be written as one, `*.tenor.com`. A suppres
 
 In `valkey` mode an entry only edits the host list key with exactly that name, so a category arriving from a parent domain is not removed.
 
+The same works for the incidental mark (see "Incidental lookups" in the README). An entry under `incidental` lifts it, so a host you know people visit on purpose keeps its categories:
+
+```json
+{
+  "incidental": ["player.twitch.tv"]
+}
+```
+
 ## Using example ignorelist as your ignorelist
 
 I'm maintaining my own ignorelist in `ignorelist.example.json` if you wish to use this as your `ignorelist.json`, symlink it instead of copying it.

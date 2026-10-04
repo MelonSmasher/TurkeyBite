@@ -87,11 +87,13 @@ class ResolveTest(unittest.TestCase):
     def test_the_ignorelist_cancels_even_a_trusted_claim(self):
         verdict = resolve(claims((source('vendor', 'high'), 'porn'),
                                  (source('ignorelist', 'high'), '!porn')))
-        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': ['porn']})
+        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': ['porn'],
+                                   'incidental': False})
 
     def test_a_cancellation_for_an_unclaimed_category_reports_nothing(self):
         verdict = resolve(claims((source('ignorelist', 'high'), '!porn')))
-        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': []})
+        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': [],
+                                   'incidental': False})
 
     def test_one_publisher_is_enough_when_configured(self):
         verdict = resolve(claims((source('broad'), 'porn')), min_publishers=1)
@@ -104,7 +106,8 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(resolve(three, min_publishers=3)['asserted'], ['porn'])
 
     def test_no_claims_is_no_verdict(self):
-        self.assertEqual(resolve([]), {'asserted': [], 'candidate': [], 'suppressed': []})
+        self.assertEqual(resolve([]), {'asserted': [], 'candidate': [], 'suppressed': [],
+                                       'incidental': False})
 
 
 class TaxonomyAgreementTest(unittest.TestCase):
@@ -359,20 +362,23 @@ class IndexedVerdictTest(IndexFixture):
 
     def test_a_public_suffix_entry_says_nothing_about_its_tenants(self):
         verdict = self.verdict('shop.workers.dev')
-        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': []})
+        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': [],
+                                   'incidental': False})
 
     def test_a_vendor_list_asserts_alone(self):
         self.assertEqual(self.verdict('store.steampowered.com')['asserted'], ['games', 'steam'])
 
     def test_a_correction_holds_against_agreement(self):
         self.assertEqual(self.verdict('media.tenor.com'),
-                         {'asserted': [], 'candidate': [], 'suppressed': ['porn']})
+                         {'asserted': [], 'candidate': [], 'suppressed': ['porn'],
+                          'incidental': False})
 
     def test_a_disabled_category_leaves_no_trace(self):
         off = disabled_paths(['editorial'])
         claims, verdict = categorise(self.index, 'www.opinion.com', psl_path=FIXTURE,
                                      disabled=off)
-        self.assertEqual(verdict, {'asserted': ['news'], 'candidate': [], 'suppressed': []})
+        self.assertEqual(verdict, {'asserted': ['news'], 'candidate': [], 'suppressed': [],
+                                   'incidental': False})
         self.assertEqual(describe(claims), ['news:vendor'])
         # The control: the same host with nothing disabled
         claims, verdict = categorise(self.index, 'www.opinion.com', psl_path=FIXTURE)
@@ -384,7 +390,8 @@ class IndexedVerdictTest(IndexFixture):
         off = disabled_paths(['editorial'])
         verdict = categorise(self.index, 'www.corrected.com', psl_path=FIXTURE,
                              disabled=off)[1]
-        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': []})
+        self.assertEqual(verdict, {'asserted': [], 'candidate': [], 'suppressed': [],
+                                   'incidental': False})
 
 
 class ProcessorWiringTest(IndexFixture):

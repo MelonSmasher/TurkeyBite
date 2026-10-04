@@ -29,6 +29,7 @@
 !shopping/
 !mail/
 !search/
+!incidental/
 !whitelist.example.json
 !whitelist.md
 !ignorelist.example.json

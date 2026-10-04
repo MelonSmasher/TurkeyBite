@@ -581,6 +581,8 @@ def valkey_host(line, downloaded):
 
 
 def pull_host_lists():
+    from libtb.index import INCIDENTAL
+
     host_files = get_host_files()
     # Get the list of TLDs
     tlds = pull_tld_list()
@@ -588,8 +590,9 @@ def pull_host_lists():
     folders = [f for f in os.listdir('lists') if os.path.isdir(os.path.join('lists', f))]
     #loop over the folders and look for a default turkeybite list and custom list
     for folder in folders:
-        # Skip tld folder
-        if folder in ['tld']:
+        # Skip the tld folder, and the incidental list: it marks hosts rather
+        # than naming a category, and only the index knows what to do with it
+        if folder in ['tld', INCIDENTAL]:
             continue
         # This allows for built in lists to be added to the host_files list
         if os.path.exists('lists/' + folder + '/turkeybite'):
