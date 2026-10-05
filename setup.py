@@ -78,7 +78,8 @@ def generate_opensearch_password(length: int = 32) -> str:
 
 
 # Days OpenSearch keeps each daily index, unless the operator says otherwise.
-# The same default as libtb.retention.DEFAULT_DAYS, which a test checks.
+# The same as libtb.retention.SUGGESTED_DAYS, which a test checks. Only a
+# suggestion: the librarian does nothing while the variable is unset.
 DEFAULT_RETENTION_DAYS = 90
 
 

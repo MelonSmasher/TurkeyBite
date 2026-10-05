@@ -129,39 +129,56 @@ def index_sync():
 
 
 @cli.command('retention')
+@click.option('--apply', 'apply_now', is_flag=True, default=False,
+              help='Apply TURKEYBITE_RETENTION_DAYS now. With --confirm-days, also when it '
+                   'is shorter than the period in force, which the librarian refuses at start.')
+@click.option('--confirm-days', type=int, default=None,
+              help='With --apply: confirms a shorter period. Must equal '
+                   'TURKEYBITE_RETENTION_DAYS. Indices older than it are deleted within '
+                   'minutes, irreversibly.')
 @click.option('--attach-existing', is_flag=True, default=False,
               help='Also attach the policy to the TurkeyBite indices that existed before it. '
                    'Those already older than TURKEYBITE_RETENTION_DAYS are deleted within '
                    'minutes, irreversibly.')
 @click.option('--dry-run', is_flag=True, default=False,
-              help='Say what would be done, listing the indices --attach-existing would '
-                   'attach, and change nothing.')
+              help='Say what would be done, listing the indices that would be deleted or '
+                   'attached, and change nothing.')
 @click.option('--url', default=None,
               help='OpenSearch URL. Defaults to https://$OPENSEARCH_HOST:9200, as the '
                    'librarian uses.')
 @click.option('--prefix', default=None,
               help='Index prefix. Defaults to processor.elastic.index_prefix in config.yaml.')
-def retention(attach_existing, dry_run, url, prefix):
+def retention(apply_now, confirm_days, attach_existing, dry_run, url, prefix):
     """Have OpenSearch delete TurkeyBite indices older than TURKEYBITE_RETENTION_DAYS.
 
-    Creates or updates the ISM policy that does it, 90 days unless the variable
-    says otherwise, and 0 keeps indices forever. The librarian runs this at
-    every start. Indices that existed before the policy are left alone unless
-    --attach-existing is given; list them first with:
+    Keeps the ISM policy that does it in line with the variable, which the
+    librarian does at every start. Unset, nothing is done; 0 keeps indices
+    forever. Nothing that deletes sooner is done without asking: a shorter
+    period is refused until confirmed, and the indices that existed before the
+    policy are left alone unless --attach-existing is given. List what either
+    would delete first:
 
     \b
+        docker compose exec turkeybite-librarian python turkeybite retention --apply --confirm-days 30 --dry-run
         docker compose exec turkeybite-librarian python turkeybite retention --attach-existing --dry-run
 
-    Connects with OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD and
-    OPENSEARCH_CA_CERT, as the librarian's script does.
+    Exits non-zero when a change was refused or did not complete. Connects with
+    OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD and OPENSEARCH_CA_CERT, as the
+    librarian's script does.
     """
     import os
     import opensearchpy
     from libtb import retention as R
     from libtb.opensearch import client_kwargs, librarian_host, unverified, unverified_warning
 
+    if confirm_days is not None and not apply_now:
+        raise click.UsageError('--confirm-days goes with --apply')
     try:
         days = R.retention_days(os.environ.get(R.DAYS_ENV))
+        if days is None and (apply_now or attach_existing):
+            raise ValueError(f'{R.DAYS_ENV} is not set, so there is no period to apply')
+        if days == 0 and attach_existing:
+            raise ValueError(f'{R.DAYS_ENV} is 0, so there is no retention policy to attach')
         host = librarian_host(url=url)
         if prefix is None:
             elastic = (read_config().get('processor') or {}).get('elastic') or {}
@@ -175,14 +192,14 @@ def retention(attach_existing, dry_run, url, prefix):
     client = opensearchpy.OpenSearch(**client_kwargs(host))
     cluster = R.Cluster(client.transport.perform_request, dry_run=dry_run, log=click.echo)
     try:
-        if attach_existing:
-            R.attach_existing(cluster, days, prefix, log=click.echo)
-        else:
-            R.ensure(cluster, days, prefix, log=click.echo)
+        result = R.reconcile(cluster, days, prefix, log=click.echo, confirm_days=confirm_days,
+                             attach_existing=attach_existing)
     except ValueError as e:
         raise click.ClickException(str(e))
     except opensearchpy.exceptions.OpenSearchException as e:
         raise click.ClickException(f'OpenSearch refused the retention change: {e}')
+    if not result['ok']:
+        raise SystemExit(1)
 
 
 @cli.command('audit')
