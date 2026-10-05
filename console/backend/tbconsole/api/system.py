@@ -64,6 +64,11 @@ async def status_(request: Request, _: Principal = Depends(require(rbac.SETTINGS
     open_findings = (await db.execute(select(func.count()).select_from(Finding).where(
         Finding.status.in_(engine.OPEN)))).scalar_one()
     rollup_days = (await db.execute(select(func.count(func.distinct(DailyStat.day))))).scalar_one()
+    # Whichever replica holds the lease does the counting, so when it last ran
+    # comes from the counts themselves rather than from this process
+    rollups_last = (await db.execute(select(func.max(DailyStat.updated_at)))).scalar()
+    if isinstance(workers.get('rollups'), dict):
+        workers['rollups']['last'] = ts(rollups_last)
     return {
         'version': __version__, 'time': ts(datetime.now(timezone.utc)),
         'database': {'ok': True},

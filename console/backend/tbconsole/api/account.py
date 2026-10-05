@@ -17,7 +17,7 @@ from .common import parse_uuid, ts, user_out
 router = APIRouter(prefix='/account', tags=['account'])
 
 THEMES = ('light', 'dark', 'system')
-ACCENTS = ('ember', 'ocean', 'forest', 'violet', 'rose', 'slate')
+ACCENTS = ('iris', 'ocean', 'forest', 'ember', 'rose', 'slate')
 DENSITIES = ('comfortable', 'compact')
 
 

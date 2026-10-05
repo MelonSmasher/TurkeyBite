@@ -105,11 +105,11 @@ async def overview(start: str | None = None, end: str | None = None,
     current, previous, latest, heat = await asyncio.gather(
         search.search({'size': 0, 'track_total_hits': True,
                        'query': {'bool': {'filter': [tr.filter()]}}, 'aggs': current_aggs}),
-        search.search({'size': 0, 'query': {'bool': {'filter': [heat_tr.filter()]}},
-                       'aggs': heat_aggs}),
         search.search({'size': 0, 'track_total_hits': True,
                        'query': {'bool': {'filter': [prev.filter()]}}, 'aggs': previous_aggs}),
         search.search({'size': 0, 'aggs': {'latest': {'max': {'field': '@timestamp'}}}}),
+        search.search({'size': 0, 'query': {'bool': {'filter': [heat_tr.filter()]}},
+                       'aggs': heat_aggs}),
     )
     heat_buckets = ((heat.get('aggregations') or {}).get('heat') or {}).get('buckets', [])
     a = current.get('aggregations') or {}

@@ -294,6 +294,11 @@ def background(rng: random.Random, entities: list[Entity], day: datetime, per_da
     day_scale = 1.0 if day.weekday() < 5 else 0.55
     total = int(per_day * day_scale * rng.uniform(0.9, 1.1))
     ent_weights = [e.weight * {'s': 1.0, 't': 1.0, 'l': 0.8, 'd': 0.25}[e.persona] for e in entities]
+    if day.weekday() >= 5:
+        # At weekends the labs are shut and most staff are away; students
+        # keep their own machines, and the devices stay on
+        ent_weights = [w if e.persona in ('s', 'd') or rng.random() < (0.25 if e.persona == 't' else 0.1) else 0.0
+                       for e, w in zip(entities, ent_weights)]
     for _ in range(total):
         hour = rng.choices(range(24), weights)[0]
         ts = day.replace(hour=hour, minute=rng.randrange(60), second=rng.randrange(60),
@@ -818,8 +823,8 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
                 {'day': day, 'dimension': 'severity', 'key': 'low', 'count': low},
                 {'day': day, 'dimension': 'type', 'key': 'dns', 'count': int(total_events * 0.74)},
                 {'day': day, 'dimension': 'type', 'key': 'browser.history', 'count': int(total_events * 0.26)},
-                {'day': day, 'dimension': 'unique', 'key': 'clients', 'count': int(rng.uniform(52, 58) * holiday) if weekday else int(rng.uniform(30, 40))},
-                {'day': day, 'dimension': 'unique', 'key': 'users', 'count': int(rng.uniform(30, 34) * holiday) if weekday else int(rng.uniform(18, 26))},
+                {'day': day, 'dimension': 'unique', 'key': 'clients', 'count': int(rng.uniform(55, 58) * (0.6 if day.month in (7, 8) else 1)) if weekday else int(rng.uniform(31, 36))},
+                {'day': day, 'dimension': 'unique', 'key': 'users', 'count': int(rng.uniform(32, 34) * (0.6 if day.month in (7, 8) else 1)) if weekday else int(rng.uniform(25, 29))},
                 {'day': day, 'dimension': 'response_code', 'key': 'NXDOMAIN', 'count': int(total_events * 0.012)},
                 {'day': day, 'dimension': 'risk', 'key': 'threat.malicious', 'count': int(high * 0.5)},
                 {'day': day, 'dimension': 'risk', 'key': 'threat.phishing', 'count': int(high * 0.3)},
@@ -827,6 +832,7 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
                 {'day': day, 'dimension': 'risk', 'key': 'threat.cryptomining', 'count': int(medium * 0.2)},
                 {'day': day, 'dimension': 'risk', 'key': 'threat.scam', 'count': int(medium * 0.25)},
                 {'day': day, 'dimension': 'risk', 'key': 'policy.piracy', 'count': int(low * 0.004)},
+                {'day': day, 'dimension': 'risk', 'key': 'policy.url-shortener', 'count': int(total_events * rng.uniform(0.002, 0.003))},
             ]
             for purpose, share in (('social.networks', 0.16), ('media.video', 0.12), ('information.education', 0.15),
                                    ('information.search', 0.14), ('productivity.office', 0.09),

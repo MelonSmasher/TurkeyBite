@@ -86,8 +86,7 @@ async function api(page, path) {
   return page.evaluate(async (p) => (await fetch(`/api/v1${p}`)).json(), path);
 }
 
-// One signed-in context per theme and option set, so preferences the server
-// keeps (theme, accent, privacy) are set by the page itself as a person would
+// One signed-in context per theme and option set
 const sessions = new Map();
 async function pageFor(theme, opts) {
   const key = `${theme}|${opts.accent ?? ''}|${opts.privacy ? 1 : 0}|${opts.anonymous ? 1 : 0}`;
@@ -95,17 +94,22 @@ async function pageFor(theme, opts) {
     const ctx = await context(theme, opts);
     const page = await ctx.newPage();
     page.on('pageerror', (e) => console.error('pageerror:', String(e)));
-    if (!opts.anonymous) {
-      await signIn(page);
-      await page.evaluate(async (prefs) => {
-        const csrf = document.cookie.match(/tbc_csrf=([^;]+)/)?.[1] ?? '';
-        await fetch('/api/v1/account/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-                                                     body: JSON.stringify(prefs) });
-      }, { theme, accent: opts.accent ?? 'iris', privacy_mode: !!opts.privacy, density: 'comfortable', sidebar_collapsed: false });
-    }
+    if (!opts.anonymous) await signIn(page);
     sessions.set(key, page);
   }
   return sessions.get(key);
+}
+
+// The account keeps its preferences on the server and every context signs in
+// as the same person, so each shot sets its own just before it is taken
+async function setPreferences(page, theme, opts) {
+  const result = await page.evaluate(async (prefs) => {
+    const csrf = decodeURIComponent(document.cookie.match(/(?:^|; )tbc_csrf=([^;]+)/)?.[1] ?? '');
+    const response = await fetch('/api/v1/account/preferences', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(prefs) });
+    return response.status;
+  }, { theme, accent: opts.accent ?? 'iris', privacy_mode: !!opts.privacy, density: 'comfortable', sidebar_collapsed: false });
+  if (result !== 200) throw new Error(`could not set preferences: HTTP ${result}`);
 }
 
 for (const [name, path, theme, opts] of shots) {
@@ -125,6 +129,7 @@ for (const [name, path, theme, opts] of shots) {
     target = `/dashboards/${boards.find((d) => d.name === opts.dashboard).id}`;
   }
   await page.setViewportSize({ width: 1600, height: 1000 });
+  if (!opts.anonymous) await setPreferences(page, theme, opts);
   await page.goto(`${base}${target}`);
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(1200);

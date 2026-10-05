@@ -76,7 +76,7 @@
         <div class="card-head"><h3 class="card-title">Indices</h3><span class="card-sub">Newest first, by documents</span></div>
         <div class="card-body">
           <BarList items={(s.opensearch.indices ?? []).slice(0, 24).map((i) => ({ key: i.index, value: i.docs, sub: bytes(i.bytes) }))} format={num}>
-            {#snippet label(item)}<span class="mono small">{item.key}</span><span class="faint small">{item.sub}</span>{/snippet}
+            {#snippet label(item)}<span class="mono small">{item.key}</span>{/snippet}
           </BarList>
         </div>
       </section>

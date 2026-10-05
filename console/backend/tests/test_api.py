@@ -259,3 +259,40 @@ async def test_security_headers_are_set(client):
     assert "default-src 'self'" in response.headers['content-security-policy']
     assert response.headers['x-frame-options'] == 'DENY'
     assert response.headers['cache-control'] == 'no-store'
+
+
+async def test_the_overview_puts_each_answer_where_it_belongs(client, search):
+    # Four queries run at once; each answer must land in its own part
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+
+    def answer(body, index=None):
+        aggs = body.get('aggs', {})
+        if 'timeline' in aggs:
+            return {'hits': {'total': {'value': 100}}, 'aggregations': {'notable': {'doc_count': 7}}}
+        if 'heat' in aggs:
+            return {'hits': {'total': {'value': 0}}, 'aggregations': {'heat': {'buckets': [
+                {'key_as_string': '2026-10-05T10:00:00.000Z', 'doc_count': 5, 'notable': {'doc_count': 1}}]}}}
+        if 'latest' in aggs:
+            return {'hits': {'total': {'value': 0}}, 'aggregations': {'latest': {'value': 1791230400000}}}
+        return {'hits': {'total': {'value': 40}}, 'aggregations': {'notable': {'doc_count': 2}}}
+    search.answer = answer
+    data = (await client.get('/api/v1/overview')).json()
+    assert data['kpis']['events'] == {'value': 100, 'previous': 40, 'change': 1.5}
+    assert data['kpis']['notable']['previous'] == 2
+    assert data['heat'] == [{'t': '2026-10-05T10:00:00.000Z', 'count': 5, 'notable': 1}]
+    assert data['freshness']['latest_event'].startswith('2026-10-05')
+
+
+async def test_every_accent_the_app_offers_can_be_saved(client):
+    # The app's own list, in frontend/src/lib/stores/prefs.svelte.ts
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    for accent in ('iris', 'ocean', 'forest', 'ember', 'rose', 'slate'):
+        response = await client.put('/api/v1/account/preferences', headers=headers,
+                                    json={'theme': 'dark', 'accent': accent, 'density': 'compact', 'privacy_mode': True})
+        assert response.status_code == 200, accent
+    me = (await client.get('/api/v1/auth/me')).json()
+    assert me['preferences']['accent'] == 'slate' and me['preferences']['privacy_mode'] is True
+    bad = await client.put('/api/v1/account/preferences', headers=headers, json={'accent': 'chartreuse'})
+    assert bad.status_code == 400

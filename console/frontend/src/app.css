@@ -206,7 +206,11 @@ h2 { font-size: 1.12rem; }
 h3 { font-size: 0.98rem; }
 p { margin: 0; }
 hr { border: 0; border-top: 1px solid var(--divider); margin: 16px 0; }
-:focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--radius-sm); }
+/* Buttons, links and the like get a ring; text fields style their own focus,
+   and bare inputs inside a composite control (the query bar, the command
+   palette) are focused through their container */
+:focus-visible:not(input):not(textarea):not(select) { outline: none; box-shadow: var(--focus); border-radius: var(--radius-sm); }
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
 .tabular { font-variant-numeric: tabular-nums; }
 .muted { color: var(--text-3); }
 .subtle { color: var(--text-2); }
@@ -405,3 +409,6 @@ table.table { width: 100%; border-collapse: separate; border-spacing: 0; font-si
 @media (forced-colors: active) {
   .btn, .badge, .card { border: 1px solid CanvasText; }
 }
+
+/* Search boxes made of an icon and a bare input show focus on the box */
+.searchbox:focus-within { border-color: var(--accent); box-shadow: var(--focus); }
