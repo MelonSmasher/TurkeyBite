@@ -145,12 +145,15 @@ def index_sync():
               help='Ask Quad9 and Cloudflare to corroborate candidates, as workers do '
                    'when processor.evidence.resolvers is enabled. Sends domain names to '
                    'both, at most 20 queries a second.')
+@click.option('--adult-vote', is_flag=True, default=False,
+              help="With --resolvers, also ask Cloudflare's family resolver about porn "
+                   'candidates, as processor.evidence.resolvers.adult does.')
 @click.option('--disable', 'disabled', multiple=True,
               help='Taxonomy branch or path to switch off, as '
                    'processor.evidence.disabled_categories. Repeatable, and replaces '
                    'the configured list. --disable "" switches nothing off.')
 def audit(reference, top, examples, categories, index_path, min_publishers, disabled,
-          use_resolvers):
+          use_resolvers, adult_vote):
     """Report the categories the index asserts on known-good domains.
 
     REFERENCE is a Tranco 'rank,domain' CSV or one domain per line. Fetch the
@@ -170,7 +173,7 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
     # an override replaces only the setting it names and the audit otherwise
     # reports exactly what the workers do
     configured = {}
-    if index_path is None or min_publishers is None or not disabled or use_resolvers:
+    if index_path is None or min_publishers is None or not disabled:
         config = read_config()
         index_path = index_path or index_config(config)['path']
         configured = (config.get('processor') or {}).get('evidence') or {}
@@ -181,12 +184,14 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
         raise click.BadParameter(str(e))
     checker = None
     if use_resolvers:
-        # The configured addresses and timeout if there are any, switched on
-        # for this run whatever the configuration says, and throttled
+        # The configured addresses and timeout when config.yaml was read,
+        # the defaults otherwise, switched on for this run and throttled
         try:
             conf = resolver_settings(configured.get('resolvers'))._replace(enable=True)
         except ValueError as e:
             raise click.BadParameter(str(e), param_hint='--resolvers')
+        if adult_vote:
+            conf = conf._replace(adult=True)
         checker = Checker(conf, rate=AUDIT_RATE)
 
     domains = read_reference(reference, top)

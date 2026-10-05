@@ -14,7 +14,8 @@ from libtb.index import DomainIndex
 from libtb.evidence import (cancels, categorise, claims_for, demote_incidental,
                             describe, drop_disabled, evidence_settings,
                             matched_keys, resolve, sources_of)
-from libtb.evidence.resolvers import checker_for, corroborate
+from libtb.evidence import second_opinion
+from libtb.evidence.resolvers import checker_for
 from libtb.evidence.resolvers import settings as resolver_settings
 from datetime import datetime, timezone
 from dateutil import *
@@ -474,7 +475,7 @@ class Processor(object):
         """
         return self._evidence[0]
 
-    def resolver_settings(self):
+    def resolver_conf(self):
         """Public filtering resolvers as a second opinion, see libtb.evidence.resolvers.
 
         Off unless processor.evidence.resolvers.enable is true. Parsed once,
@@ -556,17 +557,12 @@ class Processor(object):
                     {'index_error': str(e)})
 
         # Asked only in index mode, since compare mode measures the lists
-        # against Valkey and a vote from outside both would muddy that; and
-        # only for DNS lookups. A history entry is usually a page the lookup
-        # already asked about seconds earlier, and a history upload can carry
-        # days of pages at once, which would arrive at the resolvers as a burst.
-        resolver_status = {}
-        checker = None
-        if mode == 'index' and not navigation:
-            checker = checker_for(self.resolver_settings())
-        if checker is not None:
-            claims, verdict, resolver_status = corroborate(
-                host, claims, verdict, self.min_publishers(), checker)
+        # against Valkey and a vote from outside both would muddy that. Outside
+        # the guard above, so a fault here, or RQ stopping a job that ran too
+        # long, is not mistaken for a broken index and answered from Valkey.
+        if mode == 'index':
+            claims, verdict = second_opinion(host, claims, verdict, self.min_publishers(),
+                                             checker_for(self.resolver_conf()), navigation)
 
         contexts = verdict['asserted']
         extra = {
@@ -587,10 +583,10 @@ class Processor(object):
                 extra['incidental'] = True
             if verdict['corrected']:
                 extra[CORRECTED] = verdict['corrected']
-            if resolver_status:
+            if verdict.get('resolvers'):
                 # Which resolvers were asked and what each said, so one that
                 # stops answering shows up in a query, as ptr_status does
-                extra['resolvers'] = resolver_status
+                extra['resolvers'] = verdict['resolvers']
             return contexts, extra
 
         # compare: Valkey stays authoritative while the index is on trial

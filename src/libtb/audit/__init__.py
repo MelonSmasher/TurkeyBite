@@ -20,7 +20,7 @@ import csv
 from collections import Counter, defaultdict
 
 from libtb.evidence import DEFAULT_MIN_PUBLISHERS, categorise, evidence_settings
-from libtb.evidence.resolvers import corroborate
+from libtb.evidence.resolvers import SETTLED
 from libtb.psl import DEFAULT_PATH as PSL_PATH
 from libtb.taxonomy import classify
 
@@ -88,19 +88,25 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
                     since they cannot have contributed.
 
     With a libtb.evidence.resolvers.Checker, resolver votes are added exactly
-    as a worker adds them, and show up in the sources and the blame.
+    as a worker adds them, and show up in the sources and the blame. Then
+
+        resolvers   (provider, status) -> how often each resolver said what
+
+    so an audit run behind a firewall, where every question times out, cannot
+    be read as the resolvers clearing every candidate.
     """
     asserted = defaultdict(list)
     candidate = defaultdict(list)
     blamed = Counter()
+    answers = Counter()
     for rank, domain in enumerate(domains, 1):
         verdict = {'asserted': set(), 'candidate': set()}
         backers = defaultdict(set)
         counted = defaultdict(set)
         for host in (domain, 'www.' + domain):
-            claims, result = categorise(index, host, min_publishers, psl_path, disabled)
-            if checker is not None:
-                claims, result, _ = corroborate(host, claims, result, min_publishers, checker)
+            claims, result = categorise(index, host, min_publishers, psl_path, disabled,
+                                        checker=checker)
+            answers.update((result.get('resolvers') or {}).items())
             verdict['asserted'].update(result['asserted'])
             verdict['candidate'].update(result['candidate'])
             for _, source, category in claims:
@@ -114,7 +120,8 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
                 blamed.update(counted[category])
         for category in verdict['candidate']:
             candidate[category].append((rank, domain, sorted(backers[category])))
-    return {'asserted': asserted, 'candidate': candidate, 'blamed': blamed}
+    return {'asserted': asserted, 'candidate': candidate, 'blamed': blamed,
+            'resolvers': answers}
 
 
 def format_report(report, total, examples=5, categories=None):
@@ -145,4 +152,18 @@ def format_report(report, total, examples=5, categories=None):
         lines.append('  (none)')
     for source, count in report['blamed'].most_common():
         lines.append(f'  {source:44} {count:6}')
+
+    answers = report.get('resolvers')
+    if answers:
+        lines.append('')
+        lines.append('What the resolvers said:')
+        for (provider, status), count in sorted(answers.items()):
+            lines.append(f'  {provider:24} {status:12} {count:6}')
+        failed = sum(count for (_, status), count in answers.items() if status not in SETTLED)
+        if failed:
+            # Said plainly: a failure casts no vote, so a run where most
+            # questions fail reads like resolvers that disagree with the lists
+            lines.append(f'  {failed} of {sum(answers.values())} questions got no answer, '
+                         f'so cast no vote. Check that outbound DNS to the resolvers is '
+                         f'allowed before reading anything into the votes.')
     return lines
