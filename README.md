@@ -223,7 +223,11 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    since retrying it would never succeed. Delivery is at-least-once: a crash
    between indexing and acknowledging, or a batch requeued after part of it was
    indexed, indexes those documents again, and sends their syslog copies again.
-   A duplicate is the price of never dropping a batch.
+   A duplicate is the price of never dropping a batch. After a requeued batch
+   the worker rests before claiming the next, one second and doubling with
+   each failure in a row up to a minute, so an OpenSearch outage costs a log
+   line a minute rather than a loop that claims and fails as fast as Valkey
+   answers. The first batch OpenSearch takes ends the rests.
 
    A batch a worker had claimed when it died stays in that consumer's
    processing list. Each worker container, as it starts, requeues what is

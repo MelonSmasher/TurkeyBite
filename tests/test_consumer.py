@@ -126,6 +126,8 @@ class ConsumerTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.redis = FakeRedis()
         self.queue = ListQueue(self.redis, KEY, 'worker1-01')
+        # The rests a consumer would have served, recorded instead of slept
+        self.rested = []
         self.cluster = Cluster(self)
         # One stand-in client per host, so the fake knows which was asked
         patcher = mock.patch.object(P, 'opensearch_client',
@@ -154,6 +156,7 @@ class ConsumerTest(unittest.TestCase):
                            'browserbeat': {'ignore': {'clients': [], 'users': [],
                                                       'domains': [], 'hosts': []}}})
         # A small timeout, since the fake fails a 0, which in Redis blocks forever
+        kwargs.setdefault('sleep', self.rested.append)
         return Consumer(self.queue, filters, processor, batch_size=kwargs.pop('batch_size', 500),
                         block_seconds=0.01, name='worker1-01', **kwargs)
 
@@ -374,6 +377,61 @@ class ConsumerTest(unittest.TestCase):
             consumer.run()
         self.assertEqual(len(self.waiting()), 1)
         self.assertEqual(self.in_flight(), [])
+
+    # -- resting after a batch OpenSearch did not take --------------------
+
+    def failing_cycles(self, consumer, cycles):
+        """The rest due after each of several cycles that all fail, in seconds."""
+        due = []
+        for _ in range(cycles):
+            before = len(self.rested)
+            self.run_once(consumer)
+            due.append(sum(self.rested[before:]))
+        return due
+
+    def test_a_requeued_batch_is_followed_by_a_rest_that_doubles(self):
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = self.consumer(self.processor(BULK_OFF))
+        self.assertEqual(self.failing_cycles(consumer, 8), [1, 2, 4, 8, 16, 32, 60, 60])
+        # Each cycle claimed the requeued batch again and nothing was lost
+        self.assertEqual(len(self.waiting()), 1)
+
+    def test_without_the_rest_an_outage_is_a_tight_loop(self):
+        # The control: what the rest replaces is a cycle that waits for nothing
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = self.consumer(self.processor(BULK_OFF))
+        consumer.rest = lambda: 0
+        self.assertEqual(self.failing_cycles(consumer, 3), [0, 0, 0])
+
+    def test_a_batch_that_is_taken_ends_the_rests(self):
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = self.consumer(self.processor(BULK_OFF))
+        self.failing_cycles(consumer, 2)
+        self.cluster.answers = {}
+        self.assertEqual(self.failing_cycles(consumer, 1), [0])
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('b.example.com'))
+        self.assertEqual(self.failing_cycles(consumer, 1), [1])
+
+    def test_stop_cuts_a_rest_short(self):
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = None
+
+        def stop_while_resting(seconds):
+            self.rested.append(seconds)
+            consumer.stop()
+        consumer = self.consumer(self.processor(BULK_OFF), sleep=stop_while_resting)
+        self.failing_cycles(consumer, 3)   # due 1, then 2, then 4 seconds
+        self.assertEqual(self.rested, [0.5])
+
+    def test_an_empty_queue_never_rests(self):
+        consumer = self.consumer()
+        self.run_once(consumer)
+        self.assertEqual(self.rested, [])
 
     def test_stop_finishes_the_batch_in_hand_then_exits(self):
         self.push(*[packet(f'{n}.example.com') for n in range(4)])

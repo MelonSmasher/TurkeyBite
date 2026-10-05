@@ -23,6 +23,12 @@ when the batch is replayed, and its syslog copies are sent again. A document
 refused for good, by a mapping error say, is logged and acknowledged, since
 retrying it would requeue it forever.
 
+After a batch is requeued the consumer rests before claiming the next one, one
+second at first and doubling with each failure in a row up to a minute, and a
+batch that is taken ends the rest. Without it an OpenSearch outage turns every
+consumer into a loop that claims, fails and requeues as fast as Valkey answers,
+logging each time. The rest is cut short by stop(), so a restart is not held up.
+
 Delivery is at-least-once. A crash between flush and ack replays that batch, so
 a small number of documents can be indexed twice. Documents are given
 auto-generated ids rather than a content hash, deliberately: two identical DNS
@@ -40,11 +46,17 @@ import time
 from libtb.inlet import describe
 from libtb.processor import DeliveryError
 
+# The rest after a batch OpenSearch did not take: the first, the longest, and
+# the slice it is served in, which is how quickly stop() is honoured during one
+BACKOFF_START = 1.0
+BACKOFF_MAX = 60.0
+BACKOFF_SLICE = 0.5
+
 
 class Consumer(object):
 
     def __init__(self, queue, filters, processor, batch_size=500, block_seconds=1,
-                 name=None, log_events=True):
+                 name=None, log_events=True, sleep=time.sleep):
         # Every consumer writes to the same container stdout, so each line has to
         # identify which one wrote it
         self.name = name or getattr(queue, 'consumer', 'consumer')
@@ -61,6 +73,9 @@ class Consumer(object):
         # removing the only per-event visibility there was. Turn it off with
         # --quiet when the volume is not worth the log lines.
         self.log_events = log_events
+        # Replaceable so tests can see the rests without serving them
+        self.sleep = sleep
+        self.failures = 0
         self.running = True
         self.stats = {'claimed': 0, 'kept': 0, 'dropped': 0, 'unreadable': 0,
                       'indexed': 0, 'requeued': 0, 'batches': 0}
@@ -131,6 +146,33 @@ class Consumer(object):
         self.stats['kept'] += kept
         return len(items)
 
+    def rest(self):
+        """Waits after a batch was requeued, longer each time in a row.
+
+        Returns the length of the rest it was due, whether or not stop() cut it
+        short.
+        """
+        self.failures += 1
+        due = min(BACKOFF_MAX, BACKOFF_START * 2 ** (self.failures - 1))
+        print(f'[{self.name}] resting {due:g}s before the next batch, '
+              f'{self.failures} not indexed in a row', file=sys.stderr)
+        served = 0.0
+        while self.running and served < due:
+            step = min(BACKOFF_SLICE, due - served)
+            self.sleep(step)
+            served += step
+        return due
+
+    def settle(self, items, acked):
+        """Acknowledges a handled batch, or requeues it and rests."""
+        if acked is None:
+            self.queue.requeue(items)
+            self.stats['requeued'] += len(items)
+            self.rest()
+        else:
+            self.queue.ack(acked)
+            self.failures = 0
+
     def run_once(self):
         """One claim, handle, acknowledge cycle. Returns items claimed."""
         items = self.queue.claim(self.batch_size, self.block_seconds)
@@ -138,12 +180,7 @@ class Consumer(object):
             return 0
         self.stats['claimed'] += len(items)
         self.stats['batches'] += 1
-        acked = self.handle_batch(items)
-        if acked is None:
-            self.queue.requeue(items)
-            self.stats['requeued'] += len(items)
-        else:
-            self.queue.ack(acked)
+        self.settle(items, self.handle_batch(items))
         return len(items)
 
     def run(self, report_seconds=60):
@@ -152,11 +189,7 @@ class Consumer(object):
         if stranded:
             print(f'[{self.name}] recovering {len(stranded)} items left in flight '
                   f'by a previous run')
-            acked = self.handle_batch(stranded)
-            if acked is None:
-                self.queue.requeue(stranded)
-            else:
-                self.queue.ack(acked)
+            self.settle(stranded, self.handle_batch(stranded))
 
         last_report = time.monotonic()
         while self.running:
