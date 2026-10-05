@@ -7,6 +7,11 @@ promise the event does not keep. And trimming must never touch a string that
 is not a URL: hostnames, categories, DNS records and page titles have to reach
 the event exactly as they arrived.
 
+A URL with whitespace in it, or before it, must not slip through whole: a
+string that starts as a URL is always cut. And there is one way out of the
+processor, ship_bite, so the documents are captured where the outputs receive
+them, never by replacing ship_bite, which would skip the very step under test.
+
 `urls: full` with the packet kept must behave exactly as events did before
 these settings existed, which is the control for every trimming test here.
 
@@ -26,10 +31,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 
+from libtb import inlet as I
+from libtb import opensearch
 from libtb import privacy as PV
 from libtb import processor as P
 from libtb.consumer import Consumer
-from libtb.inlet import describe
+from libtb.inlet import Inlet, describe
 from libtb.processor import Processor
 
 SEARCH = 'https://alice:hunter2@www.google.com/search?q=symptoms+of+flu&hl=en#results'
@@ -138,12 +145,53 @@ class TrimUrlTest(unittest.TestCase):
     def test_surrounding_whitespace_does_not_hide_a_url(self):
         self.assertEqual(self.trimmed('  https://example.com/?q=1 \n'), 'https://example.com/')
 
+    # Every kind of whitespace, before the URL and inside it. A URL that is
+    # not one unbroken run of characters used to be left whole, query and all
+
+    WHITESPACE = {'space': ' ', 'tab': '\t', 'newline': '\n', 'no-break space': '\u00a0',
+                  'ideographic space': '\u3000', 'zero-width space': '\u200b',
+                  'byte order mark': '\ufeff'}
+
+    def test_whitespace_before_a_url_does_not_hide_it(self):
+        for name, space in self.WHITESPACE.items():
+            url = space + 'https://alice:pw@example.com/a?q=secret#f'
+            self.assertEqual(self.trimmed(url), 'https://example.com/a', name)
+            self.assertEqual(self.host(url), 'https://example.com', name)
+
+    def test_whitespace_inside_a_url_does_not_keep_its_query(self):
+        for name, space in self.WHITESPACE.items():
+            for url in (f'https://example.com/a{space}b?q=secret',
+                        f'https://example.com/a?q=se{space}cret',
+                        f'https://example.com/a{space}?q=secret',
+                        f'https://alice:p{space}w@example.com/a?q=secret'):
+                for mode in (PV.TRIMMED, PV.HOST):
+                    got = PV.trim_url(url, mode)
+                    self.assertNotIn('secret', got, (name, url, mode))
+                    self.assertNotIn('alice', got, (name, url, mode))
+                    self.assertNotEqual(got, url, (name, url, mode))
+            self.assertEqual(self.host(f'https://example.com/a{space}b?q=1'),
+                             'https://example.com', name)
+
+    def test_a_scheme_in_any_case_is_a_url(self):
+        self.assertEqual(self.trimmed('HTTPS://ALICE:PW@EXAMPLE.COM/A?Q=1'),
+                         'HTTPS://EXAMPLE.COM/A')
+        self.assertEqual(self.host('Http://example.com/a?q=1'), 'Http://example.com')
+
+    def test_an_http_url_without_slashes_or_with_backslashes_is_a_url(self):
+        # Browsers accept both, so a recorded URL can arrive either way
+        self.assertEqual(self.trimmed('https:example.com/a?q=1'), 'https:example.com/a')
+        self.assertEqual(self.trimmed('https:\\\\alice:pw@example.com\\a?q=1'),
+                         'https:\\\\example.com\\a')
+        self.assertEqual(self.host('https:\\\\alice:pw@example.com\\a?q=1'),
+                         'https:\\\\example.com')
+
     def test_strings_that_are_not_urls_are_untouched(self):
         for text in ('hello world', 'www.example.com', 'example.com/?q=1', 'cats?dogs#birds',
                      'malicious:quad9', 'v=spf1 include:_spf.example.com ~all',
                      'Search for https://example.com/?q=1 here', 'mailto:alice@example.org',
                      'about:blank', 'symptoms of flu - Google Search', '',
-                     'https://example.com/a b?q=1', '2026-10-04T12:00:00Z', '10.0.0.5'):
+                     'httpbin is a service?', 'http: the protocol', '2026-10-04T12:00:00Z',
+                     '10.0.0.5', 'localhost:8080/a?b'):
             self.assertEqual(self.trimmed(text), text, text)
             self.assertEqual(self.host(text), text, text)
 
@@ -233,18 +281,34 @@ class SettingsTest(unittest.TestCase):
 
 
 class Wiring(object):
-    """A processor whose lookups and outputs are stubbed, shipping to a list."""
+    """A processor whose lookups are stubbed, shipping to a stand-in OpenSearch.
+
+    Documents are taken from the client, where OpenSearch would receive them,
+    so the privacy settings applied inside ship_bite are part of the test.
+    """
 
     def processor(self, privacy=None):
-        config = {'dns': {'lookup_ips': False}, 'domain_index': {'mode': 'index'}}
+        for state in (opensearch._warned, P._opensearch_clients):
+            state.clear()
+        config = {'dns': {'lookup_ips': False}, 'domain_index': {'mode': 'index'},
+                  'elastic': {'enable': True, 'index_prefix': 'tb-index',
+                              'hosts': [{'uri': 'http://opensearch:9200', 'username': 'admin',
+                                         'password': 'Not-the-default.1'}]},
+                  'syslog': {'enable': False}}
         if privacy is not None:
             config['privacy'] = privacy
         processor = Processor(config, {})
         processor.resolve_contexts = lambda searches, **kwargs: (['search'], {})
         processor.resolve_chain = lambda chain: ([], [], [])
-        self.shipped = []
-        processor.ship_bite = self.shipped.append
+        self.client = mock.Mock()
+        patcher = mock.patch.object(P, 'opensearch_client', return_value=self.client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return processor
+
+    @property
+    def shipped(self):
+        return [call.kwargs['body'] for call in self.client.index.call_args_list]
 
 
 class BrowserWiringTest(Wiring, unittest.TestCase):
@@ -320,6 +384,13 @@ class BrowserWiringTest(Wiring, unittest.TestCase):
         _, packet = self.ship({'urls': 'host'})
         self.assertEqual(packet['data']['event']['data']['entry']['url'], SEARCH)
 
+    def test_a_browser_event_is_searched_in_full(self):
+        # The control for the DNS test above: the same stray URL is trimmed
+        packet = browser_packet()
+        packet['notes'] = ['https://example.com/?looked=yes']
+        doc, _ = self.ship(packet=packet)
+        self.assertEqual(doc['packet']['notes'], ['https://example.com/'])
+
 
 class DnsWiringTest(Wiring, unittest.TestCase):
     """What a DNS event ships. A lookup carries no URL, so trimming changes nothing."""
@@ -340,13 +411,30 @@ class DnsWiringTest(Wiring, unittest.TestCase):
         self.assertEqual(doc['bite']['cname_chain'], ['edge.example.net'])
 
     def test_a_url_in_a_record_is_trimmed(self):
-        answers = [{'type': 'TXT', 'data': 'https://verify.example.com/?token=abc'}]
-        doc, _ = self.ship(packet=dns_packet(answers))
-        self.assertEqual(doc['packet']['dns']['answers'][0]['data'],
-                         'https://verify.example.com/')
+        for section in PV.DNS_RECORD_SECTIONS:
+            packet = dns_packet()
+            packet['dns'][section] = [{'type': 'TXT',
+                                       'data': 'https://verify.example.com/?token=abc'}]
+            self.processor().process_dns_packet(packet)
+            doc = self.shipped[-1]
+            self.assertEqual(doc['packet']['dns'][section][0]['data'],
+                             'https://verify.example.com/', section)
+
+    def test_only_the_records_are_looked_at(self):
+        # Packetbeat writes no URL anywhere else, so a DNS event is not
+        # searched string by string; the browser test below is the control
+        packet = dns_packet()
+        packet['notes'] = ['https://example.com/?looked=no']
+        doc, _ = self.ship(packet=packet)
+        self.assertEqual(doc['packet']['notes'], ['https://example.com/?looked=no'])
+
+    def test_a_dns_event_with_nothing_to_trim_is_not_copied(self):
+        doc, packet = self.ship()
+        self.assertIs(doc['packet'], packet)
 
     def test_full_ships_the_packet_that_arrived(self):
-        doc, packet = self.ship({'urls': 'full'})
+        packet = dns_packet([{'type': 'TXT', 'data': 'https://verify.example.com/?token=abc'}])
+        doc, _ = self.ship({'urls': 'full'}, packet=packet)
         self.assertIs(doc['packet'], packet)
 
     def test_packet_none_leaves_the_packet_off(self):
@@ -360,15 +448,30 @@ class QueuedBeforeUpgradeTest(Wiring, unittest.TestCase):
 
     def test_it_is_processed_with_the_defaults_rather_than_failed(self):
         import pickle
-        processor = Processor({'dns': {'lookup_ips': False},
-                               'domain_index': {'mode': 'index'}}, {})
-        del processor._privacy
+        processor = self.processor()
+        # The stubbed lookups cannot be pickled, and a real job carries none
+        del processor.resolve_contexts, processor.resolve_chain, processor._privacy
         processor = pickle.loads(pickle.dumps(processor))
-        self.shipped = []
-        processor.ship_bite = self.shipped.append
         processor.resolve_contexts = lambda searches, **kwargs: ([], {})
         processor.process_browser_history(browser_packet())
         self.assertEqual(self.shipped[0]['bite']['url'], 'https://www.google.com/search')
+
+
+class ChokePointTest(Wiring, unittest.TestCase):
+    """ship_bite is the only way out, so a new event type cannot skip the settings."""
+
+    def test_an_event_of_a_type_nobody_wrote_yet_is_trimmed(self):
+        processor = self.processor()
+        processor.ship_bite({'bite': {'type': 'http', 'url': SEARCH},
+                             'packet': {'type': 'http', 'url': {'full': SEARCH}}})
+        doc = self.shipped[0]
+        self.assertEqual(doc['bite']['url'], 'https://www.google.com/search')
+        self.assertEqual(doc['packet']['url']['full'], 'https://www.google.com/search')
+
+    def test_packet_none_holds_for_it_too(self):
+        processor = self.processor({'packet': 'none'})
+        processor.ship_bite({'bite': {'type': 'http'}, 'packet': {'type': 'http'}})
+        self.assertNotIn('packet', self.shipped[0])
 
 
 class OutputsTest(unittest.TestCase):
@@ -421,6 +524,11 @@ class LogLineTest(Wiring, unittest.TestCase):
         self.assertIn(': https://www.google.com - ', describe(packet, 'Queued', PV.HOST))
         self.assertIn(SEARCH, describe(packet, 'Queued', PV.FULL))
 
+    def test_describe_fails_closed_when_not_told(self):
+        line = describe(browser_packet(), 'Queued')
+        self.assertIn('https://www.google.com/search', line)
+        self.assertNotIn('q=symptoms', line)
+
     def consume(self, privacy=None):
         processor = self.processor(privacy)
         filters = mock.Mock(should_process=mock.Mock(return_value=True))
@@ -438,6 +546,70 @@ class LogLineTest(Wiring, unittest.TestCase):
     def test_with_full_urls_the_log_line_is_as_before(self):
         # The control for the test above
         self.assertIn(SEARCH, self.consume({'urls': 'full'}))
+
+
+class FakeQueue(object):
+    """Stands in for rq.Queue and keeps what was enqueued."""
+
+    def __init__(self, connection=None):
+        self.jobs = []
+        FakeQueue.last = self
+
+    def enqueue(self, func, *args, **kwargs):
+        self.jobs.append((func, args, kwargs))
+
+
+class FakeSubscription(object):
+
+    def __init__(self, payloads):
+        self.payloads = payloads
+
+    def subscribe(self, channel):
+        pass
+
+    def listen(self):
+        for payload in self.payloads:
+            yield {'type': 'message', 'data': payload}
+
+
+class InletTest(Wiring, unittest.TestCase):
+    """Under the rq pipeline an event waits in Valkey as a job, so it is trimmed first."""
+
+    def enqueue(self, packet, privacy=None):
+        processor = self.processor(privacy)
+        redis = mock.Mock()
+        redis.pubsub.return_value = FakeSubscription([json.dumps(packet).encode()])
+        filters = mock.Mock(should_process=mock.Mock(return_value=True))
+        with mock.patch.object(I, 'Redis', return_value=redis), \
+                mock.patch.object(I, 'Queue', FakeQueue), redirect_stdout(io.StringIO()):
+            Inlet({'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'x',
+                   'channel': 'turkeybite'}, filters, processor).open()
+        self.assertEqual(len(FakeQueue.last.jobs), 1)
+        return FakeQueue.last.jobs[0]
+
+    def test_the_queued_event_is_trimmed(self):
+        _, (queued,), _ = self.enqueue(browser_packet())
+        entry = queued['data']['event']['data']['entry']
+        self.assertEqual(entry['url'], 'https://www.google.com/search')
+        self.assertEqual(entry['url_data']['RawQuery'], '')
+        self.assertNotIn('hunter2', json.dumps(queued))
+
+    def test_the_host_the_worker_reads_survives_it(self):
+        _, (queued,), _ = self.enqueue(browser_packet(), {'urls': 'host'})
+        processor = self.processor()
+        processor.process_browser_history(queued)
+        self.assertEqual(self.shipped[0]['bite']['requested'], ['www.google.com'])
+
+    def test_with_full_urls_the_event_is_queued_as_it_came(self):
+        # The control for the trimming above
+        _, (queued,), _ = self.enqueue(browser_packet(), {'urls': 'full'})
+        self.assertEqual(queued, browser_packet())
+
+    def test_a_failed_job_is_not_kept_for_a_year(self):
+        # RQ keeps a failed job, event and all, for a year unless told otherwise
+        _, _, kwargs = self.enqueue(browser_packet())
+        self.assertEqual(kwargs['failure_ttl'], 24 * 60 * 60)
+        self.assertEqual(kwargs['result_ttl'], 600)
 
 
 if __name__ == '__main__':

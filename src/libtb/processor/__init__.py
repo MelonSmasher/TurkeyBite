@@ -802,9 +802,8 @@ class Processor(object):
             'packet': data
         }
 
-        # Ship the turkey bite to elastic, with only as much of every URL and
-        # of the packet as processor.privacy keeps
-        self.ship_bite(redact(bite, self.privacy()))
+        # Ship the turkey bite to elastic
+        self.ship_bite(bite)
 
     def process_browser_history(self, data):
         # Related context from lists
@@ -912,9 +911,7 @@ class Processor(object):
             },
             'packet': data
         }
-        # bite.url and the packet's copies of it are trimmed here, before any
-        # output sees them, so OpenSearch and syslog store the same thing
-        self.ship_bite(redact(bite, self.privacy()))
+        self.ship_bite(bite)
 
     def bulk_settings(self):
         """Bulk buffering settings. Off by default, deliberately.
@@ -977,6 +974,13 @@ class Processor(object):
         return 0
 
     def ship_bite(self, bite):
+        """Sends one event to every enabled output.
+
+        The one place an event leaves the processor, so it is also the one
+        place processor.privacy is applied: OpenSearch and syslog get the same
+        document, and an event type added later cannot skip it.
+        """
+        bite = redact(bite, self.privacy())
         if self.config['elastic']['enable']:
             bulk_enabled, size, _ = self.bulk_settings()
             if bulk_enabled:

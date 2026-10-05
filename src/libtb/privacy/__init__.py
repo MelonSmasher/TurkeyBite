@@ -20,13 +20,23 @@ raw packet off the event entirely. The packet holds everything the beat sent,
 including the page title, which is not a URL and is kept by `trimmed`, and
 which for a search results page is usually the search.
 
-A string counts as a URL only when the whole of it is one: a scheme, ://, and
-no whitespace, as browsers record them. A sentence that happens to contain a
-URL is left as it is, as is any other string, so trimming can only ever remove
-the parts of a URL named above. Browserbeat's url_data is Go's net/url.URL,
-which it serialises field by field, so there the same parts are blanked in the
-form Go gives a URL without them: RawQuery, Fragment and RawFragment empty,
-ForceQuery false and User null.
+A string counts as a URL when it starts, after any leading whitespace, with an
+http or https scheme in any case, or with any other scheme followed by //.
+Wrapper schemes such as view-source: and blob: may come first. Trimming fails
+closed: whatever follows the scheme is cut at the first ? or #, whatever
+precedes the last @ of the authority is dropped, and whitespace anywhere in the
+string changes none of that, so a URL with a space, a tab or a no-break space in
+it cannot slip through whole. A string that does not start that way is left
+exactly as it is, including a sentence that mentions a URL part way through.
+Browserbeat's url_data is Go's net/url.URL, which it serialises field by field,
+so there the same parts are blanked in the form Go gives a URL without them:
+RawQuery, Fragment and RawFragment empty, ForceQuery false and User null.
+
+Where to look depends on the event. A browser history event is URLs throughout,
+so all of it is searched. A DNS event has none in its own fields: the only
+strings in it that can be a URL are the data of its resource records, where a
+TXT record may carry one, so only those are looked at rather than every string
+in every lookup. An event of any other type is searched in full.
 
 Unknown keys or values stop the worker at start, like the evidence settings,
 so a typo cannot quietly leave full URLs on every event.
@@ -43,10 +53,17 @@ PACKET_MODES = (KEEP, NONE)
 Settings = namedtuple('Settings', 'urls packet')
 DEFAULT = Settings(TRIMMED, KEEP)
 
-# One or more schemes, as RFC 3986 spells them, then //. More than one allows
-# for wrappers such as view-source:https:// and blob:https://, which are kept as
-# they are while the URL they wrap is trimmed.
-_URL = re.compile(r'((?:[A-Za-z][A-Za-z0-9+.\-]*:)+//)(\S*)')
+# The start of a URL. Leading whitespace is any Unicode whitespace, plus the
+# invisible format characters copying and pasting brings along. Then any
+# wrapper schemes, such as view-source: or blob:, kept as they are, and either
+# http or https in any case, with or without slashes, or another scheme that is
+# followed by // or by the backslashes browsers read as slashes.
+_URL_START = re.compile(
+    r'[\s\u200b\u200c\u200d\u2060\ufeff]*'
+    r'(?P<scheme>(?:[A-Za-z][A-Za-z0-9+.\-]*:)*?'
+    r'(?:https?:|[A-Za-z][A-Za-z0-9+.\-]*:(?=[/\\]{2})))'
+    r'(?P<slashes>[/\\]*)',
+    re.IGNORECASE)
 
 # url_data fields, blanked to what Go's url.URL holds when the URL has no such part
 _TRIMMED_FIELDS = (('User', None), ('RawQuery', ''), ('ForceQuery', False),
@@ -85,28 +102,31 @@ def settings(value=None):
 def trim_url(value, mode):
     """A URL with the parts `mode` drops taken out. Anything else unchanged.
 
-    Done by hand rather than with urllib, which raises on some malformed URLs,
-    such as an unclosed IPv6 bracket, and would leave them whole. Here the
-    authority ends at the first /, ? or #, as RFC 3986 has it, so a malformed
-    host still loses its query.
+    Fails closed: a string that starts as a URL is always cut, whatever else
+    is in it, so whitespace, a malformed host or an unclosed IPv6 bracket
+    cannot leave it whole. That is why this is done by hand: urllib raises on
+    some malformed URLs, and a regular expression for a whole URL fails to
+    match on others. The authority ends at the first /, ?, # or backslash, as
+    browsers read it, the user:password@ ends at its last @, and the path ends
+    at the first ? or #. Leading and trailing whitespace is dropped.
     """
     if mode == FULL or not isinstance(value, str):
         return value
-    match = _URL.fullmatch(value.strip())
+    match = _URL_START.match(value)
     if not match:
         return value
-    schemes, rest = match.groups()
+    rest = value[match.end():]
     end = len(rest)
-    for mark in '/?#':
+    for mark in '/\\?#':
         at = rest.find(mark)
         if at != -1:
             end = min(end, at)
-    # user:password@ ends at the last @ before the host
+    start = match.group('scheme') + match.group('slashes')
     host = rest[:end].rpartition('@')[2]
     if mode == HOST:
-        return schemes + host
+        return (start + host).rstrip()
     path = re.split(r'[?#]', rest[end:], maxsplit=1)[0]
-    return schemes + host + path
+    return (start + host + path).rstrip()
 
 
 def _url_struct(value):
@@ -136,12 +156,67 @@ def scrub(value, mode):
     return value
 
 
+# Where a DNS event can hold a URL: the data of its resource records, since a
+# TXT record may carry one. Packetbeat writes nothing else that can.
+DNS_RECORD_SECTIONS = ('answers', 'authorities', 'additionals')
+
+
+def _dns_packet(packet, mode):
+    """A Packetbeat DNS event with the URLs in its resource records trimmed.
+
+    Copies only the dicts and lists on the way to a record, so the rest of the
+    event is shared with the input rather than rebuilt.
+    """
+    dns = packet.get('dns')
+    if not isinstance(dns, dict):
+        return packet
+    changed = {}
+    for section in DNS_RECORD_SECTIONS:
+        records = dns.get(section)
+        if not isinstance(records, list):
+            continue
+        trimmed = []
+        for record in records:
+            if isinstance(record, dict) and isinstance(record.get('data'), str):
+                data = trim_url(record['data'], mode)
+                if data != record['data']:
+                    record = dict(record, data=data)
+            trimmed.append(record)
+        if any(a is not b for a, b in zip(trimmed, records)):
+            changed[section] = trimmed
+    if not changed:
+        return packet
+    return dict(packet, dns=dict(dns, **changed))
+
+
+def redact_packet(packet, mode):
+    """A beat event with every URL it can hold trimmed to `mode`.
+
+    The one decision about where to look, see the module docstring, shared by
+    the worker and by the inlet, which trims an event before it is queued.
+    """
+    if mode == FULL or not isinstance(packet, dict):
+        return packet
+    if packet.get('type') == 'dns':
+        return _dns_packet(packet, mode)
+    return scrub(packet, mode)
+
+
 def redact(document, privacy):
     """The document an event ships, with the privacy settings applied.
 
     With urls full and the packet kept this is the document itself, exactly
-    as before these settings existed.
+    as before these settings existed. A DNS event's own fields hold names and
+    addresses and never a URL, so only its packet is looked at; any other
+    event is searched in full.
     """
     if privacy.packet == NONE and 'packet' in document:
         document = {key: value for key, value in document.items() if key != 'packet'}
+    if privacy.urls == FULL:
+        return document
+    bite = document.get('bite')
+    if isinstance(bite, dict) and bite.get('type') == 'dns':
+        if 'packet' in document:
+            document = dict(document, packet=redact_packet(document['packet'], privacy.urls))
+        return document
     return scrub(document, privacy.urls)
