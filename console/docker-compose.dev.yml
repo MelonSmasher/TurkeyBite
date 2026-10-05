@@ -1,0 +1,48 @@
+# Services for developing the console on one machine: its Postgres, and a
+# throwaway single-node OpenSearch to point it at, filled by
+# `python -m tbconsole demo seed`. Not for production: OpenSearch runs here
+# with its security plugin off, which a real TurkeyBite cluster never should.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Ports are unusual on purpose, so they do not collide with a real
+# TurkeyBite or another Postgres on the same machine.
+name: tbconsole-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tbconsole
+      POSTGRES_PASSWORD: tbconsole-dev
+      POSTGRES_DB: tbconsole
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tbconsole"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opensearch:
+    image: opensearchproject/opensearch:3
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+    ports:
+      - "127.0.0.1:59200:9200"
+    volumes:
+      - osdata:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
+  osdata:

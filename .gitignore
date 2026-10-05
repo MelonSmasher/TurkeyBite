@@ -298,3 +298,10 @@ dmypy.json
 
 # Test virtualenv
 .venv/
+
+# TurkeyBite Console: dependencies and build output
+console/frontend/node_modules/
+console/frontend/dist/
+console/backend/tbconsole/static/
+console/console.env
+console/certs/

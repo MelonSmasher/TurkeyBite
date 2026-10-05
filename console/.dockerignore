@@ -1,0 +1,7 @@
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+backend/tbconsole/static
+frontend/dist
+docs
+*.md

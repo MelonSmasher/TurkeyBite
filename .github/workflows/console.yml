@@ -1,0 +1,93 @@
+name: Console
+
+# The console in console/ has its own tests: the API against a real Postgres,
+# since it relies on what only Postgres does, and the app's type check, unit
+# tests and build. They run only when something under console/ changes.
+on:
+  push:
+    branches: [master]
+    paths: ['console/**', '.github/workflows/console.yml']
+  pull_request:
+    paths: ['console/**', '.github/workflows/console.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: console-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: API (Python 3.13, Postgres 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tbconsole
+          POSTGRES_PASSWORD: tbconsole-ci
+          POSTGRES_DB: tbconsole
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U tbconsole" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TBCONSOLE_TEST_DATABASE_URL: postgresql+asyncpg://tbconsole:tbconsole-ci@127.0.0.1:5432/tbconsole_test
+      TBCONSOLE_DATABASE_URL: postgresql+asyncpg://tbconsole:tbconsole-ci@127.0.0.1:5432/tbconsole
+      TBCONSOLE_SECRET_KEY: ci-secret-key-that-is-long-enough-0123456789
+    defaults:
+      run:
+        working-directory: console/backend
+    steps:
+      # Pinned to commits, since a tag can be moved to point at other code
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: console/backend/requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Migrations match the models
+        # Upgrades an empty database, then asks Alembic whether the models
+        # would generate anything more: a model change without a migration fails
+        run: python -m tbconsole migrate && python -m alembic check
+
+  frontend:
+    name: App (Node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: console/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: console/frontend/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npx vite build --outDir dist
