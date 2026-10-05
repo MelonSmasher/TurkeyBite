@@ -157,4 +157,10 @@ echo "OpenSearch is available! Creating/updating index template..."
     }'
 
 echo "✅ Index template created successfully!"
+
+# The retention policy, see libtb/retention. Python rather than curl so the
+# policy and the decision to create, update or remove it can be tested.
+echo "Applying the retention policy..."
+python turkeybite retention --url "$OPENSEARCH_URL"
+
 echo "OpenSearch template setup complete!"

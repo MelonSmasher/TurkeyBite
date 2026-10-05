@@ -174,3 +174,32 @@ def check_hosts(elastic, environ=None, log=_warn):
         if unverified(host) and key not in _warned:
             _warned.add(key)
             log(unverified_warning(host))
+
+
+def librarian_host(environ=None, url=None):
+    """The librarian's OpenSearch host, from the variables its script reads.
+
+    The same variables and defaults as setup-opensearch-template.sh, so what
+    the librarian's Python sets up lands on the cluster its index template
+    went to. `url` overrides OPENSEARCH_HOST. Raises ValueError when there is
+    no password, when it is the default without the escape hatch, or when
+    OPENSEARCH_CA_CERT is not a file.
+    """
+    environ = os.environ if environ is None else environ
+    password = environ.get('OPENSEARCH_PASSWORD') or ''
+    if not password:
+        raise ValueError('OPENSEARCH_PASSWORD is not set. Set it in .env to the OpenSearch '
+                         'admin password and recreate the librarian.')
+    ca_certs = environ.get('OPENSEARCH_CA_CERT') or None
+    host = {
+        'uri': url or f'https://{environ.get("OPENSEARCH_HOST") or "opensearch"}:9200',
+        'username': environ.get('OPENSEARCH_USERNAME') or 'admin',
+        'password': password,
+        # Verified exactly when the script verifies: when it has a CA to do it with
+        'verify_certs': ca_certs is not None,
+    }
+    if ca_certs:
+        host['ca_certs'] = ca_certs
+    tls_settings(host, 'OPENSEARCH_CA_CERT')
+    check_password(password, 'OPENSEARCH_PASSWORD', environ)
+    return host

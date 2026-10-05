@@ -271,10 +271,11 @@ class DefaultPasswordTest(Isolated):
 
 
 class Librarian(object):
-    """Runs the librarian's OpenSearch script against a fake curl.
+    """Runs the librarian's OpenSearch script against a fake curl and python.
 
-    The fake answers 200 to everything and writes each call's arguments to a
-    log, one line per call, so a test can see which TLS option every call used.
+    The fake curl answers 200 to everything. Both write each call's arguments to
+    a log, one line per call, so a test can see which TLS option every request
+    used and whether the retention step ran.
     """
 
     def __init__(self, test):
@@ -285,8 +286,9 @@ class Librarian(object):
         self.log = os.path.join(self.root, 'calls.log')
         # The template body spans lines, so newlines are folded to keep one
         # call per line
-        self.fake('curl', 'echo "$*" | tr "\\n" " " >> "$FAKE_LOG"\n'
+        self.fake('curl', 'echo "curl $*" | tr "\\n" " " >> "$FAKE_LOG"\n'
                           'echo >> "$FAKE_LOG"\necho 200\n')
+        self.fake('python', 'echo "python $*" >> "$FAKE_LOG"\n')
 
     def fake(self, name, body):
         path = os.path.join(self.bin, name)
@@ -307,7 +309,8 @@ class Librarian(object):
         if os.path.exists(self.log):
             with open(self.log) as fh:
                 calls = fh.read().splitlines()
-        return result, calls
+        self.python = [call for call in calls if call.startswith('python ')]
+        return result, [call for call in calls if call.startswith('curl ')]
 
 
 class LibrarianTlsTest(unittest.TestCase):
@@ -351,14 +354,14 @@ class LibrarianPasswordTest(unittest.TestCase):
     def test_no_password_stops_it_before_any_call(self):
         result, calls = self.librarian.run(OPENSEARCH_PASSWORD=None)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, [])
+        self.assertEqual((calls, self.librarian.python), ([], []))
         self.assertIn('OPENSEARCH_PASSWORD is not set', result.stderr)
 
     def test_the_default_stops_it_before_any_call(self):
         result, calls = self.librarian.run(OPENSEARCH_PASSWORD='Changeit12345!',
                                            TURKEYBITE_ALLOW_DEFAULT_PASSWORD=None)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, [])
+        self.assertEqual((calls, self.librarian.python), ([], []))
         self.assertIn('Refusing to run', result.stderr)
 
     def test_the_escape_hatch_lets_it_run_loudly(self):
@@ -373,6 +376,25 @@ class LibrarianPasswordTest(unittest.TestCase):
         result, calls = self.librarian.run(OPENSEARCH_PASSWORD='Not-the-default.1')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('-u admin:Not-the-default.1', calls[0])
+
+
+class LibrarianRetentionTest(unittest.TestCase):
+    """The script applies the retention policy, through the tested Python."""
+
+    def test_the_policy_follows_the_template_to_the_same_cluster(self):
+        librarian = Librarian(self)
+        result, calls = librarian.run(OPENSEARCH_HOST='search.example.edu')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('_index_template', calls[-1])
+        self.assertEqual(librarian.python,
+                         ['python turkeybite retention --url https://search.example.edu:9200'])
+
+    def test_a_failed_retention_step_fails_the_script(self):
+        librarian = Librarian(self)
+        librarian.fake('python', 'exit 1\n')
+        result, _ = librarian.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('setup complete', result.stdout)
 
 
 def load_setup():

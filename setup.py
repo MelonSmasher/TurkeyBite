@@ -11,6 +11,7 @@ It generates appropriate docker-compose.yml and configuration files based on use
 """
 
 import os
+import re
 import sys
 import yaml
 import getpass
@@ -76,6 +77,18 @@ def generate_opensearch_password(length: int = 32) -> str:
     return ''.join(chars)
 
 
+# Days OpenSearch keeps each daily index, unless the operator says otherwise.
+# The same default as libtb.retention.DEFAULT_DAYS, which a test checks.
+DEFAULT_RETENTION_DAYS = 90
+
+
+def retention_days_problem(answer: str) -> Optional[str]:
+    """Why an answer to the retention prompt is refused, or None"""
+    if not re.fullmatch(r"[0-9]+", answer.strip()):
+        return "Enter a whole number of days, or 0 to keep indices forever."
+    return None
+
+
 # Custom YAML representer for None values in volume definitions
 def represent_none(self, _):
     return self.represent_scalar('tag:yaml.org,2002:null', '')
@@ -107,6 +120,7 @@ class TurkeyBiteSetup:
         self.opensearch_host = "opensearch"
         # Chosen or generated in setup_opensearch_password; there is no default
         self.opensearch_admin_password = None
+        self.retention_days = DEFAULT_RETENTION_DAYS
         self.enable_dns_lookups = False
         self.dns_resolver = "172.172.0.100"  # Default resolver (Bind9 container)
         self.use_opensearch = True  # Default to using OpenSearch
@@ -362,7 +376,8 @@ class TurkeyBiteSetup:
             ],
             'librarian': [
                 "TURKEYBITE_HOSTS_INTERVAL_MIN=720\n",
-                "TURKEYBITE_IGNORELIST_INTERVAL_MIN=5\n"
+                "TURKEYBITE_IGNORELIST_INTERVAL_MIN=5\n",
+                f"TURKEYBITE_RETENTION_DAYS={self.retention_days}\n"
             ],
             'worker': [
                 "TURKEYBITE_WORKER_PROCS=2\n"
@@ -831,6 +846,31 @@ class TurkeyBiteSetup:
                                 "start if it finds it weak.")
             break
 
+    def setup_retention(self):
+        """Ask how long OpenSearch keeps TurkeyBite's indices"""
+        self.print_step("Data Retention")
+        self.print_info("Every TurkeyBite index holds per-user browsing data. The librarian "
+                        "has OpenSearch delete each daily index once it is older than this "
+                        "many days. 0 keeps them forever.")
+        while True:
+            answer = self.prompt(f"Delete indices older than how many days? "
+                                 f"(default: {DEFAULT_RETENTION_DAYS})")
+            if not answer.strip():
+                self.retention_days = DEFAULT_RETENTION_DAYS
+                break
+            problem = retention_days_problem(answer)
+            if problem:
+                self.print_error(problem)
+                continue
+            self.retention_days = int(answer.strip())
+            break
+        if self.retention_days == 0:
+            self.print_info("Indices will be kept forever. Set TURKEYBITE_RETENTION_DAYS in "
+                            ".env to change that.")
+        else:
+            self.print_success(f"Indices will be deleted {self.retention_days} days after "
+                               "they are created.")
+
     def prompt_for_client_lookups(self):
         """Ask if client IP lookups should be enabled"""
         self.print_step("Client IP Lookups Configuration")
@@ -1006,6 +1046,10 @@ class TurkeyBiteSetup:
         # events are sent to it
         if self.use_opensearch or "opensearch" in self.components:
             self.setup_opensearch_password()
+
+        # The librarian is what applies the retention policy
+        if self.use_opensearch and "librarian" in self.components:
+            self.setup_retention()
         
         # Setup the main configuration files
         self.setup_config()

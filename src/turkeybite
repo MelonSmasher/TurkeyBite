@@ -128,6 +128,63 @@ def index_sync():
     sync_domain_index()
 
 
+@cli.command('retention')
+@click.option('--attach-existing', is_flag=True, default=False,
+              help='Also attach the policy to the TurkeyBite indices that existed before it. '
+                   'Those already older than TURKEYBITE_RETENTION_DAYS are deleted within '
+                   'minutes, irreversibly.')
+@click.option('--dry-run', is_flag=True, default=False,
+              help='Say what would be done, listing the indices --attach-existing would '
+                   'attach, and change nothing.')
+@click.option('--url', default=None,
+              help='OpenSearch URL. Defaults to https://$OPENSEARCH_HOST:9200, as the '
+                   'librarian uses.')
+@click.option('--prefix', default=None,
+              help='Index prefix. Defaults to processor.elastic.index_prefix in config.yaml.')
+def retention(attach_existing, dry_run, url, prefix):
+    """Have OpenSearch delete TurkeyBite indices older than TURKEYBITE_RETENTION_DAYS.
+
+    Creates or updates the ISM policy that does it, 90 days unless the variable
+    says otherwise, and 0 keeps indices forever. The librarian runs this at
+    every start. Indices that existed before the policy are left alone unless
+    --attach-existing is given; list them first with:
+
+    \b
+        docker compose exec turkeybite-librarian python turkeybite retention --attach-existing --dry-run
+
+    Connects with OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD and
+    OPENSEARCH_CA_CERT, as the librarian's script does.
+    """
+    import os
+    import opensearchpy
+    from libtb import retention as R
+    from libtb.opensearch import client_kwargs, librarian_host, unverified, unverified_warning
+
+    try:
+        days = R.retention_days(os.environ.get(R.DAYS_ENV))
+        host = librarian_host(url=url)
+        if prefix is None:
+            elastic = (read_config().get('processor') or {}).get('elastic') or {}
+            prefix = elastic.get('index_prefix') or 'tb-index'
+        R.index_pattern(prefix)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if unverified(host):
+        click.echo(unverified_warning(host), err=True)
+
+    client = opensearchpy.OpenSearch(**client_kwargs(host))
+    cluster = R.Cluster(client.transport.perform_request, dry_run=dry_run, log=click.echo)
+    try:
+        if attach_existing:
+            R.attach_existing(cluster, days, prefix, log=click.echo)
+        else:
+            R.ensure(cluster, days, prefix, log=click.echo)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    except opensearchpy.exceptions.OpenSearchException as e:
+        raise click.ClickException(f'OpenSearch refused the retention change: {e}')
+
+
 @cli.command('audit')
 @click.argument('reference', type=click.Path(exists=True, dir_okay=False))
 @click.option('--top', default=10000, show_default=True,

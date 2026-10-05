@@ -52,6 +52,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 * **The default OpenSearch password is refused.** If your OpenSearch admin password is still `Changeit12345!`, the password TurkeyBite used to ship with, the core and the workers refuse to start and the librarian refuses to set up OpenSearch. Change it first, as [Changing the OpenSearch admin password](#changing-the-opensearch-admin-password) describes.
 * **The librarian needs `OPENSEARCH_PASSWORD`.** It used to fall back to the default password when the variable was missing, which a `.env` written from `example.env` rather than by `setup.sh` relied on. Set `OPENSEARCH_PASSWORD` in `.env` to the admin password.
+* **TurkeyBite indices are now deleted after 90 days.** At start the librarian creates an OpenSearch retention policy, and every daily index created from then on is deleted 90 days after it is created. Set `TURKEYBITE_RETENTION_DAYS` to choose another period, or `0` to keep indices forever. Indices from before the upgrade are kept until you decide otherwise; see [Data retention](#data-retention).
 * **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
 
 `docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build`.
@@ -116,6 +117,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    TURKEYBITE_WORKER_PROCS=2                    # Number of worker processes
    TURKEYBITE_HOSTS_INTERVAL_MIN=720            # Host list refresh interval (minutes)
    TURKEYBITE_IGNORELIST_INTERVAL_MIN=5         # Ignorelist refresh interval (minutes)
+   TURKEYBITE_RETENTION_DAYS=90                 # Days before OpenSearch deletes an index, 0 keeps them
    ```
    
    **Application Configuration** in `config.yaml`:
@@ -239,6 +241,35 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 ## Security and privacy
 
 Every event TurkeyBite indexes says who looked up or visited what, so the index is a record of people's browsing. This section covers who can reach it and how it travels.
+
+### Data retention
+
+Each day's events go into an index of their own, `tb-index-YYYY-MM-DD`, where the prefix is `processor.elastic.index_prefix`. Nothing used to delete them. The librarian now keeps an OpenSearch Index State Management (ISM) policy, `turkeybite-retention`, that deletes each TurkeyBite index once it is older than `TURKEYBITE_RETENTION_DAYS`, 90 days by default.
+
+* **What is deleted.** Whole indices matching `<prefix>-*`, with every event in them, DNS and browser history alike. Nothing else.
+* **When.** OpenSearch's own ISM job checks each index the policy manages every few minutes, 5 by default, and deletes it once it is older than the period. Its age counts from when OpenSearch created it, which for a daily index is its day. This does not depend on any TurkeyBite container running.
+* **Which indices.** The policy carries an ISM template, so OpenSearch attaches it to each new TurkeyBite index as the index is created. Indices that existed before the policy are not attached; see below.
+* **Changing the period.** Set `TURKEYBITE_RETENTION_DAYS` in `.env`, make sure the `turkeybite-librarian` service passes it in `docker-compose.yml`, and recreate the librarian with `docker compose up -d turkeybite-librarian`. At start the librarian updates the policy and moves the indices it already manages onto the new period, so a longer period protects them too; a shorter one deletes those already older than it at ISM's next check. `setup.sh` asks for the period. A value that is not a whole number of days stops the librarian's OpenSearch setup with an error rather than guessing.
+* **Keeping everything.** `0` keeps indices forever. The librarian then takes its policy off the indices it manages and deletes it, and says loudly at every start that nothing is being deleted.
+* **The librarian owns the policy.** It rewrites `turkeybite-retention` at start whenever the policy differs from the period, so change the period through the variable rather than in Dashboards. A policy of your own belongs under another name: the librarian leaves alone any index another policy manages.
+
+**Existing indices are kept until you decide.** An upgrade does not delete history. OpenSearch attaches a policy's template only to indices created after it, and the librarian never attaches the policy to indices you already have. At every start it logs how many TurkeyBite indices the policy does not cover, and how many of those are already older than the period. To bring them under it, list them, then attach:
+
+```bash
+docker compose exec turkeybite-librarian python turkeybite retention --attach-existing --dry-run
+docker compose exec turkeybite-librarian python turkeybite retention --attach-existing
+```
+
+The second command is the one that deletes. Every index it attaches that is older than the period is gone within minutes, and there is no undo, so take a snapshot first if you may want them back. Only indices named `<prefix>-YYYY-MM-DD` that no ISM policy manages are attached.
+
+**Checking it.** In OpenSearch Dashboards, Index Management lists the policy and the indices it manages. From Dev Tools:
+
+```
+GET _plugins/_ism/policies/turkeybite-retention
+GET _plugins/_ism/explain/tb-index-*
+```
+
+The first shows the period as `min_index_age`. In the second, each index the policy manages shows `"policy_id": "turkeybite-retention"`, and each no policy manages shows `"index.plugins.index_state_management.policy_id": null`. An index just attached takes a few minutes to show its state.
 
 ### Changing the OpenSearch admin password
 
