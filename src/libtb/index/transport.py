@@ -16,7 +16,12 @@ Layout in Valkey:
 
 Chunk keys carry the generation, so publishing a new generation never overwrites
 the one workers are currently reading. The manifest flips last, and the previous
-generation is deleted only after that.
+generation is deleted only after that, so a worker that reads the manifest while
+a publish is under way still finds every chunk it names. A fetch that started on
+the old generation can still lose it, though: a publish that completes during
+the download deletes the old chunks behind it. That fetch fails safe, as any
+fetch with a missing chunk does, leaving the worker's copy as it was, and the
+next sync downloads the new generation.
 """
 
 import hashlib
@@ -37,8 +42,10 @@ def publish(redis, path, built_at, chunk_bytes=CHUNK_BYTES):
     """Uploads an index file, then flips the manifest to point at it.
 
     Returns the manifest that was written. Order matters: chunks first, manifest
-    last, old generation deleted only after the flip, so a worker fetching
-    concurrently either sees the old complete generation or the new one.
+    last, old generation deleted only after the flip, so a worker reading the
+    manifest at any moment finds every chunk it names. A fetch already under
+    way on the old generation when it is deleted fails safe and is retried at
+    the next sync; see fetch_if_stale.
     """
     digest = hashlib.sha256()
     size = 0
@@ -96,7 +103,10 @@ def fetch_if_stale(redis, path, chunk_bytes=CHUNK_BYTES):
     """Downloads the published index if the local copy is not current.
 
     Returns the manifest when a download happened, None when nothing was needed.
-    Raises on a checksum mismatch, having left the existing local copy alone.
+    Raises ValueError on a missing chunk or a size or checksum mismatch, having
+    left the existing local copy alone. A missing chunk includes the case of a
+    publish that finished during this download and deleted the generation it
+    was reading; the next sync then fetches the new one.
     """
     manifest = read_manifest(redis)
     if not manifest:

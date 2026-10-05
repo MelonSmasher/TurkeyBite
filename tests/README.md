@@ -35,7 +35,7 @@ needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
 | Suite | Subject |
 |---|---|
 | `test_index_builder.py` | Which files the domain index reads, and which lines survive the host grammar |
-| `test_index_transport.py` | Shipping the index to remote workers: chunks before the manifest, the old generation deleted only after the flip, and a fetch that fails leaving the worker's copy and marker as they were |
+| `test_index_transport.py` | Shipping the index to remote workers: chunks before the manifest, the old generation deleted only after the flip, and a fetch that fails, including one whose generation a publish deleted mid-download, leaving the worker's copy and marker as they were for the next sync |
 | `test_host_list_keyspace.py` | Retiring the Valkey host list without taking the published index with it |
 | `test_ptr_cache.py` | Reverse DNS caching, and which outcomes are safe to remember |
 | `test_list_scope.py` | How far a list entry reaches: one host or a whole domain, and never past the registrable domain |

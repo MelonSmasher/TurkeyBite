@@ -4,10 +4,13 @@ A worker on another host reads the index the librarian published through
 Valkey, so the failures that matter are the ones that would leave a worker
 with a broken index or none. Publishing must flip the manifest only once every
 chunk is in place, and delete the previous generation only after the flip, so
-a worker fetching meanwhile sees one complete generation or the other. And a
-fetch that goes wrong, with a chunk missing or the wrong size or checksum,
-must leave the worker's existing copy and its generation marker exactly as
-they were, and no partial download behind.
+a worker that reads the manifest during a publish finds every chunk it names.
+That is not a promise that every fetch succeeds: one already downloading the
+old generation when a publish completes finds its remaining chunks deleted.
+What must hold then, as for any fetch that goes wrong, with a chunk missing or
+the wrong size or checksum, is that the worker's existing copy and its
+generation marker are left exactly as they were, with no partial download
+behind, and that the next sync succeeds.
 
 Redis is tests/fakes.py, which records every command so the order can be
 checked. No test touches the network.
@@ -96,7 +99,7 @@ class PublishTest(Transport):
         self.assertEqual([self.redis.data.get(chunk(1000, n)) for n in range(2)],
                          [b'a' * 10, b'a' * 5])
 
-    def test_a_worker_fetching_mid_publish_gets_a_whole_generation(self):
+    def test_a_worker_reading_the_manifest_mid_publish_gets_a_whole_generation(self):
         self.publish(b'old' * 10, 1000)
         seen = []
 
@@ -109,6 +112,34 @@ class PublishTest(Transport):
         self.assertEqual(seen[0]['built_at'], 1000)
         self.assertEqual(self.local(), b'old' * 10)
         T.fetch_if_stale(self.redis, self.worker)
+        self.assertEqual(self.local(), b'new' * 10)
+
+
+    def test_a_fetch_that_loses_its_generation_to_a_publish_fails_safe(self):
+        # The fetch reads the old manifest and its first chunks; meanwhile a
+        # publish completes, flips the manifest and deletes the old chunks
+        self.publish(b'old' * 10, 1000)
+        os.makedirs(os.path.dirname(self.worker))
+        with open(self.worker, 'wb') as fh:
+            fh.write(b'the working older index')
+        with open(self.worker + '.generation', 'w') as fh:
+            fh.write('500')
+        published = []
+
+        def publish_part_way(command, key):
+            if command == 'get' and key == chunk(1000, 1) and not published:
+                published.append(True)
+                self.publish(b'new' * 10, 2000)
+        self.redis.on_command = publish_part_way
+        with self.assertRaisesRegex(ValueError, 'chunk 2 of 3 is missing'):
+            T.fetch_if_stale(self.redis, self.worker)
+        self.redis.on_command = None
+        self.assertEqual(self.local(), b'the working older index')
+        self.assertEqual(T.local_generation(self.worker), 500)
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.worker))),
+                         ['domains.tbidx', 'domains.tbidx.generation'])
+        # The next sync gets the generation that replaced it
+        self.assertEqual(T.fetch_if_stale(self.redis, self.worker)['built_at'], 2000)
         self.assertEqual(self.local(), b'new' * 10)
 
 
