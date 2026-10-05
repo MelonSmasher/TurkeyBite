@@ -185,6 +185,26 @@ class TrimUrlTest(unittest.TestCase):
         self.assertEqual(self.host('https:\\\\alice:pw@example.com\\a?q=1'),
                          'https:\\\\example.com')
 
+    def test_a_scheme_browsers_use_without_slashes_is_a_url(self):
+        # about:reader carries the page it wraps, reset token and all
+        self.assertEqual(self.trimmed('about:reader?url=https%3A%2F%2Fmail.example.com%2F'
+                                     'reset%3Ftoken%3Dabc'), 'about:reader')
+        self.assertEqual(self.trimmed('magnet:?xt=urn:btih:abc&dn=secret'), 'magnet:')
+        self.assertEqual(self.trimmed('mailto:x@y.example?body=secret'), 'mailto:x@y.example')
+        self.assertEqual(self.trimmed('chrome://settings/?search=pw'), 'chrome://settings/')
+
+    def test_direction_marks_quotes_and_brackets_do_not_hide_a_url(self):
+        for lead, tail in (('\u200e', ''), ('\u200f', ''), ('\u202a', ''), ('\u2066', ''),
+                           ('"', '"'), ("'", "'"), ('<', '>'), ('(', ')'), ('\u201c', '\u201d')):
+            with self.subTest(lead=lead):
+                self.assertNotIn('secret', self.trimmed(f'{lead}https://h.example/?q=secret{tail}'))
+
+    def test_a_file_url_has_no_host_to_keep(self):
+        self.assertEqual(self.host('file:///Users/alice/secret.txt?x'), 'file:///')
+        self.assertEqual(self.host('file:///C:/Users/alice/a.txt'), 'file:///')
+        self.assertEqual(self.trimmed('file:///Users/alice/secret.txt?x#y'),
+                         'file:///Users/alice/secret.txt')
+
     def test_strings_that_are_not_urls_are_untouched(self):
         for text in ('hello world', 'www.example.com', 'example.com/?q=1', 'cats?dogs#birds',
                      'malicious:quad9', 'v=spf1 include:_spf.example.com ~all',

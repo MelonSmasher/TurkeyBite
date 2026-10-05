@@ -20,9 +20,12 @@ raw packet off the event entirely. The packet holds everything the beat sent,
 including the page title, which is not a URL and is kept by `trimmed`, and
 which for a search results page is usually the search.
 
-A string counts as a URL when it starts, after any leading whitespace, with an
-http or https scheme in any case, or with any other scheme followed by //.
-Wrapper schemes such as view-source: and blob: may come first. Trimming fails
+A string counts as a URL when it starts, after any leading whitespace,
+invisible characters or an opening quote or bracket, with an http or https
+scheme in any case, with one of the schemes browsers use without slashes, such
+as about:, mailto: or magnet:, or with any other scheme followed by //. Wrapper
+schemes such as view-source: and blob: may come first. A file:/// URL has no
+host, so `host` keeps only file:///. Trimming fails
 closed: whatever follows the scheme is cut at the first ? or #, whatever
 precedes the last @ of the authority is dropped, and whitespace anywhere in the
 string changes none of that, so a URL with a space, a tab or a no-break space in
@@ -53,15 +56,23 @@ PACKET_MODES = (KEEP, NONE)
 Settings = namedtuple('Settings', 'urls packet')
 DEFAULT = Settings(TRIMMED, KEEP)
 
-# The start of a URL. Leading whitespace is any Unicode whitespace, plus the
-# invisible format characters copying and pasting brings along. Then any
-# wrapper schemes, such as view-source: or blob:, kept as they are, and either
-# http or https in any case, with or without slashes, or another scheme that is
-# followed by // or by the backslashes browsers read as slashes.
+# Schemes browsers record without slashes. about:reader?url=... carries the page
+# it wraps, reset tokens and all, and mailto: and magnet: put their payload in
+# a query string.
+_BARE_SCHEMES = ('about', 'mailto', 'magnet', 'data', 'javascript', 'tel', 'sms',
+                 'intent', 'market', 'chrome', 'edge', 'opera', 'vivaldi', 'brave')
+
+# The start of a URL. Leading matter is any Unicode whitespace, the invisible
+# format and direction marks copying and pasting brings along, and an opening
+# quote or bracket. Then any wrapper schemes, such as view-source: or blob:,
+# kept as they are, and either http or https in any case, with or without
+# slashes, a scheme browsers use bare, or another scheme that is followed by //
+# or by the backslashes browsers read as slashes.
 _URL_START = re.compile(
-    r'[\s\u200b\u200c\u200d\u2060\ufeff]*'
+    r'[\s\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff"\'`<(\[\u201c\u2018\u00ab]*'
     r'(?P<scheme>(?:[A-Za-z][A-Za-z0-9+.\-]*:)*?'
-    r'(?:https?:|[A-Za-z][A-Za-z0-9+.\-]*:(?=[/\\]{2})))'
+    r'(?:https?:|(?:' + '|'.join(_BARE_SCHEMES) + r'):'
+    r'|[A-Za-z][A-Za-z0-9+.\-]*:(?=[/\\]{2})))'
     r'(?P<slashes>[/\\]*)',
     re.IGNORECASE)
 
@@ -116,12 +127,22 @@ def trim_url(value, mode):
     if not match:
         return value
     rest = value[match.end():]
+    start = match.group('scheme') + match.group('slashes')
+    last = match.group('scheme').lower().rstrip(':').rpartition(':')[2]
+    if last in _BARE_SCHEMES and not match.group('slashes'):
+        # No authority to keep or drop: about:reader?url=..., mailto:a@b?body=...
+        # lose what follows ? or #, and nothing else
+        return (start + re.split(r'[?#]', rest, maxsplit=1)[0]).rstrip()
+    if last == 'file' and len(match.group('slashes')) >= 3:
+        # file:///path has an empty host, so what follows the slashes is path
+        if mode == HOST:
+            return start.rstrip()
+        return (start + re.split(r'[?#]', rest, maxsplit=1)[0]).rstrip()
     end = len(rest)
     for mark in '/\\?#':
         at = rest.find(mark)
         if at != -1:
             end = min(end, at)
-    start = match.group('scheme') + match.group('slashes')
     host = rest[:end].rpartition('@')[2]
     if mode == HOST:
         return (start + host).rstrip()
