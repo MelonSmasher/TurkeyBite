@@ -186,6 +186,24 @@ class PasswordInStepTest(Rerun):
         self.assertEqual(self.env()['OPENSEARCH_PASSWORD'], NEW)
         self.assertEqual(self.config()['processor']['elastic']['hosts'][0]['password'], NEW)
 
+    def test_a_host_signing_in_as_another_account_keeps_its_password(self):
+        # Setup only knows the admin password; overwriting a writer account's
+        # with it would leave the pair mismatched and every event refused
+        self.existing_install()
+        config = self.config()
+        config['processor']['elastic']['hosts'].append(
+            {'uri': 'https://search-2:9200', 'username': 'tb_writer', 'password': 'writer-pw'})
+        with open(os.path.join(self.root, 'config.yaml'), 'w') as fh:
+            yaml.safe_dump(config, fh)
+        setup = self.setup(yes_no=[True, True])
+        setup.opensearch_admin_password = NEW
+        with mock.patch('builtins.print'):
+            setup.decide_updates()
+        self.assertTrue(self.write_both(setup, OLD))
+        hosts = self.config()['processor']['elastic']['hosts']
+        self.assertEqual([(h['username'], h['password']) for h in hosts],
+                         [('admin', NEW), ('tb_writer', 'writer-pw')])
+
     def test_declining_either_file_abandons_the_change(self):
         for config_answer, env_answer in ((False, True), (True, False), (False, False)):
             self.existing_install()
