@@ -6,11 +6,17 @@ default would stop every existing install shipping. So what must not happen
 is the opposite mistake: a host that asks for verification being connected to
 without it, or a host used unverified without anybody being told.
 
+The password TurkeyBite used to ship with must not get through anywhere it
+could be used: a worker, the librarian's script, or a new install set up by
+setup.py. The escape hatch for a disposable test install must open only when
+asked for exactly, and must not be silent when it is.
+
 No test touches the network. The client class is replaced by a recorder, and
 the librarian's script runs against a fake curl that writes down what it was
 asked to do.
 """
 
+import importlib.util
 import os
 import shutil
 import stat
@@ -195,6 +201,75 @@ class SettingsTest(Isolated):
             O.check_hosts(config['processor']['elastic'])
 
 
+class DefaultPasswordTest(Isolated):
+    """The shipped default is refused wherever a worker would use it."""
+
+    def host(self, password):
+        return {'uri': 'https://opensearch:9200', 'username': 'admin', 'password': password,
+                'verify_certs': True, 'ca_certs': self.ca}
+
+    def test_the_default_is_refused_at_start(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(O.ALLOW_DEFAULT_PASSWORD, None)
+            with self.assertRaises(ValueError) as caught:
+                Processor({'elastic': elastic(self.host('Changeit12345!'))}, {})
+        message = str(caught.exception)
+        self.assertIn('hosts[0] password', message)
+        self.assertIn('Changing the OpenSearch admin password', message)
+        self.assertIn('TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes', message)
+
+    def test_any_host_with_it_is_refused(self):
+        with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: ''}):
+            with self.assertRaisesRegex(ValueError, r'hosts\[1\] password'):
+                Processor({'elastic': elastic(self.host('Another-one.7'),
+                                              self.host('Changeit12345!'))}, {})
+
+    def test_surrounding_whitespace_does_not_disguise_it(self):
+        with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: ''}):
+            with self.assertRaises(ValueError):
+                Processor({'elastic': elastic(self.host(' Changeit12345! '))}, {})
+
+    def test_another_password_starts_and_says_nothing(self):
+        # The control: without it the refusal tests would pass if every
+        # password were refused
+        with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: ''}):
+            _, logged = self.processor(self.host('Another-one.7'))
+        self.assertEqual(logged, '')
+
+    def test_the_escape_hatch_lets_it_start_loudly(self):
+        with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: 'yes'}):
+            _, logged = self.processor(self.host('Changeit12345!'))
+        self.assertIn('WARNING', logged)
+        self.assertIn('disposable test install', logged)
+
+    def test_the_escape_hatch_warns_once_per_process(self):
+        with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: 'yes'}):
+            self.processor(self.host('Changeit12345!'))
+            _, again = self.processor(self.host('Changeit12345!'))
+        self.assertEqual(again, '')
+
+    def test_only_yes_opens_the_escape_hatch(self):
+        for value in ('YES', 'true', '1', 'y', 'on', 'yes please'):
+            with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: value}):
+                with self.assertRaises(ValueError, msg=value):
+                    Processor({'elastic': elastic(self.host('Changeit12345!'))}, {})
+
+    def test_a_syslog_only_deployment_is_not_stopped(self):
+        # setup.py leaves the example host in config.yaml when OpenSearch output
+        # is off, and a password nothing uses protects nothing
+        with mock.patch.dict(os.environ, {O.ALLOW_DEFAULT_PASSWORD: ''}):
+            Processor({'elastic': elastic(self.host('Changeit12345!'), enable=False)}, {})
+
+    def test_the_shipped_examples_do_not_carry_it(self):
+        import yaml
+        with open(os.path.join(ROOT, 'src', 'support', 'config.example.yaml')) as fh:
+            hosts = yaml.safe_load(fh)['processor']['elastic']['hosts']
+        self.assertNotIn('Changeit12345!', [h.get('password') for h in hosts])
+        with open(os.path.join(ROOT, 'src', 'support', 'example.env')) as fh:
+            settings = [line.strip() for line in fh if not line.lstrip().startswith('#')]
+        self.assertFalse([line for line in settings if 'Changeit12345!' in line])
+
+
 class Librarian(object):
     """Runs the librarian's OpenSearch script against a fake curl.
 
@@ -265,6 +340,140 @@ class LibrarianTlsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
         self.assertIn('not a file', result.stderr)
+
+
+class LibrarianPasswordTest(unittest.TestCase):
+    """The librarian's script has no fallback password and refuses the default."""
+
+    def setUp(self):
+        self.librarian = Librarian(self)
+
+    def test_no_password_stops_it_before_any_call(self):
+        result, calls = self.librarian.run(OPENSEARCH_PASSWORD=None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn('OPENSEARCH_PASSWORD is not set', result.stderr)
+
+    def test_the_default_stops_it_before_any_call(self):
+        result, calls = self.librarian.run(OPENSEARCH_PASSWORD='Changeit12345!',
+                                           TURKEYBITE_ALLOW_DEFAULT_PASSWORD=None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn('Refusing to run', result.stderr)
+
+    def test_the_escape_hatch_lets_it_run_loudly(self):
+        result, calls = self.librarian.run(OPENSEARCH_PASSWORD='Changeit12345!',
+                                           TURKEYBITE_ALLOW_DEFAULT_PASSWORD='yes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(calls)
+        self.assertIn('disposable test install', result.stderr)
+
+    def test_another_password_runs_and_is_sent(self):
+        # The control for the two refusals above
+        result, calls = self.librarian.run(OPENSEARCH_PASSWORD='Not-the-default.1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('-u admin:Not-the-default.1', calls[0])
+
+
+def load_setup():
+    """setup.py as a module, without running it. Nothing happens at import."""
+    spec = importlib.util.spec_from_file_location('tb_setup', os.path.join(ROOT, 'setup.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class SetupPasswordTest(unittest.TestCase):
+    """setup.py never offers the default, and generates what OpenSearch accepts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.setup = load_setup()
+
+    def test_a_generated_password_meets_the_rules(self):
+        seen = set()
+        for _ in range(200):
+            password = self.setup.generate_opensearch_password()
+            self.assertIsNone(self.setup.opensearch_password_problem(password), password)
+            self.assertEqual(len(password), 32)
+            seen.add(password)
+        self.assertEqual(len(seen), 200)
+
+    def test_the_default_is_refused(self):
+        self.assertIn('ship', self.setup.opensearch_password_problem('Changeit12345!'))
+
+    def test_what_opensearch_would_refuse_is_refused(self):
+        for bad in ('Sh0rt!', 'alllower-case.1', 'ALLUPPER-CASE.1', 'No-Digits-Here!',
+                    'NoSymbols123'):
+            self.assertIsNotNone(self.setup.opensearch_password_problem(bad), bad)
+
+    def test_symbols_that_env_or_the_healthcheck_would_change_are_refused(self):
+        for bad in ('Has-a-dollar$1', 'Has a space-1A', 'Amp&ersand-1A', "Quote'd-1A",
+                    'Hash#tag-1Aa'):
+            self.assertIn('cannot contain', self.setup.opensearch_password_problem(bad), bad)
+
+    def test_a_good_password_is_accepted(self):
+        # The control for the refusals above
+        self.assertIsNone(self.setup.opensearch_password_problem('Tb.new-Pass_9%@:^!,+=x'))
+
+    def run_prompt(self, answers, components=('opensearch',), env=None):
+        """Runs setup_opensearch_password with typed answers. Returns (setup, asked)."""
+        root = tempfile.mkdtemp(prefix='tb-setup-')
+        self.addCleanup(shutil.rmtree, root, True)
+        if env is not None:
+            with open(os.path.join(root, '.env'), 'w') as fh:
+                fh.write(env)
+        with mock.patch.object(self.setup.TurkeyBiteSetup, 'ensure_directories'):
+            setup = self.setup.TurkeyBiteSetup()
+        setup.base_dir = self.setup.Path(root)
+        setup.components = list(components)
+        answers = list(answers)
+        asked = []
+
+        def answer(message, options=None):
+            asked.append(message)
+            return answers.pop(0)
+        setup.prompt = answer
+        setup.prompt_yes_no = lambda message, default=True: answers.pop(0)
+        with mock.patch('builtins.print'):
+            setup.setup_opensearch_password()
+        self.assertEqual(answers, [], 'not every answer was used')
+        return setup, asked
+
+    def test_there_is_no_default_to_fall_back_to(self):
+        with mock.patch.object(self.setup.TurkeyBiteSetup, 'ensure_directories'):
+            self.assertIsNone(self.setup.TurkeyBiteSetup().opensearch_admin_password)
+
+    def test_pressing_enter_generates_one(self):
+        setup, _ = self.run_prompt([''])
+        self.assertIsNone(self.setup.opensearch_password_problem(setup.opensearch_admin_password))
+
+    def test_typing_the_default_is_refused_and_asked_again(self):
+        setup, asked = self.run_prompt(['Changeit12345!', 'Tb.new-Pass_9x', 'Tb.new-Pass_9x'])
+        self.assertEqual(setup.opensearch_admin_password, 'Tb.new-Pass_9x')
+        self.assertEqual(len(asked), 3)
+
+    def test_a_remote_password_is_not_generated(self):
+        # Another node's OpenSearch already has a password; a random one here
+        # would only lock this node out
+        setup, asked = self.run_prompt(['', 'Their-Pass.1', 'Their-Pass.1'],
+                                       components=('worker',))
+        self.assertEqual(setup.opensearch_admin_password, 'Their-Pass.1')
+        self.assertIn('search node', asked[0])
+
+    def test_a_remote_default_is_refused_too(self):
+        setup, _ = self.run_prompt(['Changeit12345!', 'Their-Pass.1', 'Their-Pass.1'],
+                                   components=('worker',))
+        self.assertEqual(setup.opensearch_admin_password, 'Their-Pass.1')
+
+    def test_a_rerun_keeps_the_password_the_cluster_has(self):
+        setup, asked = self.run_prompt([True], env='OPENSEARCH_PASSWORD=Live-Pass.42\n')
+        self.assertEqual(setup.opensearch_admin_password, 'Live-Pass.42')
+        self.assertEqual(asked, [])
+
+    def test_a_rerun_does_not_keep_the_default(self):
+        setup, _ = self.run_prompt([''], env='OPENSEARCH_INITIAL_ADMIN_PASSWORD=Changeit12345!\n')
+        self.assertNotEqual(setup.opensearch_admin_password, 'Changeit12345!')
 
 
 if __name__ == '__main__':

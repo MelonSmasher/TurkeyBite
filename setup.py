@@ -20,6 +20,62 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
+# The OpenSearch admin password TurkeyBite used to ship with. Anyone who has read
+# this repository knows it, and the admin account can read and delete every
+# event, so the workers and the librarian refuse it and so does this script.
+DEFAULT_OPENSEARCH_PASSWORD = "Changeit12345!"
+
+# The symbols a new OpenSearch password may use. Each survives unquoted in .env,
+# where docker compose would expand $ and cut at #, and in the opensearch
+# healthcheck, which compose pastes into an unquoted shell command, where & ; |
+# ( ) < > * ? and quotes would break it and leave OpenSearch marked unhealthy.
+OPENSEARCH_PASSWORD_SYMBOLS = "-_.+=,%@:^!"
+
+
+def opensearch_password_problem(password: str) -> Optional[str]:
+    """Why a new OpenSearch admin password would be refused, or None.
+
+    OpenSearch 2.12 and later refuse an initial admin password without eight
+    characters, upper and lower case letters, a digit and a symbol, and then
+    score what is left for strength. This checks the rules it states; the
+    strength score it can only check itself.
+    """
+    if password.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+        return (f"{DEFAULT_OPENSEARCH_PASSWORD} is the password TurkeyBite used to ship "
+                "with, which anyone can look up. Choose another.")
+    if len(password) < 8:
+        return "The password must be at least 8 characters long."
+    if not (any(c.isupper() for c in password) and any(c.islower() for c in password)
+            and any(c.isdigit() for c in password)):
+        return "The password must contain an uppercase letter, a lowercase letter and a digit."
+    others = set(c for c in password if not c.isalnum())
+    if not others:
+        return f"The password must contain one of these symbols: {OPENSEARCH_PASSWORD_SYMBOLS}"
+    unusable = others - set(OPENSEARCH_PASSWORD_SYMBOLS)
+    if unusable:
+        return (f"The password cannot contain {''.join(sorted(unusable))!r}, which .env or "
+                f"the OpenSearch healthcheck would change. Use these symbols: "
+                f"{OPENSEARCH_PASSWORD_SYMBOLS}")
+    return None
+
+
+def generate_opensearch_password(length: int = 32) -> str:
+    """A random OpenSearch admin password that meets its rules.
+
+    One character from each class OpenSearch requires, the rest from all of
+    them, shuffled so the classes do not sit in a predictable order.
+    """
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    upper = lower.upper()
+    digits = "0123456789"
+    every = lower + upper + digits + OPENSEARCH_PASSWORD_SYMBOLS
+    chars = [secrets.choice(lower), secrets.choice(upper), secrets.choice(digits),
+             secrets.choice(OPENSEARCH_PASSWORD_SYMBOLS)]
+    chars += [secrets.choice(every) for _ in range(length - len(chars))]
+    secrets.SystemRandom().shuffle(chars)
+    return ''.join(chars)
+
+
 # Custom YAML representer for None values in volume definitions
 def represent_none(self, _):
     return self.represent_scalar('tag:yaml.org,2002:null', '')
@@ -49,7 +105,8 @@ class TurkeyBiteSetup:
         self.deployment_type = ""
         self.valkey_host = "valkey"
         self.opensearch_host = "opensearch"
-        self.opensearch_admin_password = "Changeit12345!"  # Default OpenSearch admin password
+        # Chosen or generated in setup_opensearch_password; there is no default
+        self.opensearch_admin_password = None
         self.enable_dns_lookups = False
         self.dns_resolver = "172.172.0.100"  # Default resolver (Bind9 container)
         self.use_opensearch = True  # Default to using OpenSearch
@@ -695,44 +752,83 @@ class TurkeyBiteSetup:
         
         self.print_success(f"Docker Compose file {self.compose_file} created.")
 
+    def existing_env_value(self, name: str) -> Optional[str]:
+        """A value from the .env a previous run wrote, or None"""
+        target_env = self.base_dir / self.env_file
+        if not target_env.exists():
+            return None
+        with open(target_env, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(name + "="):
+                    return line[len(name) + 1:]
+        return None
+
     def setup_opensearch_password(self):
         """Set up the OpenSearch admin password"""
         self.print_step("OpenSearch Admin Password Configuration")
-        
-        self.print_info("For security reasons, you must set an OpenSearch admin password.")
-        
-        # Custom password with validation
+        runs_opensearch = "opensearch" in self.components
+
+        # A rerun should not quietly replace the password a running cluster
+        # already uses: OpenSearch reads OPENSEARCH_INITIAL_ADMIN_PASSWORD only
+        # when its data volume is new, so a new one here would lock the workers
+        # out rather than change anything
+        existing = (self.existing_env_value("OPENSEARCH_PASSWORD")
+                    or self.existing_env_value("OPENSEARCH_INITIAL_ADMIN_PASSWORD"))
+        if existing and existing.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+            self.print_error(f"The existing .env uses {DEFAULT_OPENSEARCH_PASSWORD}, the password "
+                             "TurkeyBite used to ship with. The workers and the librarian now "
+                             "refuse to start with it.")
+            self.print_info("If this OpenSearch already holds data, setting a new password here "
+                            "is not enough: change it in OpenSearch too. See 'Changing the "
+                            "OpenSearch admin password' in the README.")
+        elif existing:
+            if self.prompt_yes_no("Keep the OpenSearch admin password already in .env?", default=True):
+                self.opensearch_admin_password = existing
+                return
+
+        if runs_opensearch:
+            message = ("Enter an OpenSearch admin password, or press Enter to generate one "
+                       f"(at least 8 characters with upper and lower case, a digit and one of "
+                       f"{OPENSEARCH_PASSWORD_SYMBOLS})")
+        else:
+            message = "Enter the OpenSearch admin password set on the search node"
+
         while True:
-            password = self.prompt("Enter OpenSearch admin password (min 8 chars, including uppercase, lowercase, and special character)")
-            
-            # Check if it's the default password
-            if password == "Changeit12345!":
-                if self.prompt_yes_no("Using the default password (Changeit12345!) is not recommended. Are you sure?", default=False):
-                    self.print_info("Using default password. IMPORTANT: Change this password for production use!")
-                else:
+            password = self.prompt(message)
+
+            if not password:
+                if not runs_opensearch:
+                    self.print_error("Enter the password the search node's .env sets as "
+                                     "OPENSEARCH_INITIAL_ADMIN_PASSWORD.")
                     continue
-            
-            # Perform validation
-            if len(password) < 8:
-                self.print_error("Password must be at least 8 characters long.")
+                self.opensearch_admin_password = generate_opensearch_password()
+                self.print_success("Generated an OpenSearch admin password.")
+                self.print_info("IMPORTANT: Save this password. It logs in to OpenSearch "
+                                "Dashboards as admin, and other nodes need it:")
+                print(self.opensearch_admin_password)
+                return
+
+            # A password for this node's own OpenSearch has to meet its rules. A
+            # search node elsewhere chose its own, so only the default is refused
+            problem = None
+            if runs_opensearch or password.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+                problem = opensearch_password_problem(password)
+            if problem:
+                self.print_error(problem)
                 continue
-            
-            has_upper = any(c.isupper() for c in password)
-            has_lower = any(c.islower() for c in password)
-            has_special = any(not c.isalnum() for c in password)
-            
-            if not (has_upper and has_lower and has_special):
-                self.print_error("Password must contain at least one uppercase letter, one lowercase letter, and one special character.")
-                continue
-            
+
             # Confirm password
             confirm = self.prompt("Confirm password")
             if password != confirm:
                 self.print_error("Passwords do not match.")
                 continue
-            
+
             self.opensearch_admin_password = password
             self.print_success("OpenSearch admin password set successfully.")
+            if runs_opensearch:
+                self.print_info("OpenSearch also scores the password for strength and will not "
+                                "start if it finds it weak.")
             break
 
     def prompt_for_client_lookups(self):
@@ -905,8 +1001,10 @@ class TurkeyBiteSetup:
         if self.node_type != 'search':
             self.setup_valkey()
         
-        # Setup OpenSearch admin password if using OpenSearch
-        if self.use_opensearch:
+        # Setup OpenSearch admin password if using OpenSearch, or running it:
+        # a node that runs OpenSearch needs an admin password whether or not
+        # events are sent to it
+        if self.use_opensearch or "opensearch" in self.components:
             self.setup_opensearch_password()
         
         # Setup the main configuration files

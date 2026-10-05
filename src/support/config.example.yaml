@@ -158,10 +158,14 @@ processor:
     # serves its demo certificates, which nothing trusts out of the box; a
     # worker using an https host unverified says so once when it starts. See
     # "Verifying OpenSearch's certificate" in the README.
+    #
+    # password is the OpenSearch admin password, which setup.sh fills in.
+    # Workers refuse to start with Changeit12345!, the default TurkeyBite used
+    # to ship with; see "Changing the OpenSearch admin password" in the README.
     hosts:
       - uri: https://opensearch:9200
         username: admin
-        password: Changeit12345!
+        password: ""
         verify_certs: false
         # ca_certs: /turkey-bite/opensearch-root-ca.pem
   syslog:

@@ -6,7 +6,7 @@ echo "Setting up OpenSearch index template for TurkeyBite..."
 # Variables for OpenSearch connection
 OPENSEARCH_URL="https://${OPENSEARCH_HOST:-opensearch}:9200"
 OPENSEARCH_USER="${OPENSEARCH_USERNAME:-admin}"
-OPENSEARCH_PASS="${OPENSEARCH_PASSWORD:-Changeit12345!}"
+OPENSEARCH_PASS="${OPENSEARCH_PASSWORD:-}"
 # A single-node cluster cannot assign replica shards, so leaving this at 1
 # leaves cluster health permanently yellow and therefore useless as a signal.
 OPENSEARCH_REPLICAS="${OPENSEARCH_INDEX_REPLICAS:-0}"
@@ -14,6 +14,22 @@ MAX_RETRIES=120
 RETRY_INTERVAL=5
 
 echo "OpenSearch URL: $OPENSEARCH_URL"
+
+# No fallback password. The one this used to fall back to shipped in the
+# repository, so anyone can look it up, and the admin account can read and
+# delete every event. See "Changing the OpenSearch admin password" in the README.
+if [ -z "$OPENSEARCH_PASS" ]; then
+    echo "Error: OPENSEARCH_PASSWORD is not set. Set it in .env to the OpenSearch admin password and recreate the librarian." >&2
+    exit 1
+fi
+if [ "$OPENSEARCH_PASS" = 'Changeit12345!' ]; then
+    if [ "${TURKEYBITE_ALLOW_DEFAULT_PASSWORD:-}" = "yes" ]; then
+        echo "WARNING: OPENSEARCH_PASSWORD is Changeit12345!, the OpenSearch admin password TurkeyBite used to ship with, which anyone can look up. TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes lets it through. Do this only on a disposable test install that holds no real traffic." >&2
+    else
+        echo "Error: OPENSEARCH_PASSWORD is Changeit12345!, the OpenSearch admin password TurkeyBite used to ship with, which anyone can look up. Refusing to run. Change the admin password in OpenSearch, then in .env and config.yaml: see \"Changing the OpenSearch admin password\" in the README. On a disposable test install only, set TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes to run anyway." >&2
+        exit 1
+    fi
+fi
 
 # The bundled OpenSearch serves its demo certificates, which curl cannot
 # verify, so verification needs the cluster's CA. Without one this falls back

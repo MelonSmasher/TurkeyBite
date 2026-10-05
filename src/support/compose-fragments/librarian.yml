@@ -34,5 +34,6 @@ services:
       - OPENSEARCH_USERNAME
       - OPENSEARCH_PASSWORD
       - OPENSEARCH_CA_CERT
+      - TURKEYBITE_ALLOW_DEFAULT_PASSWORD
     networks:
       - tb-net

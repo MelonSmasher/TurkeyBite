@@ -439,9 +439,10 @@ class Processor(object):
         # at start, and so no event pays to parse them again
         self._evidence = evidence_settings(config.get('evidence'))
         self._resolvers = resolver_settings((config.get('evidence') or {}).get('resolvers'))
-        # The same for the OpenSearch hosts, which also says once, here, when a
-        # host will be used without verifying its certificate. Under the rq
-        # pipeline that is the core, whose processor travels with every job.
+        # The same for the OpenSearch hosts. This is also where a host with the
+        # default admin password is refused, and where a host used without
+        # verifying its certificate is reported. Under the rq pipeline that is
+        # the core, whose processor travels with every job.
         check_hosts(config.get('elastic'))
 
     def process_packet(self, data):

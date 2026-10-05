@@ -10,6 +10,13 @@ so it stays off unless a host asks for it with `verify_certs`. What changes is
 that the choice is no longer silent: a process that will talk to an https host
 without verifying it says so once, at start, naming the host and the fix.
 
+The admin password is checked too. Changeit12345! shipped as the OpenSearch
+admin password in setup.py, the example environment and the example
+configuration, so anyone who has read this repository knows it, and the admin
+account can read and delete every event. A host configured with it is refused.
+TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes lets it through, loudly, for a disposable
+test install that holds no real traffic.
+
 Settings are checked when the process starts rather than when the first event
 is shipped, so a mistake such as a CA file that is not where the configuration
 says stops the worker with a clear message instead of costing every event.
@@ -27,6 +34,47 @@ def _warn(message):
 # Hosts this process has already warned about, keyed on pid as well, so a
 # forked child that checks its own settings still says so once for itself
 _warned = set()
+
+# The admin password TurkeyBite used to ship with, and the variable that lets a
+# disposable test install keep using it
+DEFAULT_PASSWORD = 'Changeit12345!'
+ALLOW_DEFAULT_PASSWORD = 'TURKEYBITE_ALLOW_DEFAULT_PASSWORD'
+
+
+def default_password_allowed(environ=None):
+    """True when TURKEYBITE_ALLOW_DEFAULT_PASSWORD is exactly yes.
+
+    Exactly, rather than anything truthy, so the escape hatch is opened only by
+    someone who read what it is for.
+    """
+    environ = os.environ if environ is None else environ
+    return (environ.get(ALLOW_DEFAULT_PASSWORD) or '').strip() == 'yes'
+
+
+def check_password(password, where, environ=None, log=_warn):
+    """Refuses the password TurkeyBite used to ship with. Raises ValueError.
+
+    `where` names the setting, so the message says what to change. With the
+    escape hatch open the password is let through and `log` is told, loudly,
+    once per process for each setting.
+    """
+    if not isinstance(password, str) or password.strip() != DEFAULT_PASSWORD:
+        return
+    if default_password_allowed(environ):
+        key = (os.getpid(), 'default password', where)
+        if key not in _warned:
+            _warned.add(key)
+            log(f'WARNING: {where} is {DEFAULT_PASSWORD}, the OpenSearch admin password '
+                f'TurkeyBite used to ship with, which anyone can look up. '
+                f'{ALLOW_DEFAULT_PASSWORD}=yes lets it through. Do this only on a '
+                f'disposable test install that holds no real traffic.')
+        return
+    raise ValueError(
+        f'{where} is {DEFAULT_PASSWORD}, the OpenSearch admin password TurkeyBite used '
+        f'to ship with, which anyone who has read the repository knows. Refusing to '
+        f'start. Change the admin password in OpenSearch, then here and in .env: see '
+        f'"Changing the OpenSearch admin password" in the README. On a disposable test '
+        f'install only, set {ALLOW_DEFAULT_PASSWORD}=yes to start anyway.')
 
 
 def tls_settings(host, where):
@@ -100,13 +148,15 @@ def client_kwargs(host):
     return kwargs
 
 
-def check_hosts(elastic, log=_warn):
+def check_hosts(elastic, environ=None, log=_warn):
     """Checks processor.elastic once at start. Raises ValueError on a mistake.
 
-    Nothing is checked when OpenSearch output is off, since the hosts are then
-    never used, and a syslog-only deployment should not be stopped by settings
-    it does not read. Each host used without verification is reported once
-    per process through `log`, however many processors the process builds.
+    A host configured with the default admin password is a mistake, see
+    `check_password`. Nothing is checked when OpenSearch output is off, since
+    the hosts are then never used, and a syslog-only deployment should not be
+    stopped by settings it does not read. Each host used without verification
+    is reported once per process through `log`, however many processors the
+    process builds.
     """
     elastic = elastic or {}
     if not elastic.get('enable'):
@@ -119,6 +169,7 @@ def check_hosts(elastic, log=_warn):
         if not isinstance(host, dict) or not isinstance(host.get('uri'), str):
             raise ValueError(f'{where} must be a mapping with a uri, not {host!r}')
         tls_settings(host, where)
+        check_password(host.get('password'), f'{where} password', environ, log)
         key = (os.getpid(), host['uri'])
         if unverified(host) and key not in _warned:
             _warned.add(key)

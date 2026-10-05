@@ -30,6 +30,7 @@ services:
       - TZ
       - VALKEY_HOST
       - VALKEY_PORT
+      - TURKEYBITE_ALLOW_DEFAULT_PASSWORD
     networks:
       - tb-net
     ulimits:

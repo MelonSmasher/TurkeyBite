@@ -24,7 +24,7 @@ TB_VENV=~/.cache/tb-venv tests/run.sh
 | `test_independence.py` | The report on how much one list repeats another, and which overlaps it flags |
 | `test_resolvers.py` | Public filtering resolvers as a second opinion: when they are asked, what their answers mean, what is remembered, and that they never assert alone |
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
-| `test_opensearch_access.py` | How workers and the librarian reach OpenSearch: certificate verification only when asked for and a warning when not, with the librarian's script run against a fake curl |
+| `test_opensearch_access.py` | How workers and the librarian reach OpenSearch: certificate verification only when asked for and a warning when not, and the shipped default password refused by workers, the librarian's script and setup.py, with the escape hatch opened only by `yes`. The librarian's script runs against a fake curl |
 
 Three habits are worth keeping when adding to these.
 

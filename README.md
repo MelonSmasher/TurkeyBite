@@ -46,6 +46,16 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ## Setup
 
+### Upgrading an existing deployment
+
+**Read this before deploying a new version onto a running install.** Some changes affect a deployment that is already running, and one of them stops it until you act:
+
+* **The default OpenSearch password is refused.** If your OpenSearch admin password is still `Changeit12345!`, the password TurkeyBite used to ship with, the core and the workers refuse to start and the librarian refuses to set up OpenSearch. Change it first, as [Changing the OpenSearch admin password](#changing-the-opensearch-admin-password) describes.
+* **The librarian needs `OPENSEARCH_PASSWORD`.** It used to fall back to the default password when the variable was missing, which a `.env` written from `example.env` rather than by `setup.sh` relied on. Set `OPENSEARCH_PASSWORD` in `.env` to the admin password.
+* **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
+
+`docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build`.
+
 ### Prerequisites
 
 * Docker and Docker Compose installed on your host system
@@ -73,7 +83,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    - Deployment type (Development, Small Scale, or Full Scale)
    - DNS lookup configuration for client IPs
    - Output options (OpenSearch and/or Syslog)
-   - Service passwords and connection settings
+   - Service passwords and connection settings. Press Enter at the OpenSearch admin password prompt to have one generated; `Changeit12345!`, the password TurkeyBite used to ship with, is refused
    
    For distributed deployments, you'll run this script on each node with the appropriate configuration.
 
@@ -92,6 +102,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    ```bash
    # Key environment variables (automatically configured by setup)
    OPENSEARCH_INITIAL_ADMIN_PASSWORD=******      # Password for OpenSearch admin
+   OPENSEARCH_PASSWORD=******                    # The same password, for the librarian
    OPENSEARCH_HOSTS='["https://opensearch:9200"]'  # OpenSearch connection URL array
    bootstrap.memory_lock=true                     # Enable memory locking for OpenSearch
    node.name=${OPENSEARCH_HOST}                  # Set node name to match host
@@ -228,6 +239,33 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 ## Security and privacy
 
 Every event TurkeyBite indexes says who looked up or visited what, so the index is a record of people's browsing. This section covers who can reach it and how it travels.
+
+### Changing the OpenSearch admin password
+
+`Changeit12345!` was the OpenSearch admin password in `setup.py`, `example.env` and `config.example.yaml`, so anyone who has read this repository knows it, and the admin account can read and delete every event. The core and the workers refuse to start when a host in `processor.elastic.hosts` uses it, and the librarian refuses to set up OpenSearch when `OPENSEARCH_PASSWORD` is it. `setup.sh` no longer offers it: it generates a password when you press Enter, and refuses the old one if you type it.
+
+OpenSearch reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` only when its data volume is new, so on a cluster that already holds data, changing `.env` is not enough: change the password in OpenSearch itself, then everywhere TurkeyBite reads it. These steps were checked against `opensearchproject/opensearch:3` (3.9.0) with its demo security configuration:
+
+1. Choose a password of at least 8 characters with upper and lower case letters, a digit and a symbol, using only the symbols `- _ . + = , % @ : ^ !`. OpenSearch also scores it for strength and refuses one it finds weak. Others can break `.env` or the healthcheck below.
+
+2. Set it in the running cluster. The demo `admin` user is reserved, so it cannot change its own password through the API; the demo admin certificate, which is inside the container, can:
+
+   ```bash
+   NEW='your-new-password'
+   docker compose exec -e NEW="$NEW" opensearch sh -c 'cd /usr/share/opensearch/config && curl -sS --cacert root-ca.pem --cert kirk.pem --key kirk-key.pem -X PATCH https://localhost:9200/_plugins/_security/api/internalusers/admin -H "Content-Type: application/json" -d "[{\"op\":\"add\",\"path\":\"/password\",\"value\":\"$NEW\"}]"'
+   ```
+
+   It answers `{"status":"OK","message":"'admin' updated."}`, or `Weak password` if OpenSearch wants a stronger one. The change is stored in the data volume, so it survives the container being recreated. If you have replaced the demo certificates, use your own admin certificate.
+
+3. In `.env`, set both `OPENSEARCH_INITIAL_ADMIN_PASSWORD` and `OPENSEARCH_PASSWORD` to the new password. The opensearch healthcheck logs in with `OPENSEARCH_INITIAL_ADMIN_PASSWORD`, so leaving the old one there marks OpenSearch unhealthy, and the services that wait for it never start.
+
+4. In `config.yaml`, set the `password` of each host under `processor.elastic.hosts`.
+
+5. Recreate the containers so they read the new values: `docker compose up -d --build`. OpenSearch Dashboards takes the new password at its next login.
+
+In a distributed deployment, do step 2 on the search node and steps 3 to 5 on every node.
+
+`TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes` lets the core, the workers and the librarian use the default anyway, with a warning. It is for a disposable test install that holds no real traffic, never for a deployment that does. Only the exact value `yes` counts.
 
 ### Verifying OpenSearch's certificate
 
