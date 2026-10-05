@@ -1,0 +1,123 @@
+"""Time ranges and histogram intervals.
+
+The UI sends a range as `from` and `to`, each either an ISO 8601 instant or a
+relative expression such as `now-24h`. Everything is resolved to UTC instants
+here, once, so every query that serves one screen counts the same window even
+though they run a few milliseconds apart.
+"""
+
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 7 * 86400, 'M': 30 * 86400, 'y': 365 * 86400}
+_RELATIVE = re.compile(r'^now(?:([+-])(\d+)([smhdwMy]))?(?:/([smhdwMy]))?$')
+
+# Histogram bucket sizes, smallest first, and their OpenSearch names
+INTERVALS = (
+    (60, '1m'), (5 * 60, '5m'), (10 * 60, '10m'), (15 * 60, '15m'), (30 * 60, '30m'),
+    (3600, '1h'), (3 * 3600, '3h'), (6 * 3600, '6h'), (12 * 3600, '12h'), (86400, '1d'),
+    (7 * 86400, '7d'),
+)
+
+# The longest window one request may cover: index retention is 90 days by
+# default, and a year of events in one aggregation is a cluster-wide outage
+MAX_RANGE = timedelta(days=400)
+
+
+class RangeError(ValueError):
+    pass
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _round_down(moment: datetime, unit: str) -> datetime:
+    if unit == 's':
+        return moment.replace(microsecond=0)
+    if unit == 'm':
+        return moment.replace(second=0, microsecond=0)
+    if unit == 'h':
+        return moment.replace(minute=0, second=0, microsecond=0)
+    if unit == 'd':
+        return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    if unit == 'w':
+        day = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        return day - timedelta(days=day.weekday())
+    if unit == 'M':
+        return moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return moment.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def resolve(value: str | None, now: datetime, default: str) -> datetime:
+    """An instant from an ISO string or a relative expression."""
+    value = (value or default).strip()
+    m = _RELATIVE.match(value)
+    if m:
+        sign, amount, unit, rounding = m.groups()
+        moment = now
+        if amount:
+            delta = timedelta(seconds=int(amount) * _UNITS[unit])
+            moment = moment - delta if sign == '-' else moment + delta
+        if rounding:
+            moment = _round_down(moment, rounding)
+        return moment
+    try:
+        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as e:
+        raise RangeError(f'{value!r} is neither a time nor a relative time such as now-24h') from e
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class TimeRange:
+    start: datetime
+    end: datetime
+
+    @property
+    def seconds(self) -> float:
+        return (self.end - self.start).total_seconds()
+
+    def previous(self) -> 'TimeRange':
+        """The window of the same length just before this one, for comparisons."""
+        span = self.end - self.start
+        return TimeRange(self.start - span, self.start)
+
+    def filter(self, field: str = '@timestamp') -> dict:
+        return {'range': {field: {'gte': iso(self.start), 'lt': iso(self.end)}}}
+
+    def public(self) -> dict:
+        return {'from': iso(self.start), 'to': iso(self.end)}
+
+
+def parse_range(start: str | None, end: str | None, now: datetime | None = None,
+                default_start: str = 'now-24h') -> TimeRange:
+    now = now or utcnow()
+    tr = TimeRange(resolve(start, now, default_start), resolve(end, now, 'now'))
+    if tr.end <= tr.start:
+        raise RangeError('the end of the range has to come after its start')
+    if tr.end - tr.start > MAX_RANGE:
+        raise RangeError(f'a range can cover at most {MAX_RANGE.days} days')
+    return tr
+
+
+def iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+
+def auto_interval(tr: TimeRange, buckets: int = 90) -> tuple[int, str]:
+    """The smallest interval that keeps a histogram at or under `buckets` bars."""
+    for seconds, name in INTERVALS:
+        if tr.seconds / seconds <= buckets:
+            return seconds, name
+    return INTERVALS[-1]
+
+
+def interval_seconds(name: str) -> int:
+    for seconds, label in INTERVALS:
+        if label == name:
+            return seconds
+    raise RangeError(f'{name!r} is not an interval this console offers')

@@ -1,0 +1,103 @@
+"""Settings, read once from the environment.
+
+Everything is prefixed TBCONSOLE_. Secrets, the database and the OpenSearch
+connection come from here rather than from the UI, so a console that cannot
+reach its database still knows where its database is, and no secret is ever
+stored where the console's own admins could read it back. Settings an admin
+changes at runtime, such as the LDAP directory, live in the database instead.
+"""
+
+import json
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _split(value):
+    """A comma-separated environment variable as a list; a JSON list also works."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith('['):
+            return json.loads(text)
+        return [part.strip() for part in text.split(',') if part.strip()]
+    return value
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='TBCONSOLE_', env_file=None,
+                                      extra='ignore')
+
+    # -- the console itself -------------------------------------------------
+    database_url: str = 'postgresql+asyncpg://tbconsole:tbconsole-dev@127.0.0.1:55432/tbconsole'
+    # Encrypts the secrets the database holds, such as webhook signing keys
+    # and the LDAP bind password, and keys every HMAC the console makes.
+    # Changing it makes those unreadable; list the old one in
+    # secret_key_previous while re-saving them.
+    secret_key: str = Field(min_length=32)
+    secret_key_previous: Annotated[list[str], NoDecode] = []
+    # Where people reach the console, for links in alerts
+    public_url: str = 'http://localhost:8710'
+    # Off only for plain-http development; a session cookie sent in clear
+    # is a session anyone on the path can take
+    cookie_secure: bool = True
+    session_idle_minutes: int = 12 * 60
+    session_max_hours: int = 7 * 24
+    login_max_failures: int = 5
+    login_lockout_minutes: int = 15
+    # Run the rule scheduler, webhook dispatcher and rollups in this process.
+    # Turn off on extra API-only replicas; any number may run them, since
+    # work is claimed with SKIP LOCKED.
+    run_workers: bool = True
+    # The built frontend. Absent means API only, for development with Vite.
+    static_dir: Path | None = PACKAGE_DIR / 'static'
+    # Created at start when the database has no users at all, so a fresh
+    # container can be signed in to. Ignored once any user exists.
+    bootstrap_admin_username: str | None = None
+    bootstrap_admin_password: str | None = None
+    # Record every search in the audit log, not only exports and entity
+    # profiles. Off by default: the log would grow with every keystroke-driven
+    # query, and the searches that matter for accountability are the ones
+    # that name a person, which entity views already record.
+    audit_all_searches: bool = False
+
+    # -- OpenSearch or Elasticsearch, read only ---------------------------------
+    opensearch_urls: Annotated[list[str], NoDecode] = ['http://127.0.0.1:59200']
+    opensearch_username: str | None = None
+    opensearch_password: str | None = None
+    opensearch_verify_certs: bool = True
+    opensearch_ca_certs: Path | None = None
+    opensearch_index: str = 'tb-index-*'
+    opensearch_timeout_sec: float = 30.0
+
+    # -- webhooks -------------------------------------------------------------
+    # Webhook URLs may not point at private, loopback or link-local addresses
+    # unless this is on, so an admin account cannot be turned into a way to
+    # probe the console's own network. Turn on for an alert receiver on the
+    # LAN, such as a self-hosted chat server.
+    webhook_allow_private: bool = False
+    webhook_timeout_sec: float = 10.0
+
+    @field_validator('opensearch_urls', mode='before')
+    @classmethod
+    def _split_urls(cls, value):
+        return _split(value)
+
+    @field_validator('secret_key_previous', mode='before')
+    @classmethod
+    def _split_keys(cls, value):
+        return _split(value)
+
+    @field_validator('public_url')
+    @classmethod
+    def _strip_slash(cls, value):
+        return value.rstrip('/')
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
