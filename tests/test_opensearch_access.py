@@ -183,6 +183,19 @@ class SettingsTest(Isolated):
         self.processor({'uri': 'https://o:9200', 'verify_certs': True, 'ca_certs': self.ca},
                        {'uri': 'https://o:9200', 'verify_certs': False})
 
+    def test_output_on_with_no_host_is_refused(self):
+        # Every event would fail to ship, and a consumer would requeue them
+        # without end, so this stops at start rather than at the first batch
+        for hosts in ([], None):
+            with self.assertRaisesRegex(ValueError, 'names no host', msg=hosts):
+                Processor({'elastic': {'enable': True, 'index_prefix': 'tb-index',
+                                       'hosts': hosts}}, {})
+        with self.assertRaisesRegex(ValueError, 'names no host'):
+            Processor({'elastic': {'enable': True, 'index_prefix': 'tb-index'}}, {})
+
+    def test_no_host_is_fine_when_output_is_off(self):
+        Processor({'elastic': elastic(enable=False)}, {})
+
     def test_hosts_are_not_read_when_output_is_off(self):
         # A syslog-only deployment is not stopped by settings it never uses
         Processor({'elastic': elastic({'uri': 'https://o:9200', 'verify_certs': 'yes'},

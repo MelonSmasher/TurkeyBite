@@ -198,6 +198,11 @@ def check_hosts(elastic, environ=None, log=_warn):
     hosts = elastic.get('hosts') or []
     if not isinstance(hosts, list):
         raise ValueError(f'processor.elastic.hosts must be a list, not {hosts!r}')
+    if not hosts:
+        # Nowhere to ship, so every event would fail: dropped on the rq path,
+        # requeued without end on the consume path while the queue grows
+        raise ValueError('processor.elastic.enable is true but processor.elastic.hosts '
+                         'names no host; add one, or set enable to false')
     for i, host in enumerate(hosts):
         where = f'processor.elastic.hosts[{i}]'
         if not isinstance(host, dict) or not isinstance(host.get('uri'), str):
