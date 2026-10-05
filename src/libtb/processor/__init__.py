@@ -17,7 +17,7 @@ from libtb.evidence import (cancels, categorise, claims_for, demote_incidental,
 from libtb.evidence import second_opinion
 from libtb.evidence.resolvers import checker_for
 from libtb.evidence.resolvers import settings as resolver_settings
-from libtb.opensearch import check_hosts, client_kwargs
+from libtb.opensearch import ConfigurationError, check_hosts, client_kwargs, report_once
 from libtb.privacy import redact
 from libtb.privacy import settings as privacy_settings
 from datetime import datetime, timezone
@@ -173,9 +173,28 @@ def opensearch_client(host):
     if client is not None:
         return client
 
-    client = OpenSearch(**client_kwargs(host))
+    try:
+        kwargs = client_kwargs(host)
+    except ValueError as e:
+        # The settings were checked at start, so this is a host whose
+        # configuration came from elsewhere, such as a job the core queued
+        # with its own config.yaml, or a CA file gone since the check
+        raise ConfigurationError(str(e)) from e
+    client = OpenSearch(**kwargs)
     _opensearch_clients[key] = client
     return client
+
+
+def _report_host_error(host, error, action):
+    """Logs a failure to use a host: a configuration error once, anything else each time."""
+    if isinstance(error, ConfigurationError):
+        report_once(f"CONFIGURATION ERROR: OpenSearch at {host.get('uri')} cannot be used, "
+                    f"so no event reaches it: {error}. Run `python turkeybite check` in this "
+                    f"container, fix config.yaml and restart. Reported once; it applies to "
+                    f"every event until fixed.")
+    else:
+        print(f"Error {action} to OpenSearch at {host.get('uri')}: {str(error)}",
+              file=sys.stderr)
 
 
 # Documents waiting to be flushed as one bulk request, keyed by pid for the same
@@ -965,8 +984,7 @@ class Processor(object):
                     print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
                 return ok
             except Exception as e:
-                print(f"Error bulk sending to OpenSearch at {host['uri']}: {str(e)}",
-                      file=sys.stderr)
+                _report_host_error(host, e, 'bulk sending')
                 continue
         if raise_on_total_failure:
             raise RuntimeError(f'every OpenSearch host refused {len(docs)} documents')
@@ -997,8 +1015,7 @@ class Processor(object):
                         opensearch_client(host).index(index=index, body=bite)
                         break
                     except Exception as e:
-                        print(f"Error sending to OpenSearch at {host['uri']}: {str(e)}",
-                              file=sys.stderr)
+                        _report_host_error(host, e, 'sending')
                         continue
 
         if self.config['syslog']['enable']:

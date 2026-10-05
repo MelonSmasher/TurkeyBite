@@ -26,6 +26,31 @@ def run():
     inlet.open()
 
 
+@cli.command('check')
+def check():
+    """Check config.yaml as a worker reads it, before anything starts.
+
+    Loads it and validates everything a worker needs: the sieve, the evidence,
+    resolver and privacy settings, and each OpenSearch host, including that a
+    ca_certs file is there and that the password is not the shipped default.
+    The worker and core containers run this before they start anything, and
+    exit if it fails: under the rq pipeline a worker process never reads the
+    settings itself, so a CA file missing from its container would otherwise
+    only show as events failing to ship.
+    """
+    try:
+        config = read_config()
+        if not isinstance(config, dict):
+            raise ValueError('config.yaml could not be read as YAML')
+        Filters(config['sieve'])
+        Processor(config['processor'], config['redis'])
+    except (OSError, KeyError, TypeError, ValueError) as e:
+        detail = f'missing setting {e}' if isinstance(e, KeyError) else str(e)
+        click.echo(f'CONFIGURATION ERROR: {detail}', err=True)
+        raise SystemExit(1)
+    click.echo('config.yaml checked: the settings a worker reads are valid.')
+
+
 @cli.command('consume')
 @click.option('--consumer', default=None, help='Stable name for this consumer, used to recover its own in-flight work.')
 @click.option('--batch-size', default=None, type=int, help='Maximum events claimed per batch.')

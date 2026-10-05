@@ -54,6 +54,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 * **The librarian needs `OPENSEARCH_PASSWORD`.** It used to fall back to the default password when the variable was missing, which a `.env` written from `example.env` rather than by `setup.sh` relied on. Set `OPENSEARCH_PASSWORD` in `.env` to the admin password.
 * **TurkeyBite indices can now be deleted after a retention period, once you set one.** With `TURKEYBITE_RETENTION_DAYS` set and passed to the librarian, the librarian creates an OpenSearch retention policy at start, and every daily index created from then on is deleted that many days after it is created. Unset, which is what an existing `docker-compose.yml` gives the librarian, nothing is created and the librarian logs that retention is not configured. Indices from before the upgrade are kept until you decide otherwise, and a shorter period is never applied without your confirmation; see [Data retention](#data-retention).
 * **URLs are trimmed by default.** Events now drop the query string, the fragment and any `user:password@` from every URL they store, in `bite.url` and in the raw packet, and the per-event log lines and the jobs the core queues do the same. Set `processor.privacy.urls: full` in `config.yaml` to keep them whole as before. Indices already written are unchanged; see [URLs and the raw packet](#urls-and-the-raw-packet).
+* **The worker and core containers check `config.yaml` before they start.** They run `python turkeybite check` and exit, with the reason in `docker compose logs`, if anything a worker reads is wrong: a CA file missing from that container, the default password, or a setting the workers would refuse. Under the `rq` pipeline the workers used to start regardless and drop events at ship time.
 * **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
 
 `docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build`.
@@ -237,6 +238,7 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 
 ### Troubleshooting
 
+* Check the configuration a worker reads: `docker compose run --rm --no-deps --entrypoint python turkeybite-worker turkeybite check`. The worker and core containers run this at start and refuse to start if it fails.
 * Check container logs: `docker compose logs -f [service_name]`
 * Restart services: `docker compose restart [service_name]`
 * Verify connectivity between containers: `docker compose exec turkeybite-core ping valkey`
@@ -382,7 +384,7 @@ To turn verification on with the bundled cluster (checked against `opensearchpro
          - ./vols/secrets/opensearch-root-ca.pem:/turkey-bite/opensearch-root-ca.pem:ro
    ```
 
-   The core never talks to OpenSearch, but it checks the settings that travel with every job it queues, so it needs the file too.
+   The core never talks to OpenSearch, but it checks the settings that travel with every job it queues, so it needs the file too. Both containers run `python turkeybite check` before they start, and stop with `CONFIGURATION ERROR` in their log if the file is not where `ca_certs` says. If a host still cannot be used when an event is shipped, because the core's `config.yaml` names a CA the worker's container lacks for instance, the worker logs that once rather than once per event, and no event reaches that host until it is fixed.
 
 4. In `config.yaml`:
 

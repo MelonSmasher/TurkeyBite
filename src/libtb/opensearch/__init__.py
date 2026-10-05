@@ -22,8 +22,10 @@ is shipped, so a mistake such as a CA file that is not where the configuration
 says stops the worker with a clear message instead of costing every event.
 """
 
+import hashlib
 import os
 import sys
+import tempfile
 from urllib.parse import urlparse
 
 
@@ -98,6 +100,38 @@ def tls_settings(host, where):
                              f'this container. Mount the CA certificate into every '
                              f'container that reads config.yaml.')
     return verify, ca_certs
+
+
+class ConfigurationError(ValueError):
+    """A host's settings cannot be used, so no event will reach it until they are fixed."""
+
+
+# Where a configuration error found while shipping is recorded as reported.
+# A file rather than a set in memory, since under the forking rq.Worker every
+# event is a new process and a set would be empty in each. The start scripts
+# clear it, so a container that starts with the fault says so again.
+REPORTED_DIR = os.path.join(tempfile.gettempdir(), 'turkeybite-config-errors')
+
+
+def report_once(message, log=_warn):
+    """Logs a configuration error once per container, however many processes hit it.
+
+    Returns True when this call logged it.
+    """
+    key = hashlib.sha1(message.encode('utf-8')).hexdigest()
+    if key in _warned:
+        return False
+    _warned.add(key)
+    try:
+        os.makedirs(REPORTED_DIR, exist_ok=True)
+        os.close(os.open(os.path.join(REPORTED_DIR, key), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False
+    except OSError:
+        # Nowhere to record it, so it is said once per process instead
+        pass
+    log(message)
+    return True
 
 
 def unverified(host):
