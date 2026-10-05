@@ -492,6 +492,22 @@ class ShortenTest(Setting, unittest.TestCase):
         self.assertEqual(result['action'], R.REFUSED)
         self.assertEqual(self.puts(), [])
 
+    def test_recreating_over_indices_too_young_to_delete_still_needs_confirming(self):
+        # Their copy of the deleted policy may have kept them longer than 90
+        # days, and creating it again would move them onto 90 days unasked
+        self.os.index('tb-index-2026-x20', 20, policy=R.POLICY_ID, initialised=False)
+        result = self.start(90)
+        self.assertEqual(result['action'], R.REFUSED)
+        self.assertEqual(self.puts(), [])
+        self.assertIn('copy of an earlier', self.log())
+
+    def test_confirming_the_recreation_creates_it_and_moves_them(self):
+        # The control for the refusal above
+        self.os.index('tb-index-2026-x20', 20, policy=R.POLICY_ID, initialised=False)
+        result = self.start(90, confirm_days=90)
+        self.assertEqual(result['action'], R.CREATE)
+        self.assertTrue(result['ok'])
+
     def test_nothing_is_attached_while_it_is_refused(self):
         self.history()
         self.os.index('tb-index-2024-01-01', 700)
