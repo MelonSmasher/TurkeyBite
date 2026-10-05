@@ -6,6 +6,8 @@ and over what range.
 """
 
 import asyncio
+import re
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import cast, or_, select, String
@@ -19,12 +21,14 @@ from ..search import fields as F
 from ..search import queries as Q
 from ..search import tbql
 from ..search.client import SearchClient, total
-from ..search.timerange import auto_interval
+from ..search.timerange import TimeRange, auto_interval
 from ..security import rbac
 from .analytics import NOISE, NOTABLE
-from .common import finding_out, risk_scores, time_range
+from .common import finding_out, like_escape, risk_scores, time_range
 
 router = APIRouter(tags=['entities'])
+
+_DOMAIN = re.compile(r'[a-z0-9_*-]+(\.[a-z0-9_*-]+)*\.?', re.ASCII)
 
 IDENTITY_FIELDS = ('bite.client_user', 'bite.client_hostname_short', 'bite.client_hostname',
                    'bite.client', 'bite.client_ips', 'bite.client_hosts_short',
@@ -46,7 +50,7 @@ def _top(aggs: dict, name: str) -> list[dict]:
 @router.get('/entities')
 async def list_entities(start: str | None = None, end: str | None = None, query: str = '',
                         sort: str = 'notable', size: int = 50,
-                        _: Principal = Depends(require(rbac.EVENTS_READ)),
+                        principal: Principal = Depends(require(rbac.EVENTS_READ)),
                         search: SearchClient = Depends(search_client),
                         db: AsyncSession = Depends(get_session)) -> dict:
     """The people and machines in the events, each with what they did and how risky."""
@@ -74,7 +78,8 @@ async def list_entities(start: str | None = None, end: str | None = None, query:
         buckets.sort(key=lambda b: ((b.get('notable') or {}).get('doc_count', 0), b['doc_count']),
                      reverse=True)
     buckets = buckets[:size]
-    scores = await risk_scores(db, [str(b['key']) for b in buckets])
+    scores = (await risk_scores(db, [str(b['key']) for b in buckets])
+              if principal.can(rbac.FINDINGS_READ) else {})
     items = []
     for b in buckets:
         score = scores.get(str(b['key']), {})
@@ -126,22 +131,29 @@ async def profile(field: str, value: str, request: Request, start: str | None = 
         'distinct_domains': {'cardinality': {'field': 'bite.registrable_domain'}},
         'first': {'min': {'field': '@timestamp'}},
         'last': {'max': {'field': '@timestamp'}},
-        'heat': {'date_histogram': {'field': '@timestamp', 'fixed_interval': '1h',
-                                    'min_doc_count': 1},
-                 'aggs': {'notable': {'filter': NOTABLE}}},
         'rcodes': {'terms': {'field': 'bite.response_code', 'size': 6}},
     }
+    # Their weekly rhythm needs a week, as on the overview
+    heat_tr = tr if tr.seconds >= 7 * 86400 else TimeRange(tr.end - timedelta(days=7), tr.end)
+    heat_aggs = {'heat': {'date_histogram': {'field': '@timestamp', 'fixed_interval': '1h',
+                                             'min_doc_count': 1},
+                          'aggs': {'notable': {'filter': NOTABLE}}}}
     query = {'bool': {'filter': [tr.filter(), selector]}}
     recent_query = {'bool': {'filter': [tr.filter(), selector, NOTABLE]}}
-    result, recent = await asyncio.gather(
+    result, recent, heat = await asyncio.gather(
         search.search({'size': 0, 'track_total_hits': True, 'query': query, 'aggs': aggs}),
         search.search({'size': 15, 'query': recent_query, '_source': {'excludes': ['packet']},
-                       'sort': [{'@timestamp': {'order': 'desc'}}]}))
+                       'sort': [{'@timestamp': {'order': 'desc'}}]}),
+        search.search({'size': 0, 'query': {'bool': {'filter': [heat_tr.filter(), selector]}},
+                       'aggs': heat_aggs}))
     a = result.get('aggregations') or {}
-    findings = (await db.execute(select(Finding).where(Finding.entity_value == str(value))
-                                 .order_by(Finding.last_seen.desc()).limit(30))).scalars().all()
-    score = (await risk_scores(db, [str(value)])).get(str(value), {'score': 0, 'findings': 0,
-                                                                   'by_severity': {}})
+    heat_buckets = ((heat.get('aggregations') or {}).get('heat') or {}).get('buckets', [])
+    findings: list = []
+    score = {'score': 0, 'findings': 0, 'by_severity': {}}
+    if principal.can(rbac.FINDINGS_READ):
+        findings = (await db.execute(select(Finding).where(Finding.entity_value == str(value))
+                                     .order_by(Finding.last_seen.desc()).limit(30))).scalars().all()
+        score = (await risk_scores(db, [str(value)])).get(str(value), score)
     audit.record(db, 'entity.view', principal=principal, request=request, target_type=field,
                  target_id=value, target_label=f'{F.BY_NAME[field].label} {value}',
                  details=tr.public())
@@ -173,7 +185,8 @@ async def profile(field: str, value: str, request: Request, start: str | None = 
         'response_codes': _top(a, 'rcodes'),
         'heat': [{'t': b.get('key_as_string'), 'count': b['doc_count'],
                   'notable': (b.get('notable') or {}).get('doc_count', 0)}
-                 for b in (a.get('heat') or {}).get('buckets', [])],
+                 for b in heat_buckets],
+        'heat_range': heat_tr.public(),
         'recent_notable': [{'id': h['_id'], 'index': h['_index'], 'source': h['_source']}
                            for h in recent.get('hits', {}).get('hits', [])],
         'findings': [finding_out(f) for f in findings],
@@ -189,7 +202,7 @@ async def domain_profile(domain: str, request: Request, start: str | None = None
                          db: AsyncSession = Depends(get_session)) -> dict:
     """Everything the events say about one domain, and why it is categorised as it is."""
     domain = domain.strip().lower()
-    if not domain or len(domain) > 253:
+    if len(domain) > 253 or not _DOMAIN.fullmatch(domain):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'That is not a domain')
     tr = time_range(start, end, 'now-7d')
     _, interval = auto_interval(tr, 72)
@@ -224,11 +237,13 @@ async def domain_profile(domain: str, request: Request, start: str | None = None
                                   'query': {'bool': {'filter': [tr.filter(), selector]}},
                                   'aggs': aggs})
     a = result.get('aggregations') or {}
-    pattern = f'%{domain}%'
-    findings = (await db.execute(select(Finding).where(or_(
-        Finding.title.ilike(pattern), Finding.entity_value == domain,
-        cast(Finding.evidence['top_domains'], String).ilike(pattern)))
-        .order_by(Finding.last_seen.desc()).limit(20))).scalars().all()
+    findings: list = []
+    if principal.can(rbac.FINDINGS_READ):
+        pattern = f'%{like_escape(domain)}%'
+        findings = (await db.execute(select(Finding).where(or_(
+            Finding.title.ilike(pattern, escape='\\'), Finding.entity_value == domain,
+            cast(Finding.evidence['top_domains'], String).ilike(pattern, escape='\\')))
+            .order_by(Finding.last_seen.desc()).limit(20))).scalars().all()
     audit.record(db, 'domain.view', principal=principal, request=request, target_type='domain',
                  target_id=domain, details=tr.public())
     await db.commit()

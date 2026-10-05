@@ -24,7 +24,7 @@ def record(db: AsyncSession, action: str, *, principal=None, actor_name: str | N
     event = AuditEvent(
         actor_type=actor_type or 'anonymous', actor_id=actor_id,
         actor_name=(actor_name or 'anonymous')[:200], action=action, outcome=outcome,
-        target_type=target_type, target_id=str(target_id) if target_id is not None else None,
+        target_type=target_type, target_id=str(target_id)[:200] if target_id is not None else None,
         target_label=(target_label or '')[:400] or None,
         ip=request.client.host if request is not None and request.client else None,
         details=details or {})

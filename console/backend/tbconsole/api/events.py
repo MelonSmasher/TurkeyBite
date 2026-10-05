@@ -76,6 +76,22 @@ async def list_fields(_: Principal = Depends(require(rbac.EVENTS_READ))) -> dict
                                               'fields': list(F.ENTITY_FIELDS)}}
 
 
+def prefix_pattern(prefix: str) -> str:
+    """A Lucene regular expression for values starting with `prefix`, in either
+    case, since values keep theirs (NXDOMAIN, lab-12). Everything but letters
+    and digits is escaped: Lucene gives @, &, ~, < and # meanings Python's
+    re.escape does not know about."""
+    out = []
+    for ch in prefix:
+        if ch.isalpha() and ch.isascii():
+            out.append(f'[{ch.lower()}{ch.upper()}]')
+        elif ch.isascii() and ch.isdigit():
+            out.append(ch)
+        else:
+            out.append('\\' + ch)
+    return ''.join(out) + '.*'
+
+
 @router.get('/fields/{name}/values')
 async def field_values(name: str, prefix: str = '', start: str | None = None,
                        _: Principal = Depends(require(rbac.EVENTS_READ)),
@@ -90,7 +106,7 @@ async def field_values(name: str, prefix: str = '', start: str | None = None,
     agg: dict = {'terms': {'field': f.name, 'size': 15}}
     prefix = prefix.strip()[:100]
     if prefix:
-        agg['terms']['include'] = re.escape(prefix.lower()) + '.*'
+        agg['terms']['include'] = prefix_pattern(prefix)
     result = await search.search({'size': 0, 'query': {'bool': {'filter': [tr.filter()]}},
                                   'aggs': {'v': agg}})
     buckets = ((result.get('aggregations') or {}).get('v') or {}).get('buckets', [])
@@ -141,9 +157,11 @@ async def search_events(body: SearchBody, request: Request,
         'sort': [{'@timestamp': {'order': body.sort}}],
         '_source': {'excludes': ['packet']},
     })
-    if get_settings().audit_all_searches:
+    # A search that picks someone out is as much a look at them as their
+    # profile, so it is recorded the same way; the first page is enough
+    if body.offset == 0 and (get_settings().audit_all_searches or tbql.names_someone(body.query)):
         audit.record(db, 'events.search', principal=principal, request=request,
-                     details={'query': body.query, **tr.public()})
+                     details={'query': body.query[:2000], **tr.public()})
         await db.commit()
     return {'total': total(result), 'took': result.get('took'), 'range': tr.public(),
             'hits': [_hit_out(h) for h in result.get('hits', {}).get('hits', [])]}
@@ -183,10 +201,18 @@ async def histogram(body: HistogramBody, _: Principal = Depends(require(rbac.EVE
 
 
 @router.post('/events/top')
-async def top_values(body: TopBody, _: Principal = Depends(require(rbac.EVENTS_READ)),
-                     search: SearchClient = Depends(search_client)) -> dict:
+async def top_values(body: TopBody, request: Request,
+                     principal: Principal = Depends(require(rbac.EVENTS_READ)),
+                     search: SearchClient = Depends(search_client),
+                     db: AsyncSession = Depends(get_session)) -> dict:
     """The commonest values of one field among the matching events."""
     tr = time_range(body.start, body.end)
+    field_def = F.resolve(body.field)
+    if body.field == F.ENTITY or (field_def is not None and field_def.identity):
+        # A ranking of people is a look at them, recorded as one
+        audit.record(db, 'events.top', principal=principal, request=request,
+                     target_type=body.field, details={'query': body.query[:2000], **tr.public()})
+        await db.commit()
     if body.field == F.ENTITY:
         groups = list(F.ENTITY_FIELDS)
         result = await search.search({'size': 0, 'track_total_hits': True,
@@ -215,13 +241,20 @@ async def top_values(body: TopBody, _: Principal = Depends(require(rbac.EVENTS_R
 @router.get('/events/doc/{index}/{doc_id}')
 async def get_document(index: str, doc_id: str, request: Request,
                        principal: Principal = Depends(require(rbac.EVENTS_READ)),
-                       search: SearchClient = Depends(search_client)) -> dict:
+                       search: SearchClient = Depends(search_client),
+                       db: AsyncSession = Depends(get_session)) -> dict:
     prefix = get_settings().opensearch_index.rstrip('*')
     if not _INDEX_RE.match(index) or not index.startswith(prefix) or len(doc_id) > 512:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That event does not exist')
     hit = await search.get(index, doc_id)
     if hit is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That event does not exist')
+    bite = (hit.get('_source') or {}).get('bite') or {}
+    audit.record(db, 'event.view', principal=principal, request=request, target_type='event',
+                 target_id=f'{index}/{doc_id}',
+                 target_label=str(bite.get('client_user') or bite.get('client_hostname_short')
+                                  or bite.get('client') or '')[:400] or None)
+    await db.commit()
     return _hit_out(hit)
 
 
@@ -299,17 +332,40 @@ async def export(body: ExportBody, request: Request,
         'Content-Disposition': f'attachment; filename="turkeybite-{stamp}.{body.format}"'})
 
 
+# Live tails open at once, per person, in this process
+MAX_LIVE_PER_USER = 3
+_live: dict[str, int] = {}
+
+
 @router.get('/events/live')
 async def live(request: Request, query: str = '',
                principal: Principal = Depends(require(rbac.EVENTS_READ)),
                search: SearchClient = Depends(search_client)):
-    """New matching events as server-sent events, polled every two seconds."""
+    """New matching events as server-sent events, polled every two seconds.
+
+    Each stream holds no database connection, and a person can have only a
+    few open, so tails left open in forgotten tabs cannot starve anyone.
+    """
     try:
         compiled = tbql.compile(query)
     except tbql.TbqlError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
+    who = str(principal.user.id)
+    if _live.get(who, 0) >= MAX_LIVE_PER_USER:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            f'At most {MAX_LIVE_PER_USER} live tails at once; close one in another tab.')
 
     async def stream():
+        # Counted only once the stream is running, so one that never starts
+        # cannot leave the count up
+        _live[who] = _live.get(who, 0) + 1
+        try:
+            async for chunk in _stream():
+                yield chunk
+        finally:
+            _live[who] = max(0, _live.get(who, 1) - 1)
+
+    async def _stream():
         since = datetime.now(timezone.utc) - timedelta(seconds=30)
         deadline = datetime.now(timezone.utc) + timedelta(minutes=30)
         seen: set[str] = set()

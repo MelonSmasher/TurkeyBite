@@ -11,11 +11,12 @@
   import EmptyState from '../lib/components/EmptyState.svelte';
   import EntityLink from '../lib/components/EntityLink.svelte';
   import EventDrawer from '../lib/components/EventDrawer.svelte';
+  import { opens } from '../lib/components/focus';
   import SeverityBadge from '../lib/components/SeverityBadge.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { ago, dateTime, num, taxon } from '../lib/format';
-  import { who } from '../lib/privacy';
+  import { findingText, who } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { prefs } from '../lib/stores/prefs.svelte';
@@ -29,12 +30,15 @@
     first: string | null; last: string | null; identity: Record<string, Bucket[]>;
     timeline: { t: string; count: number; high: number; medium: number; low: number; none: number }[];
     domains: DomainRow[]; risky_domains: DomainRow[]; purposes: Bucket[]; risks: Bucket[]; services: Bucket[];
-    response_codes: Bucket[]; heat: { t: string; count: number; notable: number }[];
+    response_codes: Bucket[]; heat: { t: string; count: number; notable: number }[]; heat_range?: { from: string; to: string };
     recent_notable: Hit[]; findings: Finding[]; risk: { score: number; findings: number; by_severity: Record<string, number> };
   }
 
-  const field = $derived(router.params.field);
-  const value = $derived(router.params.value);
+  // Read from what App passes, which belongs to this page's route alone
+  let { params }: { params: Record<string, string> } = $props();
+  const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const field = $derived(params.field);
+  const value = $derived(params.value);
   if (!router.query.get('from')) timeRange.sync();
   let selected = $state<Hit | null>(null);
 
@@ -170,7 +174,7 @@
           {#each p?.findings ?? [] as f (f.id)}
             <a class="finding" href="/findings/{f.id}">
               <SeverityBadge severity={f.severity} compact />
-              <span class="f-text"><span class="truncate f-title">{f.title}</span><span class="muted small">F-{f.number} · {ago(f.last_seen)}</span></span>
+              <span class="f-text"><span class="truncate f-title">{findingText(f.title, f)}</span><span class="muted small">F-{f.number} · {ago(f.last_seen)}</span></span>
               <StatusBadge status={f.status} />
             </a>
           {:else}
@@ -180,7 +184,7 @@
       </section>
     </div>
     <div class="span-6">
-      <ChartCard title="When they are active" subtitle="Their last seven days by weekday and hour">
+      <ChartCard title="When they are active" subtitle={p?.heat_range ? `By weekday and hour, ${shortDay(p.heat_range.from)} to ${shortDay(p.heat_range.to)}` : 'By weekday and hour'}>
         {#if p}<Heatmap points={p.heat} />{/if}
       </ChartCard>
     </div>
@@ -194,7 +198,7 @@
               <thead><tr><th>Time</th><th>Name</th><th>Categories</th><th>Risk</th></tr></thead>
               <tbody>
                 {#each p.recent_notable as hit (hit.id)}
-                  <tr class="clickable" onclick={() => (selected = hit)}>
+                  <tr class="clickable" onclick={() => (selected = hit)} use:opens={() => (selected = hit)}>
                     <td class="nowrap tabular small">{dateTime(hit.source['@timestamp'], true)}</td>
                     <td class="mono small">{hit.source.bite?.requested?.[0]}</td>
                     <td>{#each hit.source.bite?.contexts ?? [] as c (c)}<span class="badge">{c}</span> {/each}</td>

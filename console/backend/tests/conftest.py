@@ -23,6 +23,7 @@ os.environ['TBCONSOLE_COOKIE_SECURE'] = 'false'
 os.environ['TBCONSOLE_RUN_WORKERS'] = 'false'
 os.environ['TBCONSOLE_STATIC_DIR'] = ''
 os.environ['TBCONSOLE_PUBLIC_URL'] = 'http://testserver'
+os.environ['TBCONSOLE_RULE_INGEST_DELAY_SEC'] = '0'
 
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
@@ -62,7 +63,9 @@ async def clean():
         await session.execute(text(f'TRUNCATE {names} RESTART IDENTITY CASCADE'))
         await session.commit()
     from tbconsole import settings_store
+    from tbconsole.api import auth
     settings_store.forget_cache()
+    auth._failures.clear()
     yield
     await db.dispose()
 
@@ -145,3 +148,27 @@ async def login(client, username='alice', password='correct horse battery'):
     response = await client.post('/api/v1/auth/login', json={'username': username, 'password': password})
     assert response.status_code == 200, response.text
     return {'X-CSRF-Token': client.cookies.get('tbc_csrf')}
+
+
+@pytest.fixture
+def directory(monkeypatch):
+    from ldap3 import MOCK_SYNC, OFFLINE_SLAPD_2_4, Connection, Server
+
+    from tbconsole.security import ldap as ldap_
+    server = Server('mock', get_info=OFFLINE_SLAPD_2_4)
+    seed = Connection(server, user='cn=svc,dc=example,dc=org', password='svc-pw', client_strategy=MOCK_SYNC)
+    seed.strategy.add_entry('cn=svc,dc=example,dc=org', {'userPassword': 'svc-pw', 'objectClass': 'person', 'sn': 'svc'})
+    seed.strategy.add_entry('uid=ava,ou=people,dc=example,dc=org', {
+        'userPassword': 'ava-pw', 'objectClass': ['person', 'inetOrgPerson'], 'uid': 'ava', 'sn': 'Chen',
+        'displayName': 'Ava Chen', 'mail': 'ava@example.org',
+        'memberOf': ['cn=safeguarding,ou=groups,dc=example,dc=org']})
+    seed.strategy.add_entry('uid=bob,ou=people,dc=example,dc=org', {
+        'userPassword': 'bob-pw', 'objectClass': ['person', 'inetOrgPerson'], 'uid': 'bob', 'sn': 'B',
+        'memberOf': ['cn=students,ou=groups,dc=example,dc=org']})
+    monkeypatch.setattr(ldap_, '_STRATEGY', MOCK_SYNC)
+    monkeypatch.setattr(ldap_, '_MOCK_SERVER', server)
+    return ldap_.config_with_defaults({
+        'enabled': True, 'urls': ['ldap://mock'], 'bind_dn': 'cn=svc,dc=example,dc=org',
+        'user_base_dn': 'ou=people,dc=example,dc=org', 'user_filter': '(&(objectClass=person)(uid={username}))',
+        'role_mappings': [{'group': 'cn=safeguarding,ou=groups,dc=example,dc=org', 'role': 'analyst'},
+                          {'group': 'CN=IT,ou=groups,dc=example,dc=org', 'role': 'admin'}]})

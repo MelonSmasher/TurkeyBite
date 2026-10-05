@@ -12,6 +12,7 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { ago, dateTime, num, taxon } from '../lib/format';
+  import { findingText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
@@ -28,7 +29,9 @@
   }
 
   if (!router.query.get('from')) timeRange.sync();
-  const domain = $derived(router.params.domain);
+  // Read from what App passes, which belongs to this page's route alone
+  let { params }: { params: Record<string, string> } = $props();
+  const domain = $derived(params.domain);
   const data = new Query((signal) => api.get<DomainData>(`/domains/${encodeURIComponent(domain)}${qs({ start: timeRange.from, end: timeRange.to })}`, { signal }));
   const d = $derived(data.data);
 
@@ -164,7 +167,7 @@
           {#each d?.findings ?? [] as f (f.id)}
             <a class="finding" href="/findings/{f.id}">
               <SeverityBadge severity={f.severity} compact />
-              <span class="f-text"><span class="truncate">{f.title}</span><span class="muted small">F-{f.number} · {ago(f.last_seen)}</span></span>
+              <span class="f-text"><span class="truncate">{findingText(f.title, f)}</span><span class="muted small">F-{f.number} · {ago(f.last_seen)}</span></span>
               <StatusBadge status={f.status} />
             </a>
           {:else}<p class="muted">No finding mentions this domain.</p>{/each}

@@ -10,6 +10,7 @@
   import EmptyState from '../lib/components/EmptyState.svelte';
   import EntityLink from '../lib/components/EntityLink.svelte';
   import EventDrawer from '../lib/components/EventDrawer.svelte';
+  import { opens } from '../lib/components/focus';
   import Menu from '../lib/components/Menu.svelte';
   import Modal from '../lib/components/Modal.svelte';
   import PageHeader from '../lib/components/PageHeader.svelte';
@@ -18,7 +19,7 @@
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { tip } from '../lib/components/tooltip';
   import { compact, dateTime, num, taxon } from '../lib/format';
-  import { who } from '../lib/privacy';
+  import { maskQuery, who } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { fields } from '../lib/stores/fields.svelte';
@@ -60,17 +61,21 @@
   const histogram = new Query((signal) => api.post<{ interval: string; total: number; keys: string[];
     buckets: { t: string; count: number; split: Record<string, number> }[] }>('/events/histogram', {
     query, from: timeRange.from, to: timeRange.to, split }, { signal }));
-  const saved = new Query((signal) => api.get<{ id: string; name: string; query: string; time_range: { from?: string; to?: string }; pinned: boolean }[]>('/saved-searches', { signal }),
+  const saved = new Query((signal) => api.get<{ id: string; name: string; query: string; time_range: { from?: string; to?: string }; pinned: boolean; mine: boolean }[]>('/saved-searches', { signal }),
                           { enabled: () => session.can('dashboards:read') });
   const fieldTop = new Query((signal) => openField
     ? api.post<{ field: string; total: number; missing?: number; distinct?: number; values: { key: string; count: number; field?: string }[] }>(
         '/events/top', { query, from: timeRange.from, to: timeRange.to, field: openField, size: 8 }, { signal })
     : Promise.resolve(null));
 
+  // Bumped with every new search, so a page of an older one that arrives late is dropped
+  let generation = 0;
+  let loadingMore = $state(false);
+
   $effect(() => {
     // A new search starts again at the first page
     void query; void timeRange.from; void timeRange.to;
-    untrack(() => { page = 0; extra = []; });
+    untrack(() => { page = 0; extra = []; generation += 1; });
   });
 
   const queryError = $derived(results.error instanceof ApiError ? results.error.queryError ?? null : null);
@@ -97,13 +102,30 @@
   }
 
   async function more() {
-    page += 1;
+    if (loadingMore) return;
+    const asked = generation;
+    const next = page + 1;
+    loadingMore = true;
     try {
       const data = await api.post<{ hits: Hit[] }>('/events/search', {
-        query, from: timeRange.from, to: timeRange.to, size: PAGE, offset: page * PAGE });
+        query, from: timeRange.from, to: timeRange.to, size: PAGE, offset: next * PAGE });
+      if (asked !== generation) return;
+      page = next;
       extra = [...extra, ...data.hits];
     } catch (e) {
-      toasts.error('Could not load more', errorText(e));
+      if (asked === generation) toasts.error('Could not load more', errorText(e));
+    } finally {
+      loadingMore = false;
+    }
+  }
+
+  async function forget(id: string, name: string) {
+    try {
+      await api.del(`/saved-searches/${id}`);
+      saved.reload();
+      toasts.success('Saved search removed', name);
+    } catch (e) {
+      toasts.error('Could not remove it', errorText(e));
     }
   }
 
@@ -119,6 +141,13 @@
       liveHits = [{ ...hit, source: { ...hit.source, _fresh: true } }, ...liveHits].slice(0, 300);
     });
     source.addEventListener('problem', (event) => toasts.error('Live tail', JSON.parse((event as MessageEvent).data).message));
+    // The server ends a tail after a while; reconnecting by itself would keep
+    // one open for ever, so the tail stops and says so
+    source.addEventListener('end', () => {
+      source.close();
+      live = false;
+      toasts.push({ kind: 'info', title: 'Live tail stopped', body: 'It ran for its full time. Start it again to keep watching.' });
+    });
     return () => source.close();
   });
 
@@ -225,7 +254,12 @@
   <QueryBar bind:value={draft} onsubmit={run} error={queryError} autofocus />
   <div class="quick">
     {#each pinned as s (s.id)}
-      <a class="chip" href="/explore{qs({ q: s.query, from: s.time_range.from, to: s.time_range.to })}"><Bookmark size={12} /> {s.name}</a>
+      <span class="chip saved-chip">
+        <a href="/explore{qs({ q: s.query, from: s.time_range.from, to: s.time_range.to })}"><Bookmark size={12} /> {s.name}</a>
+        {#if s.mine || session.can('users:admin')}
+          <button class="chip-x" aria-label="Remove the saved search {s.name}" use:tip={'Remove'} onclick={() => forget(s.id, s.name)}><X size={11} /></button>
+        {/if}
+      </span>
     {/each}
     {#each recent.slice(0, 4) as r (r)}
       <button class="chip" onclick={() => run(r)}><Search size={12} /> <span class="mono truncate qtext">{r}</span></button>
@@ -281,7 +315,7 @@
                       {@const shown = def.identity ? who(v.key, def.name) : def.hierarchical ? taxon(v.key) : v.key}
                       <div class="fv">
                         <span class="fv-bar" style:width="{Math.max(2, share * 100)}%"></span>
-                        <span class="fv-key truncate" title={v.key}>{shown}</span>
+                        <span class="fv-key truncate" title={shown}>{shown}</span>
                         <span class="fv-count tabular">{compact(v.count)}</span>
                         <button class="fv-act" onclick={() => addTerm(`${def.aliases[0] ?? def.name}:${/[\s():"]/.test(v.key) ? `"${v.key}"` : v.key}`)} aria-label="Filter for {v.key}"><Plus size={12} /></button>
                         <button class="fv-act" onclick={() => addTerm(`${def.aliases[0] ?? def.name}:${/[\s():"]/.test(v.key) ? `"${v.key}"` : v.key}`, true)} aria-label="Filter out {v.key}"><Minus size={12} /></button>
@@ -314,7 +348,7 @@
           </thead>
           <tbody>
             {#each hits as hit (hit.id + hit.index)}
-              <tr class="clickable" class:fresh={hit.source._fresh} class:selected={selected?.id === hit.id} onclick={() => (selected = hit)}>
+              <tr class="clickable" class:fresh={hit.source._fresh} class:selected={selected?.id === hit.id} onclick={() => (selected = hit)} use:opens={() => (selected = hit)}>
                 {#each columns as c (c)}
                   {@const v = value(hit, c)}
                   <td class:nowrap={c === '@timestamp'}>
@@ -345,7 +379,7 @@
         </table>
       </div>
       {#if results.data && results.data.total > hits.length - (live ? liveHits.length : 0) && hits.length < 10000}
-        <div class="more"><button class="btn" onclick={more}>Load {PAGE} more</button>
+        <div class="more"><button class="btn" onclick={more} disabled={loadingMore}>{loadingMore ? 'Loading…' : `Load ${PAGE} more`}</button>
           <span class="muted">{num(hits.length)} of {num(results.data.total)}</span></div>
       {/if}
     {/if}
@@ -357,7 +391,7 @@
 <Modal bind:open={saveOpen} title="Save this search" subtitle="Pinned searches appear under the search bar.">
   <div class="stack">
     <label class="field"><span class="field-label">Name</span><input class="input" bind:value={saveName} /></label>
-    <div class="field"><span class="field-label">Query</span><code class="code">{query || '(everything)'}</code></div>
+    <div class="field"><span class="field-label">Query</span><code class="code">{maskQuery(query) || '(everything)'}</code></div>
     <label class="checkbox"><input type="checkbox" bind:checked={saveShared} /> Share with everyone who can read dashboards</label>
   </div>
   {#snippet footer()}
@@ -368,6 +402,12 @@
 
 <style>
   .query-area { margin-bottom: 16px; }
+  .saved-chip { padding-right: 4px; }
+  .saved-chip a { display: inline-flex; align-items: center; gap: 5px; color: inherit; }
+  .saved-chip a:hover { text-decoration: none; }
+  .chip-x { display: grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 99px; background: none;
+    color: var(--text-3); cursor: pointer; }
+  .chip-x:hover { background: var(--surface-3, var(--divider)); color: var(--text); }
   .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
   .qtext { max-width: 260px; font-size: 0.8rem; }
   .small { font-size: 0.84rem; }

@@ -1,7 +1,9 @@
 """Queueing deliveries. The dispatcher sends them; this decides what and where."""
 
+import re
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..analysis.ruletypes import SEVERITY_RANK
 from ..config import get_settings
 from ..models import Finding, Rule, Webhook, WebhookDelivery
+from ..security import crypto
+
+
+def display_url(url: str) -> str:
+    """Where a webhook goes, without the path or query that may carry its credential."""
+    parts = urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    netloc = (parts.hostname or '') + (f':{port}' if port else '')
+    tail = '/…' if (parts.path not in ('', '/') or parts.query) else '/'
+    return f'{parts.scheme}://{netloc}{tail}'[:400]
+
+
+def set_url(hook: Webhook, url: str) -> None:
+    hook.url_enc = crypto.encrypt(url)
+    hook.url_display = display_url(url)
+
+
+def url_of(hook: Webhook) -> str:
+    return crypto.decrypt(hook.url_enc)
+
+
+_URL = re.compile(r'\b[a-z][a-z0-9+.-]*://\S+', re.IGNORECASE)
+_ADDRESS = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\[[0-9a-f:]+\](?::\d+)?', re.IGNORECASE)
+
+
+def public_error(error: str | None) -> str | None:
+    """A rule's error as it may leave the console: without the addresses of
+    the cluster or anything else on the inside, and short. The whole error is
+    on the rule's page."""
+    if not error:
+        return error
+    text = _ADDRESS.sub('[address]', _URL.sub('[url]', error))
+    return text if len(text) <= 300 else text[:299] + '…'
 
 
 def finding_url(finding: Finding) -> str:
@@ -50,7 +88,8 @@ def event_body(event: str, finding: Finding | None = None, redact: bool = False,
         body['finding'] = finding_body(finding, redact)
         body['url'] = finding_url(finding)
     if rule is not None:
-        body['rule'] = {'id': str(rule.id), 'name': rule.name, 'last_error': rule.last_error,
+        body['rule'] = {'id': str(rule.id), 'name': rule.name,
+                        'last_error': public_error(rule.last_error),
                         'consecutive_failures': rule.consecutive_failures}
         body['url'] = f'{get_settings().public_url}/rules/{rule.id}'
     if message:

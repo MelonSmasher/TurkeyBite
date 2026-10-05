@@ -15,7 +15,9 @@
   import type { Dashboard, Widget } from '../lib/types';
 
   fields.load();
-  const id = $derived(router.params.id);
+  // Read from what App passes, which belongs to this page's route alone
+  let { params }: { params: Record<string, string> } = $props();
+  const id = $derived(params.id);
   const board = new Query((signal) => api.get<Dashboard>(`/dashboards/${id}`, { signal }));
   let editing = $state(false);
   let draft = $state<Dashboard | null>(null);

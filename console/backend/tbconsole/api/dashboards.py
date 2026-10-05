@@ -11,10 +11,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
+from ..analysis import engine
 from ..db import get_session
 from ..deps import Principal, require
 from ..models import Dashboard, SavedSearch
@@ -134,13 +135,15 @@ def _check_widgets(widgets: list[dict]) -> list[dict]:
                                 f'Widget type is one of {", ".join(WIDGET_TYPES)}')
         if widget.get('viz') and widget['viz'] not in VIZ:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f'Widget viz is one of {", ".join(VIZ)}')
-        if int(widget.get('span', 6)) not in (3, 4, 6, 8, 12):
+        if widget.get('span', 6) not in (3, 4, 6, 8, 12):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Widget span is 3, 4, 6, 8 or 12')
         widget.setdefault('id', str(uuid.uuid4())[:8])
     return widgets
 
 
 async def sync_builtin_dashboards(db: AsyncSession) -> None:
+    # Several console processes may start at once; they take turns
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': engine.SYNC_LOCK})
     existing = {d.builtin_key: d for d in (await db.execute(
         select(Dashboard).where(Dashboard.builtin_key.is_not(None)))).scalars()}
     for spec in BUILTIN_DASHBOARDS:
@@ -280,33 +283,43 @@ async def list_searches(principal: Principal = Depends(require(rbac.DASHBOARDS_R
 
 
 @router.post('/saved-searches', status_code=status.HTTP_201_CREATED)
-async def create_search(body: SavedSearchBody,
+async def create_search(body: SavedSearchBody, request: Request,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
     saved = SavedSearch(owner_id=principal.user.id, **body.model_dump())
     db.add(saved)
+    await db.flush()
+    # A saved search can name a person, and a shared one shows it to everyone
+    audit.record(db, 'search.save', principal=principal, request=request,
+                 target_type='saved_search', target_id=saved.id, target_label=saved.name,
+                 details={'query': saved.query, 'shared': saved.shared})
     await db.commit()
     await db.refresh(saved)
     return saved_search_out(saved, principal.user.id)
 
 
 @router.put('/saved-searches/{search_id}')
-async def update_search(search_id: str, body: SavedSearchBody,
+async def update_search(search_id: str, body: SavedSearchBody, request: Request,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
     saved = await _get_search(db, search_id, principal, write=True)
     for name, value in body.model_dump().items():
         setattr(saved, name, value)
+    audit.record(db, 'search.update', principal=principal, request=request,
+                 target_type='saved_search', target_id=saved.id, target_label=saved.name,
+                 details={'query': saved.query, 'shared': saved.shared})
     await db.commit()
     await db.refresh(saved)
     return saved_search_out(saved, principal.user.id)
 
 
 @router.delete('/saved-searches/{search_id}')
-async def delete_search(search_id: str,
+async def delete_search(search_id: str, request: Request,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
     saved = await _get_search(db, search_id, principal, write=True)
+    audit.record(db, 'search.delete', principal=principal, request=request,
+                 target_type='saved_search', target_id=saved.id, target_label=saved.name)
     await db.delete(saved)
     await db.commit()
     return {'ok': True}

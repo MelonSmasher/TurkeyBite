@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
 from ..db import get_session
-from ..deps import Principal, current_principal
+from ..deps import Principal, session_principal
 from ..models import UserSession
 from ..security import crypto, passwords, sessions, totp
 from .common import parse_uuid, ts, user_out
@@ -34,6 +34,9 @@ class PreferencesBody(BaseModel):
     privacy_mode: bool | None = None
     sidebar_collapsed: bool | None = None
     columns: list[str] | None = None
+    # When the browser made the change, in milliseconds: an older save
+    # arriving late, from another tab, does not undo a newer one
+    updated_at: int | None = Field(None, ge=0)
 
 
 class PasswordBody(BaseModel):
@@ -45,8 +48,11 @@ class CodeBody(BaseModel):
     code: str = Field(max_length=20)
 
 
-class DisableMfaBody(BaseModel):
+class PasswordOnly(BaseModel):
     password: str = Field(max_length=1024)
+
+
+DisableMfaBody = PasswordOnly
 
 
 def _local_only(principal: Principal) -> None:
@@ -57,7 +63,7 @@ def _local_only(principal: Principal) -> None:
 
 @router.patch('')
 async def update_profile(body: ProfileBody, request: Request,
-                         principal: Principal = Depends(current_principal),
+                         principal: Principal = Depends(session_principal),
                          db: AsyncSession = Depends(get_session)) -> dict:
     _local_only(principal)
     user = await db.merge(principal.user)
@@ -73,7 +79,7 @@ async def update_profile(body: ProfileBody, request: Request,
 
 @router.put('/preferences')
 async def update_preferences(body: PreferencesBody,
-                             principal: Principal = Depends(current_principal),
+                             principal: Principal = Depends(session_principal),
                              db: AsyncSession = Depends(get_session)) -> dict:
     user = await db.merge(principal.user)
     prefs = dict(user.preferences or {})
@@ -85,6 +91,8 @@ async def update_preferences(body: PreferencesBody,
     if data.get('density') and data['density'] not in DENSITIES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f'density is one of {", ".join(DENSITIES)}')
+    if data.get('updated_at') and int(prefs.get('updated_at') or 0) > data['updated_at']:
+        return prefs
     prefs.update(data)
     user.preferences = prefs
     await db.commit()
@@ -93,7 +101,7 @@ async def update_preferences(body: PreferencesBody,
 
 @router.post('/password')
 async def change_password(body: PasswordBody, request: Request,
-                          principal: Principal = Depends(current_principal),
+                          principal: Principal = Depends(session_principal),
                           db: AsyncSession = Depends(get_session)) -> dict:
     _local_only(principal)
     user = await db.merge(principal.user)
@@ -115,24 +123,35 @@ async def change_password(body: PasswordBody, request: Request,
 
 
 @router.post('/mfa/setup')
-async def mfa_setup(principal: Principal = Depends(current_principal),
+async def mfa_setup(body: PasswordOnly, request: Request,
+                    principal: Principal = Depends(session_principal),
                     db: AsyncSession = Depends(get_session)) -> dict:
-    """A new secret, pending until a code from it is confirmed."""
+    """A new secret, pending until a code from it is confirmed.
+
+    Asks for the password, so a borrowed session cannot bind the account to
+    someone else's authenticator and lock its owner out.
+    """
     _local_only(principal)
     user = await db.merge(principal.user)
+    if not passwords.verify_password(user.password_hash, body.password):
+        audit.record(db, 'account.mfa_setup', principal=principal, request=request,
+                     outcome='failure', details={'reason': 'wrong password'})
+        await db.commit()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The password is not right.')
     if user.totp_enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             'Two-factor authentication is already on. Turn it off first.')
     secret = totp.new_secret()
     user.totp_secret_enc = crypto.encrypt(secret)
     user.totp_last_step = None
+    audit.record(db, 'account.mfa_setup', principal=principal, request=request)
     await db.commit()
     return {'secret': secret, 'uri': totp.provisioning_uri(secret, user.username)}
 
 
 @router.post('/mfa/enable')
 async def mfa_enable(body: CodeBody, request: Request,
-                     principal: Principal = Depends(current_principal),
+                     principal: Principal = Depends(session_principal),
                      db: AsyncSession = Depends(get_session)) -> dict:
     _local_only(principal)
     user = await db.merge(principal.user)
@@ -151,7 +170,7 @@ async def mfa_enable(body: CodeBody, request: Request,
 
 @router.post('/mfa/disable')
 async def mfa_disable(body: DisableMfaBody, request: Request,
-                      principal: Principal = Depends(current_principal),
+                      principal: Principal = Depends(session_principal),
                       db: AsyncSession = Depends(get_session)) -> dict:
     _local_only(principal)
     user = await db.merge(principal.user)
@@ -166,7 +185,7 @@ async def mfa_disable(body: DisableMfaBody, request: Request,
 
 
 @router.get('/sessions')
-async def list_sessions(principal: Principal = Depends(current_principal),
+async def list_sessions(principal: Principal = Depends(session_principal),
                         db: AsyncSession = Depends(get_session)) -> list[dict]:
     rows = (await db.execute(select(UserSession).where(UserSession.user_id == principal.user.id)
                              .order_by(UserSession.last_seen_at.desc()))).scalars().all()
@@ -179,7 +198,7 @@ async def list_sessions(principal: Principal = Depends(current_principal),
 
 @router.delete('/sessions/{session_id}')
 async def end_session(session_id: str, request: Request,
-                      principal: Principal = Depends(current_principal),
+                      principal: Principal = Depends(session_principal),
                       db: AsyncSession = Depends(get_session)) -> dict:
     session = await db.get(UserSession, parse_uuid(session_id, 'That session'))
     if session is None or session.user_id != principal.user.id:

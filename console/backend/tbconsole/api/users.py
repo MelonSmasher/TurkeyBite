@@ -127,6 +127,7 @@ async def update_user(user_id: str, body: UpdateUser, request: Request,
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'This is the last admin.')
         changes['disabled'] = body.disabled
         user.disabled = body.disabled
+        user.disabled_reason = 'admin' if body.disabled else None
         if body.disabled:
             await sessions.end_all(db, user.id)
     if body.display_name is not None:

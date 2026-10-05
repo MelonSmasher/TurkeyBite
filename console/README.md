@@ -42,13 +42,26 @@ Then sign in as the bootstrap admin from `console.env`, change its password,
 turn on its second factor, and remove `TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD`. Put
 TLS in front of port 8710 with your usual reverse proxy; the console sets Secure
 cookies and HSTS and expects https. Behind a proxy, set
-`TBCONSOLE_FORWARDED_ALLOW_IPS` to its address so the audit log records people's
-addresses rather than the proxy's.
+`TBCONSOLE_FORWARDED_ALLOW_IPS` to its address or network so the audit log and
+the sign-in limits see people's addresses rather than the proxy's. With
+`docker-compose.yml` and a proxy on the host, requests reach the container from
+Docker's bridge network, which is what `console.env.example` trusts.
 
-The image migrates its database at start. Any number of replicas can run: the
-rule scheduler, webhook dispatcher and daily rollups claim their work with
-`SELECT ... FOR UPDATE SKIP LOCKED` or a lease, so nothing runs twice. Set
+The image migrates its database at start. Any number of replicas can run:
+migrations and the sync of built-in rules take a Postgres advisory lock in
+turn; the rule scheduler and webhook dispatcher claim their work with
+`SELECT ... FOR UPDATE SKIP LOCKED`, a rule stays locked while it runs, and the
+daily rollups and housekeeping hold a lease, so nothing runs twice. Set
 `TBCONSOLE_RUN_WORKERS=false` on replicas that should only serve.
+
+Housekeeping runs hourly: it deletes ended sessions, sent or abandoned webhook
+deliveries after `TBCONSOLE_DELIVERY_RETENTION_DAYS`, findings closed for longer
+than `TBCONSOLE_FINDING_RETENTION_DAYS` and audit events older than
+`TBCONSOLE_AUDIT_RETENTION_DAYS` (a year each by default; 0 keeps them). It also
+looks up every directory account that still has a session or an API key, so
+someone removed from the directory, or from every group that grants a role,
+loses access within `TBCONSOLE_LDAP_RECHECK_MINUTES` rather than when their
+session ends, and a changed group changes their role.
 
 ### A read-only account for OpenSearch
 
@@ -80,8 +93,13 @@ each step with a real username, and says where it fails.
 
 A username that belongs to a local account always signs in locally, whether the
 directory is up or not; that is what local accounts are for. Five wrong
-passwords lock a local account for fifteen minutes, and admins can require a
-second factor for local admins.
+passwords or codes lock a local account for fifteen minutes
+(`TBCONSOLE_LOGIN_MAX_FAILURES`, `TBCONSOLE_LOGIN_LOCKOUT_MINUTES`), ten failures
+for one username from one address hold that pair back for five minutes, and
+admins can require a second factor for local admins. Someone who lost their
+authenticator gets back in with
+`python -m tbconsole create-user NAME --password-stdin --reset-mfa`, which also
+ends their sessions; their role stays as it was unless `--role` is given.
 
 ## Rules
 
@@ -211,9 +229,9 @@ cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 export TBCONSOLE_SECRET_KEY=dev-secret-key-for-local-development-only TBCONSOLE_COOKIE_SECURE=false \
        TBCONSOLE_WEBHOOK_ALLOW_PRIVATE=true
-.venv/bin/python -m tbconsole demo seed                  # three weeks of made-up events, findings and all
+.venv/bin/python -m tbconsole demo seed --yes-replace-everything   # three weeks of made-up events
 .venv/bin/python -m tbconsole serve --port 8710 &
-.venv/bin/python -m tbconsole demo feed &                # keeps events arriving
+.venv/bin/python -m tbconsole demo feed --yes-replace-everything & # keeps events arriving
 .venv/bin/python -m tbconsole demo sink &                # a receiver for the demo webhooks
 
 cd ../frontend
@@ -223,7 +241,9 @@ npm install && npm run dev                               # http://localhost:5710
 `demo seed` invents a school, its people and machines, writes their events to
 OpenSearch in TurkeyBite's own index template, and runs the real rule engine
 over the last three days, so the findings are what the console would have
-raised. It empties the console's database first: never point it at a real one.
+raised. It deletes every `tb-index-*` index and empties the console's database
+first, so it refuses to run without `--yes-replace-everything`: never point it
+at a real cluster or database. The demo is left out of the Docker image.
 
 Tests: `pytest` in `backend/` (against a real Postgres, by default the dev one),
 and `npm run check`, `npm test` in `frontend/`. `npm run screenshots` renders the
@@ -231,11 +251,10 @@ screenshots in `docs/screenshots/` from the running app.
 
 ## Known limits
 
-- A webhook's address is checked before each delivery, but a name that
-  resolves differently a moment later (DNS rebinding) could still slip through;
-  the check narrows that window rather than closing it.
-- The per-address sign-in brake is kept in each process's memory; the
-  per-account lockout, which matters more, is in the database and holds across
-  replicas.
+- The sign-in brake per address and username is kept in each process's
+  memory; the per-account lockout, which matters more, is in the database and
+  holds across replicas.
+- Rules catch up on at most six hours of missed windows after the console has
+  been stopped; anything older is noted on the rule's run, not evaluated.
 - The live tail polls OpenSearch every two seconds rather than streaming from it.
 - Single sign-on is LDAP only for now; SAML and OIDC would sit beside it.

@@ -25,6 +25,7 @@
   let mfa = $state<{ secret: string; uri: string } | null>(null);
   let code = $state('');
   let disablePassword = $state('');
+  let setupPassword = $state('');
   const setupWanted = router.query.get('setup') === 'mfa';
 
   const qr = $derived(mfa ? renderSVG(mfa.uri, { border: 1 }) : '');
@@ -45,7 +46,11 @@
     } catch (e) { toasts.error('Could not change the password', errorText(e)); }
   }
   async function startMfa() {
-    try { mfa = await api.post('/account/mfa/setup'); } catch (e) { toasts.error('Could not start', errorText(e)); }
+    // The password, so a session left open cannot be tied to someone else's authenticator
+    try {
+      mfa = await api.post('/account/mfa/setup', { password: setupPassword });
+      setupPassword = '';
+    } catch (e) { toasts.error('Could not start', errorText(e)); }
   }
   async function enableMfa() {
     try {
@@ -153,7 +158,9 @@
           </div>
         {:else}
           <p class="muted">Local accounts are the way in when the directory is down, which is what makes them worth protecting with a second factor.</p>
-          <button class="btn btn-primary self" onclick={startMfa}><ShieldCheck size={15} /> Set it up</button>
+          <div class="row"><input class="input" type="password" placeholder="Your password, to set it up" bind:value={setupPassword} aria-label="Password"
+                                 onkeydown={(e) => { if (e.key === 'Enter' && setupPassword) startMfa(); }} />
+            <button class="btn btn-primary" disabled={!setupPassword} onclick={startMfa}><ShieldCheck size={15} /> Set it up</button></div>
         {/if}
       </section>
 

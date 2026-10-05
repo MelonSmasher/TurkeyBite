@@ -14,8 +14,11 @@
   import { routes } from './routes';
 
   let paletteOpen = $state(false);
-  let Page = $state<Component<any> | null>(null);
-  let pageKey = $state('');
+  // Page code, by route, as it arrives. The page shown is derived from the
+  // route in the same tick the route changes, so the page being left is gone
+  // before it could react to the next page's parameters.
+  let loaded = $state<Record<string, Component<any>>>({});
+  let loadFailed = $state(false);
 
   router.init(routes);
   setUnauthorizedHandler(() => {
@@ -27,26 +30,41 @@
   const ready = session.load().then((me) => {
     if (!me && !router.route?.public) {
       navigate(`/login?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
-    } else if (me?.mfa_required && router.path !== '/account') {
-      navigate('/account?setup=mfa', { replace: true });
     }
   });
 
+  // An admin who must set up a second factor can do nothing else until they
+  // have, wherever they try to go
+  $effect(() => {
+    if (session.me?.mfa_required && router.path !== '/account') navigate('/account?setup=mfa', { replace: true });
+  });
+
+  const RELOADED = 'tbc.reloaded';
+
   $effect(() => {
     const route = router.route;
-    const key = router.path;
-    if (!route) {
-      Page = null;
-      pageKey = key;
-      return;
-    }
+    if (!route || loaded[route.pattern]) return;
+    const pattern = route.pattern;
+    loadFailed = false;
     route.component().then((module) => {
-      if (router.path === key) {
-        Page = module.default;
-        pageKey = key;
+      loaded[pattern] = module.default;
+      sessionStorage.removeItem(RELOADED);
+    }).catch(() => {
+      if (router.route?.pattern !== pattern) return;
+      // The console was updated since this tab loaded it, and this page's code
+      // is gone: load the page afresh, once, rather than leave the last one up
+      if (sessionStorage.getItem(RELOADED) !== location.pathname) {
+        sessionStorage.setItem(RELOADED, location.pathname);
+        location.reload();
+      } else {
+        loadFailed = true;
       }
     });
   });
+
+  const Page = $derived(router.route ? loaded[router.route.pattern] ?? null : null);
+  const pageKey = $derived(router.path);
+  const pageParams = $derived(router.params);
 
   const openFindings = new Query(
     (signal) => api.get<{ open_by_severity: Record<string, number> }>('/findings/stats?days=1', { signal }),
@@ -58,7 +76,7 @@
 
 {#await ready then}
   {#if router.route?.public}
-    {#if Page}<Page />{/if}
+    {#if Page}<Page params={pageParams} />{/if}
   {:else if session.me}
     <div class="app" class:collapsed={prefs.sidebarCollapsed}>
       <Sidebar openFindings={urgent} />
@@ -71,10 +89,16 @@
             </EmptyState>
           {:else if !allowed}
             <EmptyState icon={ShieldAlert} title="You do not have access to this" body="Your role does not include this page. An administrator can change that." />
+          {:else if loadFailed}
+            <EmptyState title="This page could not be loaded" body="The console may have been updated. Reload to get the latest version.">
+              <button class="btn" onclick={() => location.reload()}>Reload</button>
+            </EmptyState>
           {:else if Page}
             {#key pageKey}
-              <div class="page fade-enter"><Page /></div>
+              <div class="page fade-enter"><Page params={pageParams} /></div>
             {/key}
+          {:else}
+            <div class="skeleton" style="height:320px" aria-busy="true" aria-label="Loading"></div>
           {/if}
         </main>
       </div>

@@ -56,7 +56,7 @@ def _changes(current: dict[str, int], previous: dict[str, int], facet: str) -> l
 
 @router.get('/overview')
 async def overview(start: str | None = None, end: str | None = None,
-                   _: Principal = Depends(require(rbac.EVENTS_READ)),
+                   principal: Principal = Depends(require(rbac.EVENTS_READ)),
                    search: SearchClient = Depends(search_client),
                    db: AsyncSession = Depends(get_session)) -> dict:
     tr = time_range(start, end)
@@ -134,20 +134,25 @@ async def overview(start: str | None = None, end: str | None = None,
                  reverse=True)
 
     risky_entities = Q.group_buckets((a.get('risky_entities') or {}), entity_fields)[:8]
-    scores = await risk_scores(db, [str(b['key']) for b in risky_entities])
-
-    # Findings, from the console's own records
-    open_counts = dict((await db.execute(
-        select(Finding.severity, func.count()).where(Finding.status.in_(engine.OPEN))
-        .group_by(Finding.severity))).all())
-    created_now = (await db.execute(select(func.count()).select_from(Finding).where(
-        Finding.created_at >= tr.start, Finding.created_at < tr.end))).scalar_one()
-    created_before = (await db.execute(select(func.count()).select_from(Finding).where(
-        Finding.created_at >= prev.start, Finding.created_at < prev.end))).scalar_one()
-    rank = case({s: i for s, i in SEVERITY_RANK.items()}, value=Finding.severity, else_=0)
-    latest_findings = (await db.execute(
-        select(Finding).where(Finding.status.in_(engine.OPEN))
-        .order_by(rank.desc(), Finding.last_seen.desc()).limit(6))).scalars().all()
+    # Findings come from the console's own records, and only for those who
+    # may read findings: an events-only API key gets the events alone
+    can_findings = principal.can(rbac.FINDINGS_READ)
+    scores = await risk_scores(db, [str(b['key']) for b in risky_entities]) if can_findings else {}
+    open_counts: dict = {}
+    created_now = created_before = 0
+    latest_findings: list = []
+    if can_findings:
+        open_counts = dict((await db.execute(
+            select(Finding.severity, func.count()).where(Finding.status.in_(engine.OPEN))
+            .group_by(Finding.severity))).all())
+        created_now = (await db.execute(select(func.count()).select_from(Finding).where(
+            Finding.created_at >= tr.start, Finding.created_at < tr.end))).scalar_one()
+        created_before = (await db.execute(select(func.count()).select_from(Finding).where(
+            Finding.created_at >= prev.start, Finding.created_at < prev.end))).scalar_one()
+        rank = case({s: i for s, i in SEVERITY_RANK.items()}, value=Finding.severity, else_=0)
+        latest_findings = (await db.execute(
+            select(Finding).where(Finding.status.in_(engine.OPEN))
+            .order_by(rank.desc(), Finding.last_seen.desc()).limit(6))).scalars().all()
 
     latest_ms = ((latest.get('aggregations') or {}).get('latest') or {}).get('value')
     total_now, total_before = total(current), total(previous)
@@ -253,6 +258,9 @@ async def pivot(body: PivotBody, _: Principal = Depends(require(rbac.EVENTS_READ
             seconds, name = auto_interval(tr, 120)
         else:
             seconds, name = interval_seconds(body.interval), body.interval
+            if tr.seconds / seconds > 2000:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    'That interval makes too many buckets; choose a longer one.')
         sub = metric
         if split:
             sub = {'s': _terms(split, body.split_size, metric)}

@@ -5,6 +5,7 @@
   import CopyButton from '../lib/components/CopyButton.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
+  import { opens } from '../lib/components/focus';
   import JsonView from '../lib/components/JsonView.svelte';
   import Menu from '../lib/components/Menu.svelte';
   import Modal from '../lib/components/Modal.svelte';
@@ -13,6 +14,7 @@
   import Switch from '../lib/components/Switch.svelte';
   import { tip } from '../lib/components/tooltip';
   import { ago, fullTime, SEVERITIES } from '../lib/format';
+  import { maskDeep, maskText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
@@ -217,10 +219,10 @@ def verify(secret: str, body: bytes, header: str) -> bool:
       <thead><tr><th>Status</th><th>Event</th><th>About</th><th>Webhook</th><th class="num">Tries</th><th>Answer</th><th>When</th><th></th></tr></thead>
       <tbody>
         {#each deliveries.data ?? [] as d (d.id)}
-          <tr class="clickable" onclick={() => openDelivery(d)}>
+          <tr class="clickable" onclick={() => openDelivery(d)} use:opens={() => openDelivery(d)}>
             <td><span class="dstate {d.status}">{d.status === 'succeeded' ? 'Delivered' : d.status === 'failed' ? 'Retrying' : d.status === 'dead' ? 'Dead' : 'Queued'}</span></td>
             <td class="mono small">{d.event}</td>
-            <td class="truncate about">{d.title ?? '–'}</td>
+            <td class="truncate about">{d.title ? maskText(d.title, d.entity) : '–'}</td>
             <td class="muted small">{hookName.get(d.webhook_id) ?? '–'}</td>
             <td class="num">{d.attempts}</td>
             <td class="small">{d.last_status_code ? `HTTP ${d.last_status_code}` : d.last_error ? 'No answer' : '–'}{d.duration_ms !== null ? ` · ${d.duration_ms} ms` : ''}</td>
@@ -304,7 +306,7 @@ def verify(secret: str, body: bytes, header: str) -> bool:
         <span class="muted">Created</span><span>{fullTime(detail.created_at)}</span>
       </div>
       {#if detail.response_snippet}<div class="field"><span class="field-label">Response</span><pre class="code">{detail.response_snippet}</pre></div>{/if}
-      <div class="field"><span class="field-label"><Braces size={13} /> As sent to the receiver</span><div class="json"><JsonView value={detail.rendered ?? detail.payload} /></div></div>
+      <div class="field"><span class="field-label"><Braces size={13} /> As sent to the receiver</span><div class="json"><JsonView value={maskDeep(detail.rendered ?? detail.payload, detail.entity)} /></div></div>
       {#if canWrite}<button class="btn" onclick={() => detail && redeliver(detail)}><RefreshCw size={14} /> Send again</button>{/if}
     </div>
   {/if}

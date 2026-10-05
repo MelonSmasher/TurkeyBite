@@ -235,11 +235,20 @@ async def test_a_query_mistake_comes_back_with_its_position(client):
     assert response.json()['query_error']['position'] == 12
 
 
-async def test_documents_are_only_read_from_turkeybite_indices(client):
+async def test_documents_are_only_read_from_turkeybite_indices(client, search):
     await make_user('ana', role='analyst')
     await login(client, 'ana')
+    search.answer = lambda body, index=None: {'hits': {'hits': [
+        {'_index': index, '_id': 'abc', '_source': {'bite': {'client_user': 'ava'}}}]}}
     for index in ('.kibana', 'security-auditlog-2026', '..%2Fsecret'):
         assert (await client.get(f'/api/v1/events/doc/{index}/abc')).status_code == 404
+    # Refused before OpenSearch was asked, not because it had nothing
+    assert search.bodies == []
+    response = await client.get('/api/v1/events/doc/tb-index-2026.10.05/abc')
+    assert response.status_code == 200 and len(search.bodies) == 1
+    async with db.sessionmaker()() as session:
+        viewed = (await session.execute(select(AuditEvent).where(AuditEvent.action == 'event.view'))).scalars().all()
+    assert [e.target_label for e in viewed] == ['ava']
 
 
 async def test_search_unavailability_is_a_503(client, search):

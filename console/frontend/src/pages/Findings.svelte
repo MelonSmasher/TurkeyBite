@@ -12,6 +12,7 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import { tip } from '../lib/components/tooltip';
   import { ago, duration, num, SEVERITIES } from '../lib/format';
+  import { findingText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { navigate, router } from '../lib/router.svelte';
   import { session } from '../lib/stores/session.svelte';
@@ -53,6 +54,10 @@
       q = value;
       router.setQuery({ q: value || null });
     }, 250);
+    // Leaving the page before it fires must not write into the next page's URL
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   });
 
   function setFilter(key: string, value: string | null) {
@@ -78,8 +83,10 @@
 
   async function bulk(body: Record<string, unknown>, label: string) {
     try {
-      const result = await api.post<{ updated: number }>('/findings/bulk', { ids: [...selected], ...body });
-      toasts.success(`${label}: ${result.updated} finding${result.updated === 1 ? '' : 's'}`);
+      const result = await api.post<{ updated: number; skipped?: number[] }>('/findings/bulk', { ids: [...selected], ...body });
+      const skipped = result.skipped ?? [];
+      toasts.success(`${label}: ${result.updated} finding${result.updated === 1 ? '' : 's'}`,
+        skipped.length ? `Left ${skipped.map((n) => `F-${n}`).join(', ')} closed: the rule has opened a newer finding for the same thing.` : undefined);
       selected = new Set();
       list.reload();
       stats.reload();
@@ -185,7 +192,7 @@
               {/if}
               <td><SeverityBadge severity={f.severity} /></td>
               <td class="title-cell">
-                <a class="title" href="/findings/{f.id}" onclick={(e) => e.stopPropagation()}>{f.title}</a>
+                <a class="title" href="/findings/{f.id}" onclick={(e) => e.stopPropagation()}>{findingText(f.title, f)}</a>
                 <span class="muted small">F-{f.number} · {f.rule_name}{f.occurrences > 1 ? ` · matched ${f.occurrences} times` : ''}</span>
               </td>
               <td onclick={(e) => e.stopPropagation()}><EntityLink field={f.entity_field} value={f.entity} size="sm" /></td>

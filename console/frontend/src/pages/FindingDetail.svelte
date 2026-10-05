@@ -11,11 +11,13 @@
   import EmptyState from '../lib/components/EmptyState.svelte';
   import EntityLink from '../lib/components/EntityLink.svelte';
   import EventDrawer from '../lib/components/EventDrawer.svelte';
+  import { opens } from '../lib/components/focus';
   import Menu from '../lib/components/Menu.svelte';
   import Modal from '../lib/components/Modal.svelte';
   import SeverityBadge from '../lib/components/SeverityBadge.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import { ago, dateTime, fullTime, num, RULE_TYPE_LABEL, STATUS_LABEL, taxon } from '../lib/format';
+  import { findingText, maskQuery, who } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/stores/session.svelte';
@@ -30,7 +32,9 @@
     entity_query?: string;
   }
 
-  const id = $derived(router.params.id);
+  // Read from what App passes, which belongs to this page's route alone
+  let { params }: { params: Record<string, string> } = $props();
+  const id = $derived(params.id);
   const finding = new Query((signal) => api.get<Detail>(`/findings/${id}`, { signal }));
   const f = $derived(finding.data);
   const people = new Query((signal) => api.get<UserRef[]>(`/findings/${id}/assignable`, { signal }),
@@ -116,8 +120,8 @@
         <StatusBadge status={f.status} />
         {#if f.snoozed_until && new Date(f.snoozed_until) > new Date()}<span class="badge"><AlarmClockOff size={12} /> Snoozed until {dateTime(f.snoozed_until)}</span>{/if}
       </div>
-      <h1>{f.title}</h1>
-      <p class="summary">{f.summary}</p>
+      <h1>{findingText(f.title, f)}</h1>
+      <p class="summary">{findingText(f.summary, f)}</p>
     </div>
     {#if canWrite}
       <div class="actions">
@@ -166,7 +170,7 @@
           {#if range}<a class="btn btn-sm" href="/explore{qs({ q: f.evidence.query, from: range.from, to: range.to })}"><ScanSearch size={14} /> Open in Explore</a>{/if}
         {/snippet}
         <div class="query-line">
-          <code class="mono">{f.evidence.query || '(every event)'}</code>
+          <code class="mono">{maskQuery(findingText(f.evidence.query, f)) || '(every event)'}</code>
           <CopyButton text={f.evidence.query ?? ''} label="Copy query" />
         </div>
         {#if evidenceHist.data}
@@ -178,7 +182,7 @@
             <thead><tr><th>Time</th><th>Name</th><th>Categories</th><th>Type</th></tr></thead>
             <tbody>
               {#each evidence.data.hits as hit (hit.id)}
-                <tr class="clickable" onclick={() => (selected = hit)}>
+                <tr class="clickable" onclick={() => (selected = hit)} use:opens={() => (selected = hit)}>
                   <td class="nowrap tabular small">{dateTime(hit.source['@timestamp'], true)}</td>
                   <td class="mono small truncate">{hit.source.bite?.requested?.[0]}</td>
                   <td>{#each (hit.source.bite?.contexts ?? []).slice(0, 3) as c (c)}<span class="badge">{c}</span> {/each}</td>
@@ -295,7 +299,7 @@
             {#each f.related as r (r.id)}
               <a class="related" href="/findings/{r.id}">
                 <SeverityBadge severity={r.severity} compact />
-                <span class="truncate small">{r.title}</span>
+                <span class="truncate small">{findingText(r.title, r)}</span>
                 <span class="faint small">{ago(r.last_seen)}</span>
               </a>
             {/each}
@@ -315,7 +319,7 @@
   <div class="stack">
     <div class="field">
       <span class="field-label">Leave out</span>
-      <label class="radio"><input type="radio" bind:group={exceptionScope} value="entity" /> Everything from <strong>{f?.entity ?? 'this entity'}</strong> for this rule</label>
+      <label class="radio"><input type="radio" bind:group={exceptionScope} value="entity" /> Everything from <strong>{f?.entity ? who(f.entity) : 'this entity'}</strong> for this rule</label>
       <label class="radio"><input type="radio" bind:group={exceptionScope} value="entity_domain" /> Only these domains, from them</label>
       <label class="radio"><input type="radio" bind:group={exceptionScope} value="domain" /> These domains, from anyone</label>
     </div>

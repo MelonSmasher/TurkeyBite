@@ -21,6 +21,11 @@ def time_range(start: str | None, end: str | None, default: str = 'now-24h') -> 
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
 
 
+def like_escape(text: str) -> str:
+    """`text` for a LIKE pattern, matched literally: % and _ are not wildcards."""
+    return text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
 def not_found(what: str = 'That') -> HTTPException:
     return HTTPException(status.HTTP_404_NOT_FOUND, f'{what} does not exist, or you cannot see it')
 
@@ -68,11 +73,13 @@ def user_out(user: User, full: bool = False) -> dict:
            'source': user.source}
     if full:
         out.update({
-            'email': user.email, 'disabled': user.disabled, 'mfa_enabled': user.totp_enabled,
+            'email': user.email, 'disabled': user.disabled,
+            'disabled_reason': user.disabled_reason, 'mfa_enabled': user.totp_enabled,
             'locked': bool(user.locked_until and user.locked_until > datetime.now(timezone.utc)),
             'locked_until': ts(user.locked_until), 'last_login_at': ts(user.last_login_at),
             'created_at': ts(user.created_at), 'ldap_dn': user.ldap_dn,
             'failed_logins': user.failed_logins,
+            'directory_checked_at': ts(user.directory_checked_at),
         })
     return out
 
@@ -110,9 +117,17 @@ def rule_out(r: Rule) -> dict:
     }
 
 
-def webhook_out(w: Webhook) -> dict:
+def webhook_out(w: Webhook, reveal: bool = False) -> dict:
+    """A webhook. Its full URL, which for a chat service is its credential,
+    only for those who can change it."""
+    from ..webhooks.service import url_of
+    try:
+        url = url_of(w) if reveal else w.url_display
+    except Exception:
+        url = w.url_display
     return {
-        'id': str(w.id), 'name': w.name, 'url': w.url, 'format': w.format,
+        'id': str(w.id), 'name': w.name, 'url': url, 'url_display': w.url_display,
+        'format': w.format,
         'events': w.events or [], 'all_findings': w.all_findings, 'min_severity': w.min_severity,
         'redact_entities': w.redact_entities, 'enabled': w.enabled,
         'has_headers': bool(w.headers_enc), 'last_status': w.last_status,
@@ -129,12 +144,12 @@ def delivery_out(d: WebhookDelivery, full: bool = False) -> dict:
         'last_status_code': d.last_status_code, 'last_error': d.last_error,
         'duration_ms': d.duration_ms, 'created_at': ts(d.created_at),
         'delivered_at': ts(d.delivered_at),
+        'entity': ((d.payload or {}).get('finding') or {}).get('entity'),
         'title': ((d.payload or {}).get('finding') or {}).get('title')
         or ((d.payload or {}).get('rule') or {}).get('name') or (d.payload or {}).get('message'),
     }
     if full:
         out['payload'] = d.payload
-        out['response_snippet'] = d.response_snippet
     return out
 
 

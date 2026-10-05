@@ -1,6 +1,7 @@
 """Signing in: local accounts, lockout, a second factor, sessions, CSRF, and API keys."""
 
 import time
+import uuid
 
 import pyotp
 from sqlalchemy import select
@@ -111,8 +112,30 @@ async def test_an_api_key_acts_within_its_scopes_and_its_owners_role(client):
     assert (await client.get('/api/v1/findings', headers=auth)).status_code == 200
     # Outside the key's scopes, though the role would allow it
     assert (await client.get('/api/v1/rules', headers=auth)).status_code == 403
-    # A key needs no CSRF token, since a browser never sends it on its own
-    assert (await client.post('/api/v1/findings/bulk', headers=auth, json={'ids': ['x'], 'status': 'resolved'})).status_code == 403
+    assert (await client.post('/api/v1/findings/bulk', headers=auth,
+                              json={'ids': [str(uuid.uuid4())], 'status': 'resolved'})).status_code == 403
+
+
+async def test_a_key_needs_no_csrf_token_and_narrows_when_its_owner_is_demoted(client):
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    key = (await client.post('/api/v1/api-keys', headers=headers, json={
+        'name': 'triage', 'scopes': ['findings:read', 'findings:write']})).json()['key']
+    client.cookies.clear()
+    auth = {'Authorization': f'Bearer {key}'}
+    # No cookie and no CSRF header: a browser never sends a bearer key on its own
+    assert (await client.post('/api/v1/findings/bulk', headers=auth,
+                              json={'ids': [str(uuid.uuid4())], 'status': 'resolved'})).status_code == 200
+    from sqlalchemy import update
+
+    from tbconsole.models import User
+    async with db.sessionmaker()() as session:
+        await session.execute(update(User).where(User.username == 'ana').values(role='viewer'))
+        await session.commit()
+    # The key still says findings:write, but its owner no longer may
+    assert (await client.post('/api/v1/findings/bulk', headers=auth,
+                              json={'ids': [str(uuid.uuid4())], 'status': 'resolved'})).status_code == 403
+    assert (await client.get('/api/v1/findings', headers=auth)).status_code == 200
 
 
 async def test_nobody_mints_a_key_beyond_their_role(client):
@@ -145,7 +168,8 @@ async def test_the_admin_mfa_policy_holds_back_everything_but_the_account(client
     settings_store.forget_cache()
     assert (await client.get('/api/v1/rules')).status_code == 403
     assert (await client.get('/api/v1/auth/me')).json()['mfa_required'] is True
-    assert (await client.post('/api/v1/account/mfa/setup', headers=headers)).status_code == 200
+    assert (await client.post('/api/v1/account/mfa/setup', headers=headers,
+                              json={'password': 'correct horse battery'})).status_code == 200
 
 
 async def test_sessions_expire_when_idle(client, monkeypatch):

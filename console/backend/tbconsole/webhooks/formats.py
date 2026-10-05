@@ -29,6 +29,22 @@ EVENTS = {
 }
 
 
+def _slack(text: str, limit: int) -> str:
+    """Text for Slack mrkdwn: its three control characters escaped, as Slack
+    asks, so a value from the events cannot become a link, and cut to fit."""
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    return text if len(text) <= limit else text[:limit - 1] + '…'
+
+
+def _plain(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + '…'
+
+
+def _discord(text: str, limit: int) -> str:
+    """Text for a Discord embed, with no masked links."""
+    return _plain(text.replace('[', '\\[').replace(']', '\\]'), limit)
+
+
 def _headline(event: dict) -> str:
     finding = event.get('finding') or {}
     kind = event.get('event', '')
@@ -73,21 +89,23 @@ def render(fmt: str, event: dict) -> dict:
     facts = _facts(event)
 
     if fmt == 'slack':
+        # Slack's limits: 150 characters in a header, 3,000 in a section's
+        # text, 2,000 in each field
         blocks = [
-            {'type': 'header', 'text': {'type': 'plain_text', 'text': headline[:150]}},
+            {'type': 'header', 'text': {'type': 'plain_text', 'text': _plain(headline, 150)}},
         ]
         if summary:
-            blocks.append({'type': 'section', 'text': {'type': 'mrkdwn',
-                                                       'text': f'{SEVERITY_EMOJI.get(severity, "")} {summary}'}})
+            blocks.append({'type': 'section', 'text': {'type': 'mrkdwn', 'text': (
+                f'{SEVERITY_EMOJI.get(severity, "")} {_slack(summary, 2900)}')}})
         if facts:
             blocks.append({'type': 'section', 'fields': [
-                {'type': 'mrkdwn', 'text': f'*{k}*\n{v}'} for k, v in facts[:10]]})
+                {'type': 'mrkdwn', 'text': f'*{k}*\n{_slack(v, 1900)}'} for k, v in facts[:10]]})
         if link:
             blocks.append({'type': 'actions', 'elements': [
                 {'type': 'button', 'text': {'type': 'plain_text', 'text': 'Open in console'},
                  'url': link}]})
         # In an attachment, so Slack draws the severity colour beside it
-        return {'text': headline, 'attachments': [
+        return {'text': _slack(headline, 2900), 'attachments': [
             {'color': SEVERITY_COLOURS.get(severity, '#667085'), 'blocks': blocks}]}
 
     if fmt == 'teams':
@@ -108,12 +126,14 @@ def render(fmt: str, event: dict) -> dict:
 
     if fmt == 'discord':
         colour = int(SEVERITY_COLOURS.get(severity, '#667085').lstrip('#'), 16)
-        embed = {'title': headline[:256], 'description': summary[:2000], 'color': colour,
-                 'fields': [{'name': k, 'value': v[:1024] or '-', 'inline': True}
+        embed = {'title': _plain(headline, 256), 'description': _discord(summary, 2000),
+                 'color': colour,
+                 'fields': [{'name': k, 'value': _discord(v, 1024) or '-', 'inline': True}
                             for k, v in facts[:25]]}
         if link:
             embed['url'] = link
-        return {'username': 'TurkeyBite', 'embeds': [embed]}
+        # A value from the events must never ping @everyone
+        return {'username': 'TurkeyBite', 'embeds': [embed], 'allowed_mentions': {'parse': []}}
 
     if fmt == 'google_chat':
         widgets = [{'decoratedText': {'topLabel': k, 'text': v}} for k, v in facts]

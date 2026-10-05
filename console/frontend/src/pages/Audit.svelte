@@ -6,6 +6,7 @@
   import PageHeader from '../lib/components/PageHeader.svelte';
   import Segmented from '../lib/components/Segmented.svelte';
   import { ago, fullTime } from '../lib/format';
+  import { maskQuery, who } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
 
   interface Event { id: number; at: string; actor_type: string; actor: string; action: string; outcome: string; target_type: string | null;
@@ -64,12 +65,12 @@
             <span class="muted">{words(e)}</span>
             {#if e.target_type?.startsWith('bite.')}
               <EntityLink field={e.target_type} value={e.target_id} size="sm" />
-            {:else if e.target_label}<strong class="target">{e.target_label}</strong>{/if}
+            {:else if e.target_label}<strong class="target">{e.target_type === 'event' ? who(e.target_label) : e.target_label}</strong>{/if}
             {#if e.outcome === 'failure'}<span class="badge badge-bad"><CircleX size={12} /> failed</span>{/if}
           </div>
           <div class="faint small">
             {#if e.ip}<span class="mono">{e.ip}</span> · {/if}{e.actor_type}
-            {#each Object.entries(e.details).slice(0, 3) as [k, v] (k)}<span> · {k}: <span class="mono">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span></span>{/each}
+            {#each Object.entries(e.details).slice(0, 3) as [k, v] (k)}<span> · {k}: <span class="mono">{k === 'query' ? maskQuery(String(v)) : typeof v === 'object' ? JSON.stringify(v) : String(v)}</span></span>{/each}
           </div>
         </div>
         <span class="when muted small" title={fullTime(e.at)}>{ago(e.at)}</span>

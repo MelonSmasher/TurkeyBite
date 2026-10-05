@@ -46,7 +46,7 @@ def _bearer(request: Request) -> str | None:
     return request.headers.get('x-api-key')
 
 
-def _origin_ok(request: Request) -> bool:
+def origin_ok(request: Request) -> bool:
     """A cross-origin Origin on a cookie-authenticated write is refused outright."""
     origin = request.headers.get('origin')
     if not origin:
@@ -75,6 +75,15 @@ async def _from_api_key(db: AsyncSession, request: Request, key: str) -> Princip
 
 async def optional_principal(request: Request,
                              db: AsyncSession = Depends(get_session)) -> Principal | None:
+    principal = await _principal(request, db)
+    # End the transaction the lookup opened, so the connection goes back to
+    # the pool now rather than when the response ends: a live tail or an
+    # export would otherwise hold one for as long as it streams
+    await db.commit()
+    return principal
+
+
+async def _principal(request: Request, db: AsyncSession) -> Principal | None:
     key = _bearer(request)
     if key:
         return await _from_api_key(db, request, key)
@@ -85,7 +94,7 @@ async def optional_principal(request: Request,
     if session is None:
         return None
     if request.method not in _SAFE_METHODS and not (sessions.csrf_ok(request)
-                                                    and _origin_ok(request)):
+                                                    and origin_ok(request)):
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             'missing or wrong CSRF token; reload the page and try again')
     user = session.user
@@ -101,6 +110,14 @@ async def current_principal(principal: Principal | None = Depends(optional_princ
     if principal is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'sign in first',
                             headers={'WWW-Authenticate': 'Bearer'})
+    return principal
+
+
+async def session_principal(principal: Principal = Depends(current_principal)) -> Principal:
+    """Someone signed in through the browser. An API key acts for integrations
+    and has no business with its owner's password, second factor or sessions."""
+    if principal.kind != 'session':
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'API keys cannot manage accounts; sign in')
     return principal
 
 

@@ -63,7 +63,24 @@ class BacktestBody(RuleBody):
 def _spec(body: RuleBody) -> RuleSpec:
     return RuleSpec(name=body.name, type=body.type, query=body.query, params=body.params,
                     group_by=body.group_by, window_seconds=body.window_seconds,
-                    interval_seconds=body.interval_seconds, exceptions=body.exceptions)
+                    interval_seconds=body.interval_seconds, exceptions=body.exceptions,
+                    schedule=body.schedule.model_dump() if body.schedule else None)
+
+
+def _check_exceptions(exceptions: list[dict]) -> None:
+    for item in exceptions:
+        if not isinstance(item.get('query'), str) or not item['query'].strip():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Every exception needs a query.')
+        expires = item.get('expires_at')
+        if expires is None:
+            continue
+        try:
+            moment = datetime.fromisoformat(str(expires).replace('Z', '+00:00'))
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f'{expires!r} is not a time an exception can expire at') from e
+        if moment.tzinfo is None:
+            item['expires_at'] = ts(moment.replace(tzinfo=timezone.utc))
 
 
 async def _validate(db: AsyncSession, body: RuleBody) -> dict:
@@ -79,8 +96,10 @@ async def _validate(db: AsyncSession, body: RuleBody) -> dict:
                                 f'{body.schedule.timezone!r} is not a time zone') from e
         if any(d < 0 or d > 6 for d in body.schedule.days):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'days are 0 (Monday) to 6 (Sunday)')
+    _check_exceptions(body.exceptions)
     try:
         params = normalise(_spec(body))
+        engine.check_title(body.title_template)
     except RuleError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     hook_ids = [parse_uuid(i, 'That webhook') for i in body.webhook_ids]
@@ -174,9 +193,13 @@ async def create_rule(body: RuleBody, request: Request,
 
 
 @router.post('/backtest')
-async def backtest(body: BacktestBody, _: Principal = Depends(require(rbac.RULES_READ)),
+async def backtest(body: BacktestBody, _: Principal = Depends(require(rbac.RULES_WRITE)),
                    search: SearchClient = Depends(search_client)) -> dict:
-    """What a rule, saved or not, would have raised over a range. Records nothing."""
+    """What a rule, saved or not, would have raised over a range. Records nothing.
+
+    It needs rules:write: a backtest runs dozens of aggregations over up to a
+    month of events, which is the cost of authoring a rule, not of reading."""
+    _check_exceptions(body.exceptions)
     try:
         normalise(_spec(body))
     except RuleError as e:
@@ -210,6 +233,10 @@ async def update_rule(rule_id: str, body: RuleBody, request: Request,
     rule = await _get(db, rule_id)
     params = await _validate(db, body)
     changed = _assign(rule, body, params)
+    soonest = datetime.now(timezone.utc) + timedelta(seconds=rule.interval_seconds)
+    if rule.next_run_at is None or rule.next_run_at > soonest:
+        # A shorter interval takes effect now, not after the old one runs out
+        rule.next_run_at = soonest
     if rule.builtin_key and changed:
         rule.modified = True
     if body.enabled != rule.enabled:
@@ -308,6 +335,9 @@ async def run_now(rule_id: str, request: Request,
                   search: SearchClient = Depends(search_client),
                   db: AsyncSession = Depends(get_session)) -> dict:
     rule = await _get(db, rule_id)
+    if await engine.lock_rule(db, rule.id, wait=False) is None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'This rule is running right now. Try again in a moment.')
     outcome = await engine.run_rule(db, search, rule)
     audit.record(db, 'rule.run', principal=principal, request=request, target_type='rule',
                  target_id=rule.id, target_label=rule.name)

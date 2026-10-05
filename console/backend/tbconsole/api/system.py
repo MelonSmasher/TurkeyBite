@@ -46,7 +46,7 @@ async def status_(request: Request, _: Principal = Depends(require(rbac.SETTINGS
         opensearch['error'] = str(e)
     workers = {'enabled': settings.run_workers}
     app = request.app.state
-    for name in ('scheduler', 'dispatcher', 'rollups'):
+    for name in ('scheduler', 'dispatcher', 'rollups', 'maintenance'):
         worker = getattr(app, name, None)
         if worker is not None:
             workers[name] = {'last': ts(getattr(worker, 'last_tick', None)

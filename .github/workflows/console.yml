@@ -49,10 +49,12 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: console/backend/requirements-dev.txt
+          cache-dependency-path: |
+            console/backend/requirements-dev.txt
+            console/backend/requirements.lock
 
       - name: Install
-        run: pip install -r requirements-dev.txt
+        run: pip install -r requirements-dev.txt -c requirements.lock
 
       - name: Test
         run: python -m pytest -q
@@ -91,3 +93,25 @@ jobs:
 
       - name: Build
         run: npx vite build --outDir dist
+
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: docker build -t turkeybite-console console
+
+      - name: The image is what it should be
+        # Runs as the unprivileged user, has the built app, imports cleanly,
+        # and leaves the demo out
+        run: |
+          docker run --rm --entrypoint sh turkeybite-console -c '
+            test "$(id -u)" = 10001 &&
+            test -f tbconsole/static/index.html &&
+            test ! -e tbconsole/demo.py &&
+            TBCONSOLE_SECRET_KEY=image-check-secret-key-long-enough-0123 python -c "import tbconsole.main"'

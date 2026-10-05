@@ -34,10 +34,12 @@ def serve(args) -> None:
 async def create_user(args) -> int:
     from sqlalchemy import func, select
 
-    from . import db
+    from datetime import datetime, timezone
+
+    from . import audit, db
     from .models import User
-    from .security import passwords, rbac
-    if args.role not in rbac.ROLES:
+    from .security import passwords, rbac, sessions
+    if args.role is not None and args.role not in rbac.ROLES:
         print(f'role is one of {", ".join(rbac.ROLES)}', file=sys.stderr)
         return 2
     password = sys.stdin.readline().rstrip('\n') if args.password_stdin else getpass.getpass(
@@ -52,16 +54,36 @@ async def create_user(args) -> int:
         if user is not None and user.source != 'local':
             print(f'{args.username} exists and is not a local account', file=sys.stderr)
             return 1
-        if user is None:
-            user = User(username=args.username, source='local', role=args.role, preferences={})
+        created = user is None
+        if created:
+            user = User(username=args.username, source='local', role=args.role or 'admin',
+                        preferences={})
             session.add(user)
-        user.role = args.role
+        elif args.role:
+            user.role = args.role
         user.password_hash = passwords.hash_password(password)
+        user.password_changed_at = datetime.now(timezone.utc)
+        if args.reset_mfa:
+            # For someone who lost their authenticator, and with it the only way in
+            user.totp_enabled = False
+            user.totp_secret_enc = None
+            user.totp_last_step = None
         user.disabled = False
+        user.disabled_reason = None
         user.locked_until = None
+        user.failed_logins = 0
+        await session.flush()
+        if not created:
+            # A reset password is often a reset because the old one leaked
+            await sessions.end_all(session, user.id)
+        audit.record(session, 'user.create' if created else 'user.password_reset',
+                     actor_type='cli', actor_name='tbconsole create-user', target_type='user',
+                     target_id=user.id, target_label=user.username,
+                     details={'role': user.role, 'mfa_reset': bool(args.reset_mfa)})
+        role = user.role
         await session.commit()
     await db.dispose()
-    print(f'{args.username} is a local {args.role}.')
+    print(f'{args.username} is a local {role}' + ('.' if created else '; its sessions have ended.'))
     return 0
 
 
@@ -92,14 +114,20 @@ def main(argv=None) -> int:
 
     p = sub.add_parser('create-user', help='create a local account, or reset its password')
     p.add_argument('username')
-    p.add_argument('--role', default='admin')
+    p.add_argument('--role', choices=['viewer', 'analyst', 'admin'],
+                   help='the role; admin for a new account, unchanged for an existing one')
     p.add_argument('--password-stdin', action='store_true')
+    p.add_argument('--reset-mfa', action='store_true',
+                   help='turn off two-factor sign-in, for someone who lost their authenticator')
 
     p = sub.add_parser('rollups', help='recount the daily statistics')
     p.add_argument('--backfill', action='store_true')
 
     p = sub.add_parser('demo', help='load made-up data, for trying the console out')
     p.add_argument('action', choices=['seed', 'feed', 'sink'])
+    p.add_argument('--yes-replace-everything', action='store_true',
+                   help='seed: deletes every tb-index-* index and empties the console\'s '
+                        'database first; feed: writes made-up events to the cluster')
     p.add_argument('--days', type=int, default=21)
     p.add_argument('--per-day', type=int, default=12000)
     p.add_argument('--sink', default='http://127.0.0.1:8799',
@@ -117,7 +145,23 @@ def main(argv=None) -> int:
     if args.command == 'rollups':
         return asyncio.run(run_rollups(args))
     if args.command == 'demo':
-        from .demo import feed, seed, start_sink
+        try:
+            from .demo import feed, seed, start_sink
+        except ImportError:
+            print('The demo is not part of this installation; it is for development.',
+                  file=sys.stderr)
+            return 2
+        if args.action in ('seed', 'feed') and not args.yes_replace_everything:
+            from .config import get_settings
+            settings = get_settings()
+            what = ('deletes every tb-index-* index on ' + ', '.join(settings.opensearch_urls)
+                    + ' and empties the database at ' + settings.database_url.split('@')[-1]
+                    if args.action == 'seed' else
+                    'writes made-up events to ' + ', '.join(settings.opensearch_urls))
+            print(f'demo {args.action} {what}. It is for a development cluster only. '
+                  'Run it again with --yes-replace-everything if that is what you want.',
+                  file=sys.stderr)
+            return 2
         if args.action == 'sink':
             import time
             server = start_sink(args.sink)

@@ -30,20 +30,23 @@
     mfa: (users.data ?? []).filter((u) => u.source === 'local' && u.mfa_enabled).length,
   });
 
-  async function call(fn: () => Promise<unknown>, done: string) {
+  async function call(fn: () => Promise<unknown>, done: string): Promise<boolean> {
     try {
       await fn();
       toasts.success(done);
       users.reload();
+      return true;
     } catch (e) {
       toasts.error('That did not work', errorText(e));
+      return false;
     }
   }
 
   async function create() {
-    await call(() => api.post('/users', { ...form, kind, password: kind === 'local' ? form.password : null,
+    const ok = await call(() => api.post('/users', { ...form, kind, password: kind === 'local' ? form.password : null,
       email: form.email || null, display_name: form.display_name || null }), kind === 'local' ? 'Account created' : 'Service account created');
-    createOpen = false;
+    // On a taken name or a weak password, the form stays as typed
+    if (ok) createOpen = false;
   }
 
   function setRole(u: User, role: string) {

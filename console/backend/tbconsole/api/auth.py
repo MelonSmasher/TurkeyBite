@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import __version__, audit, settings_store
 from ..config import get_settings
 from ..db import get_session
-from ..deps import Principal, current_principal, optional_principal
+from ..deps import Principal, current_principal, optional_principal, origin_ok
 from ..models import User, UserSession
 from ..security import crypto, ldap, passwords, sessions, totp
 from .common import user_out
@@ -32,26 +32,57 @@ router = APIRouter(prefix='/auth', tags=['auth'])
 
 GENERIC = 'Invalid username or password.'
 
-# Failed sign-ins per address, in memory: a coarse brake in front of the
-# per-account lockout, which lives in the database and holds across replicas
-_IP_WINDOW = 300
-_IP_LIMIT = 30
-_failures: dict[str, deque] = defaultdict(deque)
+# Failed sign-ins, in memory: a coarse brake in front of the per-account
+# lockout, which lives in the database and holds across replicas. Counted per
+# address and username, so one person guessing cannot lock out everyone who
+# shares their address (a school behind one NAT, or every user when a proxy's
+# address is not trusted to forward the real one), with a looser limit per
+# address on its own against someone trying many usernames.
+_WINDOW = 300
+_PAIR_LIMIT = 10
+_IP_LIMIT = 100
+_MAX_TRACKED = 20000
+_failures: dict[tuple[str, str], deque] = defaultdict(deque)
 
 
-def _ip_limited(ip: str | None) -> bool:
-    if not ip:
-        return False
-    window = _failures[ip]
-    cutoff = time.monotonic() - _IP_WINDOW
+def _recent(key: tuple[str, str]) -> int:
+    window = _failures.get(key)
+    if not window:
+        return 0
+    cutoff = time.monotonic() - _WINDOW
     while window and window[0] < cutoff:
         window.popleft()
-    return len(window) >= _IP_LIMIT
+    if not window:
+        del _failures[key]
+    return len(window)
 
 
-def _ip_failed(ip: str | None) -> None:
-    if ip:
-        _failures[ip].append(time.monotonic())
+def _limited(ip: str | None, username: str) -> bool:
+    if not ip:
+        return False
+    return (_recent((ip, username.lower())) >= _PAIR_LIMIT
+            or _recent((ip, '')) >= _IP_LIMIT)
+
+
+def _failed(ip: str | None, username: str) -> None:
+    if not ip:
+        return
+    if len(_failures) > _MAX_TRACKED:
+        for key in list(_failures):
+            _recent(key)
+    now = time.monotonic()
+    _failures[(ip, username.lower())].append(now)
+    _failures[(ip, '')].append(now)
+
+
+TOO_MANY = 'Too many failed sign-ins. Wait a few minutes and try again.'
+
+
+def _same_origin(request: Request) -> None:
+    """A browser signing in from another site's page is refused, so no page
+    can sign a visitor in to an account of its choosing."""
+    if not origin_ok(request):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'Sign in from the console itself.')
 
 
 class LoginBody(BaseModel):
@@ -96,7 +127,7 @@ async def _finish(db: AsyncSession, user: User, request: Request, response: Resp
 
 async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
                 user: User | None = None) -> None:
-    _ip_failed(sessions.client_ip(request))
+    _failed(sessions.client_ip(request), username)
     settings = get_settings()
     if user is not None and user.source == 'local':
         user.failed_logins += 1
@@ -113,11 +144,10 @@ async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
 @router.post('/login')
 async def login(body: LoginBody, request: Request, response: Response,
                 db: AsyncSession = Depends(get_session)) -> dict:
-    ip = sessions.client_ip(request)
-    if _ip_limited(ip):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
-                            'Too many failed sign-ins from this address. Wait a few minutes.')
+    _same_origin(request)
     username = body.username.strip()
+    if _limited(sessions.client_ip(request), username):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
     user = (await db.execute(select(User).where(
         func.lower(User.username) == username.lower()))).scalar_one_or_none()
 
@@ -170,14 +200,20 @@ async def login(body: LoginBody, request: Request, response: Response,
     if user is None:
         user = User(username=identity.username, source='ldap', role=identity.role,
                     display_name=identity.display_name, email=identity.email,
-                    ldap_dn=identity.dn, preferences={})
+                    ldap_dn=identity.dn, preferences={},
+                    directory_checked_at=datetime.now(timezone.utc))
         db.add(user)
         await db.flush()
     else:
-        if user.disabled:
+        if user.disabled and user.disabled_reason != 'directory':
             await _fail(db, request, username, 'account disabled')
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
-        # The directory is the authority on who someone is and what they may do
+        # The directory is the authority on who someone is and what they may
+        # do, so access it took away it can give back; an admin's disabling
+        # stays until an admin undoes it
+        user.disabled = False
+        user.disabled_reason = None
+        user.directory_checked_at = datetime.now(timezone.utc)
         user.role = identity.role
         user.display_name = identity.display_name or user.display_name
         user.email = identity.email or user.email
@@ -189,16 +225,19 @@ async def login(body: LoginBody, request: Request, response: Response,
 async def login_mfa(body: MfaBody, request: Request, response: Response,
                     db: AsyncSession = Depends(get_session)) -> dict:
     """The second step: a code from the authenticator app."""
+    _same_origin(request)
     ip = sessions.client_ip(request)
-    if _ip_limited(ip):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
-                            'Too many failed sign-ins from this address. Wait a few minutes.')
     parsed = sessions.read_mfa_token(body.token)
     user = await db.get(User, parsed[0]) if parsed else None
+    if _limited(ip, user.username if user else ''):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
     fingerprint = (user.password_hash or '')[-16:] if user else ''
+    now = datetime.now(timezone.utc)
+    # A lockout that began after the password step, from guessed codes, holds
+    # here too, or the five-minute token would allow guessing past it
     if (user is None or not user.totp_enabled or user.disabled or parsed[1] != fingerprint
-            or not user.totp_secret_enc):
-        _ip_failed(ip)
+            or not user.totp_secret_enc or (user.locked_until and user.locked_until > now)):
+        _failed(ip, user.username if user else '')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                             'That sign-in has expired. Start again.')
     step = totp.verify(crypto.decrypt(user.totp_secret_enc), body.code, user.totp_last_step)

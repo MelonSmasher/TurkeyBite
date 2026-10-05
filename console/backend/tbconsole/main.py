@@ -18,10 +18,11 @@ from .api import router as api_router
 from .api.dashboards import sync_builtin_dashboards
 from .config import get_settings
 from .models import User
+from .maintenance import Maintenance
 from .rollups import Rollups
 from .search.client import SearchClient, SearchRejected, SearchUnavailable
 from .search.tbql import TbqlError
-from .search.timerange import RangeError
+from .search.timerange import RangeError, use_zone
 from .security import passwords
 from .webhooks.dispatcher import Dispatcher
 
@@ -39,6 +40,7 @@ DOCS_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.j
 
 class SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        use_zone(request.headers.get('x-timezone'))
         response: Response = await call_next(request)
         docs = request.url.path in ('/api/docs', '/api/docs/oauth2-redirect')
         response.headers.setdefault('Content-Security-Policy', DOCS_CSP if docs else CSP)
@@ -60,6 +62,8 @@ async def bootstrap_admin() -> None:
     if not (settings.bootstrap_admin_username and settings.bootstrap_admin_password):
         return
     async with db.sessionmaker()() as session:
+        # Processes starting together take turns, so only one creates it
+        await session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': engine.SYNC_LOCK})
         users = (await session.execute(select(func.count()).select_from(User))).scalar_one()
         if users:
             return
@@ -93,7 +97,9 @@ async def lifespan(app: FastAPI):
         app.state.scheduler = Scheduler(app.state.search)
         app.state.dispatcher = Dispatcher()
         app.state.rollups = Rollups(app.state.search)
-        workers = [app.state.scheduler, app.state.dispatcher, app.state.rollups]
+        app.state.maintenance = Maintenance()
+        workers = [app.state.scheduler, app.state.dispatcher, app.state.rollups,
+                   app.state.maintenance]
         for worker in workers:
             worker.start()
     try:
@@ -161,11 +167,15 @@ def create_app() -> FastAPI:
     if static and Path(static).is_dir() and (Path(static) / 'index.html').is_file():
         root = Path(static).resolve()
 
-        @app.get('/{path:path}', include_in_schema=False)
+        @app.api_route('/{path:path}', methods=['GET', 'HEAD'], include_in_schema=False)
         async def spa(path: str):
             if path.startswith('api/'):
                 return JSONResponse({'detail': 'Not Found'}, status_code=404)
             candidate = (root / path).resolve()
+            if path.startswith('assets/') and not candidate.is_file():
+                # A page's code from before a redeploy: say it is gone rather
+                # than answer with index.html, so the app knows to reload
+                return Response(status_code=404)
             if path and candidate.is_file() and root in candidate.parents:
                 headers = {}
                 if '/assets/' in f'/{path}':

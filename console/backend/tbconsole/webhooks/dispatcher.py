@@ -24,6 +24,7 @@ from ..config import get_settings
 from ..models import Webhook, WebhookDelivery
 from ..security.crypto import SecretUnreadable, decrypt
 from . import formats, safety, signing
+from .service import url_of
 
 log = logging.getLogger(__name__)
 
@@ -51,17 +52,27 @@ def _headers(hook: Webhook, delivery: WebhookDelivery, body: bytes) -> dict:
 
 
 async def send(http: httpx.AsyncClient, hook: Webhook, delivery: WebhookDelivery) -> dict:
-    """One attempt. Returns what happened, for the delivery row."""
+    """One attempt. Returns what happened, for the delivery row. Never raises.
+
+    Connects to the address the safety check resolved, not to whatever the
+    name resolves to by then, so a name that changes between the check and
+    the request cannot steer the delivery somewhere else.
+    """
     started = time.monotonic()
     outcome: dict = {'status_code': None, 'error': None, 'snippet': None, 'retry': True}
     try:
-        await safety.check(hook.url)
+        if not hook.enabled:
+            raise _Permanent('the webhook is disabled')
+        target = await safety.resolve(url_of(hook))
         body = json.dumps(formats.render(hook.format, delivery.payload),
                           separators=(',', ':')).encode('utf-8')
-        response = await http.post(hook.url, content=body, headers=_headers(hook, delivery, body),
-                                   follow_redirects=False)
+        headers = _headers(hook, delivery, body)
+        headers['Host'] = target.host_header
+        extensions = {'sni_hostname': target.host} if target.tls else {}
+        response = await http.post(target.pinned_url, content=body, headers=headers,
+                                   follow_redirects=False, extensions=extensions)
         outcome['status_code'] = response.status_code
-        outcome['snippet'] = response.text[:500]
+        outcome['snippet'] = response.text[:300]
         if 200 <= response.status_code < 300:
             outcome['retry'] = False
         elif 400 <= response.status_code < 500 and response.status_code not in (408, 429):
@@ -69,16 +80,23 @@ async def send(http: httpx.AsyncClient, hook: Webhook, delivery: WebhookDelivery
             outcome['retry'] = False
         else:
             outcome['error'] = f'HTTP {response.status_code}'
-    except safety.UnsafeUrl as e:
+    except (safety.UnsafeUrl, SecretUnreadable, _Permanent) as e:
         outcome['error'] = str(e)
         outcome['retry'] = False
-    except SecretUnreadable as e:
-        outcome['error'] = str(e)
+    except httpx.TransportError as e:
+        outcome['error'] = f'{type(e).__name__}: {e}'[:300]
+    except Exception as e:
+        # A header or URL the HTTP library will not send, or anything else
+        # unforeseen: recorded and given up on, never left to stall the batch
+        log.warning('webhook %s: delivery %s failed: %r', hook.id, delivery.id, e)
+        outcome['error'] = f'could not be sent: {type(e).__name__}'
         outcome['retry'] = False
-    except httpx.HTTPError as e:
-        outcome['error'] = f'{type(e).__name__}: {e}'
     outcome['duration_ms'] = int((time.monotonic() - started) * 1000)
     return outcome
+
+
+class _Permanent(Exception):
+    """A delivery that can never succeed as it stands."""
 
 
 def apply(delivery: WebhookDelivery, hook: Webhook, outcome: dict, now: datetime) -> None:
@@ -138,10 +156,14 @@ async def run_once(http: httpx.AsyncClient) -> int:
         return 0
     # Sent outside any transaction, so a slow receiver holds no lock
     sendable = [d for d in due if d.webhook_id in hooks]
-    results = await asyncio.gather(*[send(http, hooks[d.webhook_id], d) for d in sendable])
+    results = await asyncio.gather(*[send(http, hooks[d.webhook_id], d) for d in sendable],
+                                   return_exceptions=True)
     async with sessions() as db:
         async with db.begin():
             for delivery, outcome in zip(sendable, results):
+                if isinstance(outcome, BaseException):
+                    outcome = {'status_code': None, 'error': f'could not be sent: {type(outcome).__name__}',
+                               'snippet': None, 'retry': False, 'duration_ms': 0}
                 row = await db.get(WebhookDelivery, delivery.id, with_for_update=True)
                 hook = await db.get(Webhook, delivery.webhook_id)
                 if row is None or hook is None:

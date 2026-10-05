@@ -3,6 +3,7 @@
   import { untrack } from 'svelte';
   import { api, ApiError, qs } from '../lib/api';
   import ChartCard from '../lib/charts/ChartCard.svelte';
+  import { pivotLabel } from '../lib/charts/labels';
   import PivotView from '../lib/charts/PivotView.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import Modal from '../lib/components/Modal.svelte';
@@ -125,11 +126,11 @@
     const r = result.data;
     if (!r) return null;
     if (r.kind === 'series') {
-      return { columns: ['Time', ...(r.series ?? []).map((s) => s.key)],
+      return { columns: ['Time', ...(r.series ?? []).map((s) => pivotLabel(s.key, spec.split))],
                rows: (r.times ?? []).map((t, i) => [dateTime(t), ...(r.series ?? []).map((s) => s.points[i])]) };
     }
-    return { columns: [fields.label(spec.rows) || 'All', ...(r.columns ?? []), 'Total'],
-             rows: (r.rows ?? []).map((row) => [row.key, ...(r.columns ?? []).map((c) => row.cells[c] ?? 0), row.value]) };
+    return { columns: [fields.label(spec.rows) || 'All', ...(r.columns ?? []).map((c) => pivotLabel(c, spec.split)), 'Total'],
+             rows: (r.rows ?? []).map((row) => [pivotLabel(row.key, row.field ?? spec.rows), ...(r.columns ?? []).map((c) => row.cells[c] ?? 0), row.value]) };
   });
 </script>
 
@@ -196,9 +197,9 @@
     <div class="field view">
       <span class="b-label">View</span>
       <Segmented value={viz} onchange={setView} label="View" options={[
-        { value: 'hbar', label: '', icon: ChartBarBig }, { value: 'table', label: '', icon: Table2 },
-        { value: 'stacked', label: '', icon: ChartNoAxesColumn }, { value: 'area', label: '', icon: ChartArea },
-        { value: 'line', label: '', icon: ChartLine }, { value: 'number', label: '', icon: Sigma }]} />
+        { value: 'hbar', label: '', icon: ChartBarBig, title: 'Bars' }, { value: 'table', label: '', icon: Table2, title: 'Table' },
+        { value: 'stacked', label: '', icon: ChartNoAxesColumn, title: 'Stacked bars' }, { value: 'area', label: '', icon: ChartArea, title: 'Area over time' },
+        { value: 'line', label: '', icon: ChartLine, title: 'Lines over time' }, { value: 'number', label: '', icon: Sigma, title: 'One number' }]} />
     </div>
   </div>
 </div>

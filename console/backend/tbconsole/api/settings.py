@@ -75,8 +75,11 @@ def _check(body: LdapBody) -> None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f'role is one of {", ".join(rbac.ROLES)}')
     if body.default_role is not None and body.default_role not in rbac.ROLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'role is one of {", ".join(rbac.ROLES)}')
-    if body.enabled and body.urls and any(u.lower().startswith('ldap://') for u in body.urls) \
-            and not body.start_tls:
+    _check_tls(body, body.enabled)
+
+
+def _check_tls(body: LdapBody, enforce: bool) -> None:
+    if enforce and any(u.lower().startswith('ldap://') for u in body.urls) and not body.start_tls:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             'Passwords would cross the network in clear: use ldaps://, or turn on '
                             'StartTLS.')
@@ -87,6 +90,18 @@ def _merge(body: LdapBody, saved: dict) -> dict:
     cfg['role_mappings'] = [m.model_dump() for m in body.role_mappings]
     if body.bind_password is None:
         if saved.get('bind_password_enc'):
+            # The saved password goes only where it was saved for: sending it
+            # to a different server, or binding as someone else with it, needs
+            # it typed again, or anyone with an admin session could have the
+            # service account's password sent to a server of their choosing
+            moved = (sorted(u.strip().lower() for u in body.urls)
+                     != sorted(u.strip().lower() for u in saved.get('urls') or [])
+                     or (body.bind_dn or '').strip().lower()
+                     != (saved.get('bind_dn') or '').strip().lower())
+            if moved:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    'Enter the bind password again when you change the servers '
+                                    'or the bind DN.')
             cfg['bind_password_enc'] = saved['bind_password_enc']
     elif body.bind_password:
         cfg['bind_password_enc'] = crypto.encrypt(body.bind_password)
@@ -120,6 +135,11 @@ async def test_ldap(body: LdapTestBody, request: Request,
     """Tries the settings in the form, saved or not, step by step."""
     if not body.urls:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Name at least one directory server.')
+    for url in body.urls:
+        if not url.lower().startswith(('ldap://', 'ldaps://')):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f'{url!r} is not an ldap:// or ldaps:// URL')
+    # A test sends the bind password, and the test person's, like a sign-in does
+    _check_tls(body, True)
     cfg = ldap.config_with_defaults(_merge(body, await settings_store.get(db, 'ldap')))
     secret = crypto.decrypt(cfg['bind_password_enc']) if cfg.get('bind_password_enc') else ''
     steps = await asyncio.to_thread(ldap.test, cfg, secret, body.username, body.password)

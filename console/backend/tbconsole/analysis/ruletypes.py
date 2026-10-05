@@ -11,8 +11,12 @@ scope; the type says what about them is worth a finding:
     absence       events stopped: none now, where there were some before
 
 Each groups by the rule's group_by fields, entity by default, so one rule
-raises one finding per person or machine rather than one for everybody. Every
-evaluation is one or two aggregation requests, however many groups match.
+raises one finding per person or machine rather than one for everybody. Most
+evaluations are one aggregation request, however many groups match: the
+groups that can fire are the busiest, so a terms aggregation ordered by what
+the rule measures finds them. First seen and silence are the exceptions,
+since what they look for is rare or absent rather than busy; they page
+through every group with composite aggregations.
 """
 
 import math
@@ -29,8 +33,11 @@ from ..search.timerange import TimeRange, iso
 SEVERITIES = ('info', 'low', 'medium', 'high', 'critical')
 SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITIES)}
 
-MAX_GROUPS = 200
-MAX_VALUES = 200
+MAX_GROUPS = 200                  # groups one terms aggregation returns, and hits kept
+PAGE = 500                        # composite buckets per request
+MAX_PAIRS = 5000                  # first seen: (group, value) pairs looked at
+MAX_SILENT_GROUPS = 20000         # silence: groups looked at
+MAX_HISTORY = timedelta(days=90)  # the furthest back any evaluation reads
 
 
 class RuleError(ValueError):
@@ -48,6 +55,7 @@ class RuleSpec:
     window_seconds: int = 900
     interval_seconds: int = 300
     exceptions: list = field(default_factory=list)
+    schedule: dict | None = None
 
     @property
     def exclusions(self) -> list[str]:
@@ -156,7 +164,8 @@ TYPES = {
         'summary': 'Events stopped: fewer than N now, or none from a group that was active.',
         'params': {'threshold': {'type': 'int', 'min': 1, 'default': 1,
                                  'label': 'Fewer events than'},
-                   'lookback_seconds': {'type': 'int', 'min': 600, 'default': 86400,
+                   'lookback_seconds': {'type': 'int', 'min': 600, 'max': 30 * 86400,
+                                        'default': 86400,
                                         'label': 'Active in the seconds before'},
                    'min_baseline': {'type': 'int', 'min': 1, 'default': 20,
                                     'label': 'With events at least'}},
@@ -186,6 +195,9 @@ def normalise(spec: RuleSpec) -> dict:
         raise RuleError('The window has to be between a minute and 30 days.')
     if spec.interval_seconds < 60 or spec.interval_seconds > 7 * 86400:
         raise RuleError('Rules can run at most every minute and at least weekly.')
+    if spec.window_seconds < spec.interval_seconds:
+        raise RuleError('The window has to be at least as long as the time between runs, '
+                        'or events that arrive between runs are never looked at.')
     try:
         tbql.compile(spec.query or '')
         for text in spec.exclusions:
@@ -205,6 +217,10 @@ def normalise(spec: RuleSpec) -> dict:
             f = F.resolve(str((spec.params or {}).get(name) or pspec['default']))
             if f is None or not f.aggregatable:
                 raise RuleError(f'{pspec["label"]} has to be a field that can be counted.')
+            if spec.type == 'new_value' and f.type not in ('keyword', 'ip'):
+                # Every timestamp or count is new; only names and addresses can be first seen
+                raise RuleError(f'{pspec["label"]} has to be a name or an address, not a '
+                                f'{f.type}.')
             params[name] = f.name
         elif ptype == 'query':
             text = str((spec.params or {}).get(name) or pspec['default'])
@@ -213,20 +229,26 @@ def normalise(spec: RuleSpec) -> dict:
             except tbql.TbqlError as e:
                 raise RuleError(f'{pspec["label"]} has a mistake: {e.message}') from e
             params[name] = text
+    if spec.type == 'spike':
+        history = timedelta(seconds=spec.window_seconds * (params['baseline_windows'] + 1))
+        if history > MAX_HISTORY:
+            raise RuleError(f'The window times the windows of history reaches back '
+                            f'{history.days} days; keep it within {MAX_HISTORY.days}.')
     return params
 
 
 # -- helpers --------------------------------------------------------------------
 
 def _evidence_query(spec: RuleSpec, entity_field: str | None, entity_value, extra: str = '') -> str:
+    """TBQL for the events behind a hit. Every part is bracketed, so an OR in
+    one cannot reach across the ANDs that join them."""
     parts = []
     if spec.query and spec.query.strip():
-        text = spec.query.strip()
-        parts.append(f'({text})' if any(ch.isspace() for ch in text) else text)
+        parts.append(f'({spec.query.strip()})')
     if entity_field and entity_value is not None:
         parts.append(Q.entity_term(entity_field, entity_value))
-    if extra:
-        parts.append(extra)
+    if extra and extra.strip():
+        parts.append(f'({extra.strip()})')
     for text in spec.exclusions:
         parts.append(f'NOT ({text})')
     return ' AND '.join(parts)
@@ -277,9 +299,19 @@ class Evaluator:
         self.search = search
 
     async def evaluate(self, spec: RuleSpec, now: datetime,
-                       recent_since: datetime | None = None) -> Evaluation:
+                       recent_since: datetime | None = None,
+                       start: datetime | None = None) -> Evaluation:
+        """Evaluates `spec` over the window ending at `now`, or from `start`
+        when the window has been cut short, at the start of active hours."""
         params = normalise(spec)
-        window = TimeRange(now - timedelta(seconds=spec.window_seconds), now)
+        full = now - timedelta(seconds=spec.window_seconds)
+        if start is not None and start > full:
+            if spec.type in ('spike', 'absence'):
+                # Both compare a whole window with what came before; part of
+                # one would look like a drop, or hide a rise
+                return Evaluation([], 'skipped', 'waiting for a whole window inside its active hours')
+            full = start
+        window = TimeRange(full, now)
         groups = F.group_fields(spec.group_by or [])
         method = getattr(self, f'_{spec.type}')
         return await method(spec, params, window, groups, recent_since)
@@ -288,6 +320,53 @@ class Evaluator:
         return await self.search.search({'size': 0, 'track_total_hits': True, 'query': query,
                                          'aggs': aggs})
 
+    async def _composite(self, query: dict, sources: list[tuple[str, str]], sub: dict | None,
+                         limit: int) -> tuple[list[dict], bool]:
+        """Every bucket of a composite aggregation, a page at a time, up to
+        `limit`. Returns the buckets and whether there were more."""
+        out: list[dict] = []
+        after = None
+        while True:
+            composite: dict = {'size': PAGE, 'sources': [
+                {name: {'terms': {'field': name_field}}} for name, name_field in sources]}
+            if after:
+                composite['after'] = after
+            agg: dict = {'composite': composite}
+            if sub:
+                agg['aggs'] = sub
+            result = await self.search.search({'size': 0, 'query': query, 'aggs': {'c': agg}})
+            part = (result.get('aggregations') or {}).get('c') or {}
+            buckets = part.get('buckets', [])
+            out.extend(buckets)
+            after = part.get('after_key')
+            if len(out) >= limit:
+                return out[:limit], len(out) > limit or (bool(after) and len(buckets) == PAGE)
+            if not buckets or not after or len(buckets) < PAGE:
+                return out, False
+
+    async def _each_group(self, query: dict, groups: list[str], extra: list[tuple[str, str]],
+                          sub: dict | None, limit: int) -> tuple[list[dict], bool]:
+        """Composite buckets per group field, each as {field, key, ...}; with
+        no groups, one field-less set. `extra` are further sources."""
+        out: list[dict] = []
+        truncated = False
+        targets = [(i, name) for i, name in enumerate(groups)] or [(None, None)]
+        for i, name in targets:
+            q = query
+            sources = list(extra)
+            if name is not None:
+                q = {'bool': {'filter': [query, Q.group_filter(groups, i)]}}
+                sources = [('g', name), *extra]
+            buckets, more = await self._composite(q, sources, sub, limit - len(out))
+            truncated = truncated or more
+            for b in buckets:
+                key = b.get('key') or {}
+                out.append(dict(b, field=name, key=key.get('g'),
+                                values={k: v for k, v in key.items() if k != 'g'}))
+            if len(out) >= limit:
+                return out, True
+        return out, truncated
+
     def _grouped(self, result: dict, groups: list[str]) -> list[dict]:
         if not groups:
             aggs = result.get('aggregations') or {}
@@ -295,16 +374,18 @@ class Evaluator:
             return [dict(bucket, field=None, key=None)] if bucket['doc_count'] else []
         return Q.group_buckets(result.get('aggregations') or {}, groups)
 
-    def _aggs(self, groups: list[str], sub: dict) -> dict:
+    def _aggs(self, groups: list[str], sub: dict, order: dict | None = None,
+              min_doc_count: int | None = None) -> dict:
         if groups:
-            return Q.group_aggs(groups, MAX_GROUPS, sub)
+            return Q.group_aggs(groups, MAX_GROUPS, sub, order, min_doc_count)
         return {'all': {'filter': {'match_all': {}}, 'aggs': sub}}
 
     # -- the types --------------------------------------------------------------
 
     async def _threshold(self, spec, params, window, groups, recent_since) -> Evaluation:
         query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
-        result = await self._run(query, self._aggs(groups, _detail_aggs(recent_since)))
+        result = await self._run(query, self._aggs(groups, _detail_aggs(recent_since),
+                                                   min_doc_count=params['threshold']))
         hits = []
         for b in self._grouped(result, groups):
             count = b.get('doc_count', 0)
@@ -326,7 +407,8 @@ class Evaluator:
         sub = dict(_detail_aggs(recent_since))
         sub['distinct'] = {'cardinality': {'field': target, 'precision_threshold': 3000}}
         query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
-        result = await self._run(query, self._aggs(groups, sub))
+        # The groups with the most distinct values, not the most events
+        result = await self._run(query, self._aggs(groups, sub, order={'distinct': 'desc'}))
         label = F.BY_NAME[target].label.lower()
         hits = []
         for b in self._grouped(result, groups):
@@ -349,7 +431,9 @@ class Evaluator:
         sub = dict(_detail_aggs(recent_since))
         sub['num'] = {'filter': tbql.compile(params['numerator'])}
         query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
-        result = await self._run(query, self._aggs(groups, sub))
+        # The groups with the most events that match, among those with enough
+        result = await self._run(query, self._aggs(groups, sub, order={'num': 'desc'},
+                                                   min_doc_count=params['min_count']))
         hits = []
         for b in self._grouped(result, groups):
             count = b.get('doc_count', 0)
@@ -433,55 +517,55 @@ class Evaluator:
             have = (window.start.timestamp() - oldest_ms / 1000) / 86400
             return Evaluation([], 'skipped', f'warming up: needs {params["lookback_days"]} days of '
                                              f'history, has {max(have, 0):.1f}')
-        sub_values = {'v': {'terms': {'field': target, 'size': MAX_VALUES},
-                            'aggs': _detail_aggs(recent_since)}}
+        # Every (group, value) pair in the window, not just the busiest: a
+        # value that is new is usually a rare one
         current_query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
-        if groups:
-            result = await self._run(current_query, Q.group_aggs(groups, MAX_GROUPS, sub_values))
-            buckets = Q.group_buckets(result.get('aggregations') or {}, groups)
-        else:
-            result = await self._run(current_query, sub_values)
-            buckets = [{'field': None, 'key': None, 'v': (result.get('aggregations') or {}).get('v')}]
-        pairs = []
-        for b in buckets:
-            for v in (b.get('v') or {}).get('buckets', []):
-                pairs.append((b['field'], b['key'], v.get('key_as_string', v.get('key')), v))
+        pairs, truncated = await self._each_group(current_query, groups, [('v', target)],
+                                                  _detail_aggs(recent_since), MAX_PAIRS)
         if not pairs:
             return Evaluation([])
-        values = sorted({str(p[2]) for p in pairs})
-        seen: set[tuple] = set()
+        for p in pairs:
+            p['value'] = p['values'].get('v')
+        values = sorted({str(p['value']) for p in pairs})
         past_query = Q.bool_query(lookback, spec.query, exclude=spec.exclusions,
                                   extra=[{'terms': {target: values}}])
-        sub_past = {'v': {'terms': {'field': target, 'size': len(values) + 10,
-                                    'include': values}}}
         if groups:
-            past = await self._run(past_query, Q.group_aggs(groups, MAX_GROUPS * 5, sub_past))
-            for b in Q.group_buckets(past.get('aggregations') or {}, groups):
-                for v in (b.get('v') or {}).get('buckets', []):
-                    seen.add((b['field'], b['key'], str(v.get('key_as_string', v.get('key')))))
-        else:
-            past = await self._run(past_query, sub_past)
-            for v in ((past.get('aggregations') or {}).get('v') or {}).get('buckets', []):
-                seen.add((None, None, str(v.get('key_as_string', v.get('key')))))
+            keys = sorted({str(p['key']) for p in pairs if p['field']})
+            past_query['bool']['filter'].append(
+                {'bool': {'should': [{'terms': {g: keys}} for g in groups],
+                          'minimum_should_match': 1}})
+        seen_pairs, _ = await self._each_group(past_query, groups, [('v', target)], None,
+                                               MAX_PAIRS * 20)
+        seen = {(b['field'], str(b['key']) if b['field'] else None, str(b['values'].get('v')))
+                for b in seen_pairs}
         label = F.BY_NAME[target].label.lower()
         target_alias = F.BY_NAME[target].aliases[0] if F.BY_NAME[target].aliases else target
+        fresh = [p for p in pairs
+                 if (p['field'], str(p['key']) if p['field'] else None, str(p['value'])) not in seen]
+        fresh.sort(key=lambda p: p.get('doc_count', 0), reverse=True)
+        reason = ''
+        if truncated:
+            reason = f'looked at the first {MAX_PAIRS:,} values in the window'
+        if len(fresh) > MAX_GROUPS:
+            reason = f'{len(fresh):,} values were new; kept the {MAX_GROUPS} busiest'
+            fresh = fresh[:MAX_GROUPS]
         hits = []
-        for field_name, key, value, bucket in pairs:
-            if (field_name, key, str(value)) in seen:
-                continue
-            d = _details(bucket)
-            count = bucket.get('doc_count', 0)
+        for p in fresh:
+            d = _details(p)
+            count = p.get('doc_count', 0)
+            value = p['value']
+            scope = ' for this entity' if p['field'] else ''
             hits.append(Hit(
-                entity_field=field_name, entity_value=key, count=count,
-                recent=(bucket.get('recent') or {}).get('doc_count', count), value=count,
+                entity_field=p['field'], entity_value=p['key'], count=count,
+                recent=(p.get('recent') or {}).get('doc_count', count), value=count,
                 summary=f'First seen {label} {value}: not seen in the {params["lookback_days"]} '
-                        f'days before{" for this entity" if field_name else ""}.',
-                evidence_query=_evidence_query(spec, field_name, key,
+                        f'days before{scope}.',
+                evidence_query=_evidence_query(spec, p['field'], p['key'],
                                                tbql.term_for(target_alias, value)),
                 window=window, top_domains=d['top_domains'], top_categories=d['top_categories'],
                 first=d['first'], last=d['last'], extra={'field': target, 'new_value': value},
                 distinct=str(value)))
-        return Evaluation(hits)
+        return Evaluation(hits, reason=reason)
 
     async def _absence(self, spec, params, window, groups, recent_since) -> Evaluation:
         lookback = TimeRange(window.start - timedelta(seconds=params['lookback_seconds']),
@@ -507,9 +591,11 @@ class Evaluator:
                'last': {'max': {'field': '@timestamp'}}}
         query = Q.bool_query(TimeRange(lookback.start, window.end), spec.query,
                              exclude=spec.exclusions)
-        result = await self._run(query, Q.group_aggs(groups, MAX_GROUPS * 5, sub))
+        # Every group that was active, not just the busiest: a quiet machine
+        # going silent matters as much as a loud one
+        buckets, truncated = await self._each_group(query, groups, [], sub, MAX_SILENT_GROUPS)
         hits = []
-        for b in Q.group_buckets(result.get('aggregations') or {}, groups):
+        for b in buckets:
             past = (b.get('past') or {}).get('doc_count', 0)
             now_count = (b.get('now') or {}).get('doc_count', 0)
             if past < params['min_baseline'] or now_count >= params['threshold']:
@@ -522,4 +608,8 @@ class Evaluator:
                         f'{_span(params["lookback_seconds"])} before. Last seen {last or "unknown"}.',
                 evidence_query=_evidence_query(spec, b['field'], b['key']), window=window,
                 last=last, extra={'before': past}))
-        return Evaluation(hits)
+        reason = f'looked at the first {MAX_SILENT_GROUPS:,} groups' if truncated else ''
+        if len(hits) > MAX_GROUPS:
+            reason = f'{len(hits):,} groups fell silent; kept the {MAX_GROUPS} that were busiest'
+            hits = sorted(hits, key=lambda h: h.value, reverse=True)[:MAX_GROUPS]
+        return Evaluation(hits, reason=reason)

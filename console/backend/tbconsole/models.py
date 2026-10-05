@@ -52,6 +52,11 @@ class User(TimestampMixin, Base):
     password_hash: Mapped[str | None] = mapped_column(String(255))
     ldap_dn: Mapped[str | None] = mapped_column(String(1000))
     disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # admin, or directory when the directory stopped granting access; only the
+    # directory's own disabling is undone by the directory granting it again
+    disabled_reason: Mapped[str | None] = mapped_column(String(16))
+    # When the directory last confirmed a directory account still has access
+    directory_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     totp_secret_enc: Mapped[str | None] = mapped_column(Text)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # The last time step a code was accepted for, so a code cannot be used twice
@@ -246,7 +251,10 @@ class Webhook(TimestampMixin, Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    # Chat services put the posting credential in the URL itself, so it is
+    # encrypted like the headers; the display form shows only where it goes
+    url_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    url_display: Mapped[str] = mapped_column(String(400), nullable=False)
     format: Mapped[str] = mapped_column(String(20), nullable=False, default='json')
     secret_enc: Mapped[str] = mapped_column(Text, nullable=False)
     headers_enc: Mapped[str | None] = mapped_column(Text)

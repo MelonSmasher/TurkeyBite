@@ -4,11 +4,17 @@ The UI sends a range as `from` and `to`, each either an ISO 8601 instant or a
 relative expression such as `now-24h`. Everything is resolved to UTC instants
 here, once, so every query that serves one screen counts the same window even
 though they run a few milliseconds apart.
+
+Rounding (`now/d`, today so far) happens in the caller's time zone, which the
+app sends as an X-Timezone header, so "today" starts at their midnight, not
+UTC's; daily histogram buckets follow the same zone. Without the header, UTC.
 """
 
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 7 * 86400, 'M': 30 * 86400, 'y': 365 * 86400}
 _RELATIVE = re.compile(r'^now(?:([+-])(\d+)([smhdwMy]))?(?:/([smhdwMy]))?$')
@@ -27,6 +33,25 @@ MAX_RANGE = timedelta(days=400)
 
 class RangeError(ValueError):
     pass
+
+
+_zone: ContextVar[str] = ContextVar('tbconsole_zone', default='UTC')
+
+
+def use_zone(name: str | None) -> None:
+    """Rounds relative times in `name` for the rest of this request. An unknown
+    or malformed zone is ignored rather than refused: it only shifts days."""
+    if not name or len(name) > 64:
+        return
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return
+    _zone.set(name)
+
+
+def zone_name() -> str:
+    return _zone.get()
 
 
 def utcnow() -> datetime:
@@ -58,10 +83,16 @@ def resolve(value: str | None, now: datetime, default: str) -> datetime:
         sign, amount, unit, rounding = m.groups()
         moment = now
         if amount:
-            delta = timedelta(seconds=int(amount) * _UNITS[unit])
-            moment = moment - delta if sign == '-' else moment + delta
+            if len(amount) > 9:
+                raise RangeError(f'{value!r} reaches too far')
+            try:
+                delta = timedelta(seconds=int(amount) * _UNITS[unit])
+                moment = moment - delta if sign == '-' else moment + delta
+            except OverflowError as e:
+                raise RangeError(f'{value!r} reaches too far') from e
         if rounding:
-            moment = _round_down(moment, rounding)
+            zone = ZoneInfo(_zone.get())
+            moment = _round_down(moment.astimezone(zone), rounding).astimezone(timezone.utc)
         return moment
     try:
         moment = datetime.fromisoformat(value.replace('Z', '+00:00'))

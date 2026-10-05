@@ -3,6 +3,7 @@
 import asyncio
 
 from alembic import context
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tbconsole import models  # noqa: F401  registers every table
@@ -19,9 +20,15 @@ def run_offline() -> None:
         context.run_migrations()
 
 
+# pg_advisory_xact_lock key: console processes started together with
+# --migrate take turns, and each after the first finds nothing left to do
+MIGRATION_LOCK = 0x7462_0000
+
+
 def _run(connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
     with context.begin_transaction():
+        connection.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': MIGRATION_LOCK})
         context.run_migrations()
 
 

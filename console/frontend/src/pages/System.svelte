@@ -19,7 +19,8 @@
   const status = new Query((signal) => api.get<Status>('/system/status', { signal }), { refreshMs: 30000 });
   const s = $derived(status.data);
   const workers = $derived(Object.entries(s?.workers ?? {}).filter(([, v]) => typeof v === 'object') as [string, { last: string | null; error: string | null }][]);
-  const WORKER_WORDS: Record<string, string> = { scheduler: 'Rule scheduler', dispatcher: 'Webhook dispatcher', rollups: 'Daily rollups' };
+  const WORKER_WORDS: Record<string, string> = { scheduler: 'Rule scheduler', dispatcher: 'Webhook dispatcher', rollups: 'Daily rollups',
+                                                 maintenance: 'Housekeeping and directory checks' };
 </script>
 
 <PageHeader title="System" subtitle="How the console, its database and the cluster it reads are doing.">

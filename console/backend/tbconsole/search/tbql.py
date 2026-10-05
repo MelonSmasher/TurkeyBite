@@ -232,6 +232,7 @@ class _Parser:
             tok.pos += offset
         self.i = 0
         self.terms = 0
+        self.depth = 0
 
     def peek(self) -> Tok:
         return self.tokens[self.i]
@@ -244,7 +245,7 @@ class _Parser:
     def parse(self) -> Node | None:
         if self.peek().kind == 'EOF':
             return None
-        node = self.or_(0)
+        node = self.or_(self.depth)
         tok = self.peek()
         if tok.kind == 'RP':
             raise TbqlError('This parenthesis closes nothing.', tok.pos)
@@ -279,10 +280,12 @@ class _Parser:
     def not_(self, depth: int) -> Node:
         tok = self.peek()
         if tok.kind == 'NOT':
+            if depth > MAX_DEPTH:
+                raise TbqlError('This query nests too deeply.', tok.pos)
             self.take()
             if self.peek().kind in ('EOF', 'RP', 'OR', 'AND'):
                 raise TbqlError('NOT needs something after it.', tok.pos, tok.length)
-            return Node('not', [self.not_(depth)])
+            return Node('not', [self.not_(depth + 1)])
         return self.primary(depth)
 
     def primary(self, depth: int) -> Node:
@@ -314,9 +317,12 @@ class _Parser:
 
     def group(self, tok: Tok, depth: int) -> Node:
         """field:(a OR b): the values inside, each on the same field."""
+        if depth > MAX_DEPTH:
+            raise TbqlError('This query nests too deeply.', tok.pos, tok.length)
         inner_offset = tok.pos + tok.length - len(tok.group) - 1
         sub = _Parser(tok.group, inner_offset)
         sub.terms = self.terms
+        sub.depth = depth + 1
         node = sub.parse()
         if node is None:
             raise TbqlError('These parentheses are empty.', tok.pos, tok.length)
@@ -484,6 +490,28 @@ def fields_used(node: Node | None) -> set[str]:
     for child in node.children:
         out |= fields_used(child)
     return out
+
+
+def free_text_used(node: Node | None) -> bool:
+    """Whether a query has a term with no field, which can match a person's name."""
+    if node is None:
+        return False
+    if node.kind == 'term' and not node.tok.field:
+        return True
+    return any(free_text_used(child) for child in node.children)
+
+
+def names_someone(text: str) -> bool:
+    """Whether a query could pick out a person or a machine: it names an
+    identity field, or has free text, which is matched against user and host
+    names too. Such searches are audited like a profile view."""
+    try:
+        node = parse(text or '')
+    except TbqlError:
+        return False
+    if free_text_used(node):
+        return True
+    return any(F.BY_NAME[name].identity for name in fields_used(node) if name in F.BY_NAME)
 
 
 def quote(value: str) -> str:

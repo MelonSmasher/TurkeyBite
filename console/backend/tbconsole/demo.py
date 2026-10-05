@@ -28,6 +28,7 @@ from .models import (ApiKey, AuditEvent, DailyStat, Dashboard, Finding, FindingA
 from .search.client import SearchClient
 from .security import apikeys, crypto, passwords, totp
 from .webhooks import dispatcher, signing
+from .webhooks.service import set_url
 
 ORG = 'Harbor Point Academy'
 DOMAIN = 'harborpoint.local'
@@ -608,10 +609,11 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
                 ('SIEM (signed JSON)', '/siem', 'json', ['finding.created', 'finding.reminder', 'finding.status_changed', 'rule.failing'], True, 'low', False),
                 ('IT on-call (Teams)', '/teams', 'teams', ['finding.created', 'rule.failing'], True, 'critical', False),
                 ('Legacy pager bridge', '/pager', 'json', ['finding.created'], False, 'critical', False)):
-            hook = Webhook(name=name, url=sink.rstrip('/') + path, format=fmt,
+            hook = Webhook(name=name, format=fmt,
                            secret_enc=crypto.encrypt(signing.new_secret()), events=events,
                            all_findings=all_findings, min_severity=minimum, redact_entities=redact,
                            enabled=True, created_by_id=people['admin'].id)
+            set_url(hook, sink.rstrip('/') + path)
             session.add(hook)
             hooks[name] = hook
         await session.flush()

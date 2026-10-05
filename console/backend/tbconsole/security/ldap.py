@@ -14,6 +14,7 @@ as a success.
 ldap3 is synchronous, so callers run these functions in a thread.
 """
 
+import logging
 import ssl
 from dataclasses import dataclass, field
 
@@ -22,6 +23,8 @@ from ldap3.core import exceptions as lx
 from ldap3.utils.conv import escape_filter_chars
 
 from . import rbac
+
+log = logging.getLogger(__name__)
 
 DEFAULTS = {
     'enabled': False,
@@ -82,6 +85,15 @@ def config_with_defaults(value: dict | None) -> dict:
     return merged
 
 
+def _timeout(cfg: dict) -> int:
+    # Whole seconds: ldap3 packs the receive timeout into a C struct of
+    # integers on Linux and macOS, and a float there raises struct.error
+    try:
+        return max(1, min(60, int(round(float(cfg.get('timeout_sec') or 5)))))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _servers(cfg: dict):
     if _MOCK_SERVER is not None:
         return _MOCK_SERVER
@@ -90,7 +102,7 @@ def _servers(cfg: dict):
         tls = Tls(validate=ssl.CERT_REQUIRED, ca_certs_data=cfg.get('ca_cert_pem') or None)
     else:
         tls = Tls(validate=ssl.CERT_NONE)
-    timeout = float(cfg.get('timeout_sec') or 5)
+    timeout = _timeout(cfg)
     servers = []
     for url in cfg.get('urls') or []:
         url = url.strip()
@@ -118,11 +130,11 @@ class _BindRefused(Exception):
         return self.result.get('result') in _TRANSIENT_BIND_RESULTS
 
 
-def _connect(cfg: dict, user: str, password: str, server=None) -> Connection:
+def _connect(cfg: dict, user: str, password: str) -> Connection:
     """An open, bound connection. Raises _BindRefused, or an ldap3 exception
     when no server can be reached."""
-    timeout = float(cfg.get('timeout_sec') or 5)
-    conn = Connection(server or _servers(cfg), user=user, password=password,
+    timeout = _timeout(cfg)
+    conn = Connection(_servers(cfg), user=user, password=password,
                       receive_timeout=timeout, raise_exceptions=False, read_only=True,
                       client_strategy=_STRATEGY)
     conn.open()
@@ -229,7 +241,19 @@ def _groups(conn: Connection, cfg: dict, dn: str, attributes: dict) -> list[str]
 
 
 def authenticate(cfg: dict, bind_password: str, username: str, password: str) -> LdapIdentity:
-    """Signs a person in against the directory. Raises an LdapError subclass."""
+    """Signs a person in against the directory. Raises an LdapError subclass, and
+    only that: anything unexpected from the library means the directory could
+    not be used, not that the console should fail the request."""
+    try:
+        return _authenticate(cfg, bind_password, username, password)
+    except LdapError:
+        raise
+    except Exception as e:
+        log.exception('LDAP sign-in failed unexpectedly')
+        raise LdapUnavailable(f'the directory could not be used: {type(e).__name__}') from e
+
+
+def _authenticate(cfg: dict, bind_password: str, username: str, password: str) -> LdapIdentity:
     username = _clean_username(username)
     if not password:
         raise LdapInvalidCredentials('invalid username or password')
@@ -268,12 +292,51 @@ def authenticate(cfg: dict, bind_password: str, username: str, password: str) ->
     return identity
 
 
+def recheck(cfg: dict, bind_password: str, username: str) -> LdapIdentity | None:
+    """What the directory says about someone now, without their password: None
+    when they are no longer in it, an identity whose role is None when no group
+    grants them access. Raises LdapUnavailable when it cannot say."""
+    try:
+        username = _clean_username(username)
+        service = _service_connection(cfg, bind_password)
+        try:
+            try:
+                dn, attributes = _find_user(service, cfg, username)
+            except LdapInvalidCredentials:
+                return None
+            groups = _groups(service, cfg, dn, attributes)
+        finally:
+            try:
+                service.unbind()
+            except Exception:
+                pass
+    except LdapError:
+        raise
+    except Exception as e:
+        raise LdapUnavailable(f'the directory could not be used: {type(e).__name__}') from e
+    identity = LdapIdentity(
+        dn=dn, username=(_first(attributes, cfg.get('attr_username') or '') or username).lower(),
+        display_name=_first(attributes, cfg.get('attr_display_name') or ''),
+        email=_first(attributes, cfg.get('attr_email') or ''), groups=groups)
+    identity.role = map_role(cfg, groups)
+    return identity
+
+
 def test(cfg: dict, bind_password: str, username: str | None = None,
          password: str | None = None) -> list[dict]:
     """Checks the configuration step by step, for the settings page.
 
     Each step is {step, ok, detail}. Stops at the first failure.
     """
+    try:
+        return _test(cfg, bind_password, username, password)
+    except Exception as e:
+        log.exception('LDAP test failed unexpectedly')
+        return [{'step': 'Use the directory', 'ok': False,
+                 'detail': f'the directory could not be used: {type(e).__name__}: {e}'}]
+
+
+def _test(cfg: dict, bind_password: str, username: str | None, password: str | None) -> list[dict]:
     steps = []
     try:
         service = _service_connection(cfg, bind_password)

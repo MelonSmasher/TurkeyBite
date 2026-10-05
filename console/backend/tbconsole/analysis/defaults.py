@@ -198,8 +198,9 @@ DEFAULT_RULES: list[dict] = [
     {
         'key': 'entity-spike', 'version': 1, 'category': 'anomaly',
         'name': 'Unusual burst of activity',
-        'description': 'A person or machine making far more requests than usual for the time '
-                       'of day: an infected machine, an automated tool, or a binge.',
+        'description': 'A person or machine making far more requests in the last hour than in '
+                       'any of the 24 before it: an infected machine, an automated tool, or a '
+                       'binge.',
         'type': 'spike', 'query': 'NOT incidental:true',
         'params': {'baseline_windows': 24, 'z_score': 5.0, 'ratio': 4.0, 'min_count': 400},
         'group_by': ENTITY, 'severity': 'medium', 'enabled': True,

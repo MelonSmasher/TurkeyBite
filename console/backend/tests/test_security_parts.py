@@ -5,7 +5,6 @@ import time
 
 import pyotp
 import pytest
-from ldap3 import MOCK_SYNC, OFFLINE_SLAPD_2_4, Connection, Server
 
 from tbconsole.config import get_settings
 from tbconsole.security import apikeys, crypto, ldap, passwords, totp
@@ -118,27 +117,6 @@ def test_deliveries_back_off_then_die():
 
 
 # -- LDAP, against ldap3's in-memory directory ------------------------------------------
-
-@pytest.fixture
-def directory(monkeypatch):
-    server = Server('mock', get_info=OFFLINE_SLAPD_2_4)
-    seed = Connection(server, user='cn=svc,dc=example,dc=org', password='svc-pw', client_strategy=MOCK_SYNC)
-    seed.strategy.add_entry('cn=svc,dc=example,dc=org', {'userPassword': 'svc-pw', 'objectClass': 'person', 'sn': 'svc'})
-    seed.strategy.add_entry('uid=ava,ou=people,dc=example,dc=org', {
-        'userPassword': 'ava-pw', 'objectClass': ['person', 'inetOrgPerson'], 'uid': 'ava', 'sn': 'Chen',
-        'displayName': 'Ava Chen', 'mail': 'ava@example.org',
-        'memberOf': ['cn=safeguarding,ou=groups,dc=example,dc=org']})
-    seed.strategy.add_entry('uid=bob,ou=people,dc=example,dc=org', {
-        'userPassword': 'bob-pw', 'objectClass': ['person', 'inetOrgPerson'], 'uid': 'bob', 'sn': 'B',
-        'memberOf': ['cn=students,ou=groups,dc=example,dc=org']})
-    monkeypatch.setattr(ldap, '_STRATEGY', MOCK_SYNC)
-    monkeypatch.setattr(ldap, '_MOCK_SERVER', server)
-    return ldap.config_with_defaults({
-        'enabled': True, 'urls': ['ldap://mock'], 'bind_dn': 'cn=svc,dc=example,dc=org',
-        'user_base_dn': 'ou=people,dc=example,dc=org', 'user_filter': '(&(objectClass=person)(uid={username}))',
-        'role_mappings': [{'group': 'cn=safeguarding,ou=groups,dc=example,dc=org', 'role': 'analyst'},
-                          {'group': 'CN=IT,ou=groups,dc=example,dc=org', 'role': 'admin'}]})
-
 
 def test_ldap_signs_someone_in_with_the_role_their_groups_give(directory):
     identity = ldap.authenticate(directory, 'svc-pw', 'ava', 'ava-pw')

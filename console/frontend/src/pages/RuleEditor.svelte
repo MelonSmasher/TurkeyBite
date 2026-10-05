@@ -13,9 +13,11 @@
   import SeverityBadge from '../lib/components/SeverityBadge.svelte';
   import Switch from '../lib/components/Switch.svelte';
   import { ago, dateTime, num, RULE_TYPE_LABEL, SEVERITIES, spanWords } from '../lib/format';
+  import { maskQuery, maskText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { navigate, router } from '../lib/router.svelte';
   import { fields } from '../lib/stores/fields.svelte';
+  import { prefs } from '../lib/stores/prefs.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
   import type { Rule, Webhook } from '../lib/types';
@@ -42,7 +44,9 @@
   const DEDUPS = [[0, 'Every match'], [3600, 'An hour'], [6 * 3600, '6 hours'], [12 * 3600, '12 hours'], [86400, 'A day'], [7 * 86400, 'A week']] as const;
 
   fields.load();
-  const id = $derived(router.params.id);
+  // Read from what App passes, which belongs to this page's route alone
+  let { params }: { params: Record<string, string> } = $props();
+  const id = $derived(params.id);
   const isNew = $derived(!id);
   const meta = new Query((signal) => api.get<Meta>('/rules/meta', { signal }));
   const hooks = new Query((signal) => api.get<Webhook[]>('/webhooks', { signal }), { enabled: () => session.can('webhooks:read') });
@@ -84,17 +88,27 @@
     rule.params = params;
   }
 
-  function body() {
-    const snap = $state.snapshot(rule);
+  function bodyOf(snap: Partial<Rule>, query: string, tags: string[]) {
     return {
-      name: snap.name, description: snap.description ?? '', category: snap.category ?? 'custom', type: snap.type,
-      query: draftQuery.trim(), params: snap.params ?? {}, group_by: snap.group_by ?? [], severity: snap.severity,
+      name: snap.name ?? '', description: snap.description ?? '', category: snap.category ?? 'custom', type: snap.type ?? '',
+      query: query.trim(), params: snap.params ?? {}, group_by: snap.group_by ?? [], severity: snap.severity ?? 'medium',
       enabled: snap.enabled ?? false, interval_seconds: snap.interval_seconds, window_seconds: snap.window_seconds,
       dedup_seconds: snap.dedup_seconds, schedule: snap.schedule ?? null, exceptions: snap.exceptions ?? [],
-      webhook_ids: snap.webhook_ids ?? [], tags: tagText.split(',').map((t) => t.trim()).filter(Boolean),
+      webhook_ids: snap.webhook_ids ?? [], tags,
       title_template: snap.title_template ?? '{rule}: {entity}',
     };
   }
+
+  function body() {
+    return bodyOf($state.snapshot(rule) as Partial<Rule>, draftQuery, tagText.split(',').map((t) => t.trim()).filter(Boolean));
+  }
+
+  // Edits in the form that are not saved yet: Run now runs the saved rule
+  const dirty = $derived.by(() => {
+    const saved = loaded.data;
+    if (!saved || isNew) return false;
+    return JSON.stringify(body()) !== JSON.stringify(bodyOf(saved, saved.query, saved.tags));
+  });
 
   async function save(enable?: boolean) {
     saving = true;
@@ -140,11 +154,14 @@
         await api.del(`/rules/${id}`);
         navigate('/rules');
       } else {
+        const unsaved = dirty;
+        if (unsaved && !confirm('Run now runs the rule as saved, not as it is in the form. Your changes stay in the form, unsaved. Run the saved rule?')) return;
         const r = await api.post<{ status: string; hits: number; created: number; error: string | null; reason: string }>(`/rules/${id}/run`);
         toasts.push({ kind: r.status === 'error' ? 'error' : 'success', title: `Ran: ${r.status}`,
           body: r.error ?? (r.reason || `${r.hits} hits, ${r.created} new findings`) });
         runs.reload();
-        loaded.reload();
+        // Reloading the rule would put the saved copy over the form's edits
+        if (!unsaved) loaded.reload();
       }
     } catch (e) {
       toasts.error('That did not work', errorText(e));
@@ -287,7 +304,11 @@
         <p class="muted small">Events matching an exception never reach the rule. Most are added from a finding, by marking it a false positive.</p>
         {#each rule.exceptions ?? [] as ex, i (i)}
           <div class="exception">
-            <input class="input input-sm mono ex-q" bind:value={rule.exceptions![i].query} placeholder="host:staff-lt-302" disabled={!canWrite} aria-label="Exception query" />
+            {#if prefs.privacy}
+              <span class="input input-sm mono ex-q masked" title="Turn privacy mode off to edit">{maskQuery(ex.query)}</span>
+            {:else}
+              <input class="input input-sm mono ex-q" bind:value={rule.exceptions![i].query} placeholder="host:staff-lt-302" disabled={!canWrite} aria-label="Exception query" />
+            {/if}
             <input class="input input-sm ex-note" bind:value={rule.exceptions![i].note} placeholder="Why" disabled={!canWrite} aria-label="Exception reason" />
             <span class="faint small nowrap">{ex.created_by ?? ''}{ex.expires_at ? ` · until ${dateTime(ex.expires_at)}` : ''}</span>
             {#if canWrite}<button class="btn btn-ghost btn-icon btn-sm" aria-label="Remove exception" onclick={() => (rule.exceptions = (rule.exceptions ?? []).filter((_, j) => j !== i))}><X size={14} /></button>{/if}
@@ -317,7 +338,9 @@
       <ChartCard title="Backtest" subtitle="What this rule, as it stands in the form, would have raised. Nothing is recorded.">
         <div class="bt-controls">
           <Segmented size="sm" bind:value={backtestRange} label="Range" options={[{ value: 'now-24h', label: '24h' }, { value: 'now-3d', label: '3 days' }, { value: 'now-7d', label: '7 days' }]} />
-          <button class="btn btn-primary btn-sm" onclick={runBacktest} disabled={testing}><FlaskConical size={14} /> {testing ? 'Testing…' : 'Run backtest'}</button>
+          {#if canWrite}
+            <button class="btn btn-primary btn-sm" onclick={runBacktest} disabled={testing}><FlaskConical size={14} /> {testing ? 'Testing…' : 'Run backtest'}</button>
+          {/if}
         </div>
         {#if backtest}
           <div class="bt-sum">
@@ -333,12 +356,12 @@
             {#each backtest.samples.slice(0, 8) as s, i (i)}
               <li>
                 <div class="row"><EntityLink field={s.entity_field} value={s.entity} size="sm" /><span class="faint small">{dateTime(s.t)}</span></div>
-                <div class="muted small">{s.summary}</div>
+                <div class="muted small">{maskText(s.summary, s.entity)}</div>
               </li>
             {/each}
           </ul>
         {:else}
-          <p class="muted small bt-hint">Run it before you switch it on: you will see how noisy it would have been, and for whom.</p>
+          <p class="muted small bt-hint">{canWrite ? 'Run it before you switch it on: you will see how noisy it would have been, and for whom.' : 'Backtests are for those who can change rules.'}</p>
         {/if}
       </ChartCard>
 
@@ -403,6 +426,7 @@
   .small-field { width: 120px; }
   .exception { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); }
   .ex-q { flex: 1.4; }
+  .ex-q.masked { display: flex; align-items: center; color: var(--text-2); overflow: hidden; white-space: nowrap; }
   .ex-note { flex: 1; }
   .add { align-self: flex-start; }
   .bt-controls { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }

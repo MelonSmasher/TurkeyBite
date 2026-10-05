@@ -14,6 +14,7 @@
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { tip } from '../lib/components/tooltip';
   import { ago, compact, dateTime, num, pct, signedPct, taxon } from '../lib/format';
+  import { findingText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
@@ -145,7 +146,7 @@
                 <a href="/findings/{f.id}">
                   <SeverityBadge severity={f.severity} compact />
                   <span class="lf-text">
-                    <span class="truncate lf-title">{f.title}</span>
+                    <span class="truncate lf-title">{findingText(f.title, f)}</span>
                     <span class="muted lf-meta">{f.rule_name} · {ago(f.last_seen)}</span>
                   </span>
                 </a>

@@ -2,7 +2,7 @@
 
 from . import fields as F
 from . import tbql
-from .timerange import TimeRange
+from .timerange import TimeRange, zone_name
 
 # Caps on what one request can ask OpenSearch for
 MAX_TERMS_SIZE = 500
@@ -30,30 +30,38 @@ def bool_query(tr: TimeRange | None, text: str = '', extra: list[dict] | None = 
     return query
 
 
-def terms_agg(field: str, size: int, sub: dict | None = None, order: dict | None = None) -> dict:
+def terms_agg(field: str, size: int, sub: dict | None = None, order: dict | None = None,
+              min_doc_count: int | None = None) -> dict:
     agg: dict = {'terms': {'field': field, 'size': max(1, min(size, MAX_TERMS_SIZE))}}
     if order:
         agg['terms']['order'] = order
+    if min_doc_count and min_doc_count > 1:
+        agg['terms']['min_doc_count'] = min_doc_count
     if sub:
         agg['aggs'] = sub
     return agg
 
 
-def group_aggs(group_fields: list[str], size: int, sub: dict | None = None) -> dict:
+def group_filter(group_fields: list[str], i: int) -> dict:
+    """The events that group by `group_fields[i]`: they have it, and none before it."""
+    flt: dict = {'bool': {'filter': [{'exists': {'field': group_fields[i]}}]}}
+    if i:
+        flt['bool']['must_not'] = [{'exists': {'field': b}} for b in group_fields[:i]]
+    return flt
+
+
+def group_aggs(group_fields: list[str], size: int, sub: dict | None = None,
+               order: dict | None = None, min_doc_count: int | None = None) -> dict:
     """Aggregations that bucket by the first of `group_fields` an event has.
 
     One filtered terms aggregation per field, each taking only events that
     lack every field before it, so an event lands in exactly one group. With
-    one field this is just a terms aggregation under a filter.
+    one field this is just a terms aggregation under a filter. `order` decides
+    which groups make the cut when there are more than `size`.
     """
-    aggs = {}
-    for i, name in enumerate(group_fields):
-        before = group_fields[:i]
-        flt: dict = {'bool': {'filter': [{'exists': {'field': name}}]}}
-        if before:
-            flt['bool']['must_not'] = [{'exists': {'field': b}} for b in before]
-        aggs[f'g{i}'] = {'filter': flt, 'aggs': {'t': terms_agg(name, size, sub)}}
-    return aggs
+    return {f'g{i}': {'filter': group_filter(group_fields, i),
+                      'aggs': {'t': terms_agg(name, size, sub, order, min_doc_count)}}
+            for i, name in enumerate(group_fields)}
 
 
 def group_buckets(aggregations: dict, group_fields: list[str]) -> list[dict]:
@@ -78,10 +86,11 @@ def entity_term(field: str, value) -> str:
 
 
 def date_histogram(interval: str, tr: TimeRange, sub: dict | None = None,
-                   tz: str = 'UTC') -> dict:
+                   tz: str | None = None) -> dict:
     agg: dict = {'date_histogram': {
         'field': '@timestamp', 'fixed_interval': interval, 'min_doc_count': 0,
-        'time_zone': tz,
+        # Day buckets start at the caller's midnight
+        'time_zone': tz or zone_name(),
         'extended_bounds': {'min': int(tr.start.timestamp() * 1000),
                             'max': int(tr.end.timestamp() * 1000) - 1},
     }}

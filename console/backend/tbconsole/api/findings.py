@@ -1,5 +1,6 @@
 """Findings: what the rules raised, and the work of deciding what each one means."""
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -19,12 +20,13 @@ from ..search import queries as Q
 from ..search.tbql import quote
 from ..security import rbac
 from ..webhooks import service as hooks
-from .common import delivery_out, finding_out, parse_uuid, rule_out, ts, user_out
+from .common import delivery_out, finding_out, like_escape, parse_uuid, rule_out, ts, user_out
 
 router = APIRouter(prefix='/findings', tags=['findings'])
 
 STATUSES = ('new', 'acknowledged', 'in_progress', 'resolved', 'false_positive')
 CLOSED = ('resolved', 'false_positive')
+_NUMBER = re.compile(r'(?:[Ff]-?)?(\d{1,9})')
 
 
 class FindingPatch(BaseModel):
@@ -96,17 +98,23 @@ async def list_findings(
             moment = datetime.fromisoformat(since.replace('Z', '+00:00'))
         except ValueError as e:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'since is a time') from e
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
         stmt = stmt.where(Finding.last_seen >= moment)
-    if q:
-        like = f'%{q.strip()[:200]}%'
-        clauses = [Finding.title.ilike(like), Finding.entity_value.ilike(like),
-                   Finding.rule_name.ilike(like), Finding.summary.ilike(like)]
-        if q.strip().lstrip('F-').isdigit():
-            clauses.append(Finding.number == int(q.strip().lstrip('F-')))
+    if q and q.strip():
+        text_ = q.strip()[:200]
+        like = '%' + like_escape(text_) + '%'
+        clauses = [Finding.title.ilike(like, escape='\\'),
+                   Finding.entity_value.ilike(like, escape='\\'),
+                   Finding.rule_name.ilike(like, escape='\\'),
+                   Finding.summary.ilike(like, escape='\\')]
+        number = _NUMBER.fullmatch(text_)
+        if number:
+            clauses.append(Finding.number == int(number.group(1)))
         stmt = stmt.where(or_(*clauses))
     count = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(*_order(sort)).limit(max(1, min(limit, 200)))
-                             .offset(max(0, offset)))).scalars().all()
+                             .offset(max(0, min(offset, 100_000))))).scalars().all()
     return {'total': count, 'items': [finding_out(f) for f in rows]}
 
 
@@ -152,6 +160,14 @@ async def stats(days: int = 14, _: Principal = Depends(require(rbac.FINDINGS_REA
     }
 
 
+class Reopened(Exception):
+    """Reopening would make a second open finding for the same rule and entity."""
+
+    def __init__(self, number: int):
+        super().__init__(number)
+        self.number = number
+
+
 async def _get(db: AsyncSession, finding_id: str) -> Finding:
     finding = await db.get(Finding, parse_uuid(finding_id, 'That finding'))
     if finding is None:
@@ -191,6 +207,14 @@ async def _apply(db: AsyncSession, finding: Finding, body: FindingPatch, princip
     actor = principal.user.display_name or principal.user.username
     if body.status and body.status != finding.status:
         before = finding.status
+        if body.status in engine.OPEN and before not in engine.OPEN and finding.dedup_key:
+            # Its rule may have raised a new one since this closed; two open
+            # findings about the same thing is what the dedup index forbids
+            newer = (await db.execute(select(Finding.number).where(
+                Finding.dedup_key == finding.dedup_key, Finding.id != finding.id,
+                Finding.status.in_(engine.OPEN)))).scalar_one_or_none()
+            if newer is not None:
+                raise Reopened(newer)
         finding.status = body.status
         if body.status in CLOSED:
             finding.resolved_at = now
@@ -242,15 +266,24 @@ async def _apply(db: AsyncSession, finding: Finding, body: FindingPatch, princip
     return changes
 
 
+async def _announce(db: AsyncSession, finding: Finding, changes: list[str]) -> None:
+    if any(c.startswith(('status', 'assigned', 'unassigned')) for c in changes):
+        rule = await db.get(Rule, finding.rule_id) if finding.rule_id else None
+        await hooks.enqueue_finding(db, 'finding.status_changed', finding, rule)
+
+
 @router.patch('/{finding_id}')
 async def update_finding(finding_id: str, body: FindingPatch, request: Request,
                          principal: Principal = Depends(require(rbac.FINDINGS_WRITE)),
                          db: AsyncSession = Depends(get_session)) -> dict:
     finding = await _get(db, finding_id)
-    changes = await _apply(db, finding, body, principal, request)
-    if any(c.startswith(('status', 'assigned', 'unassigned')) for c in changes):
-        rule = await db.get(Rule, finding.rule_id) if finding.rule_id else None
-        await hooks.enqueue_finding(db, 'finding.status_changed', finding, rule)
+    try:
+        changes = await _apply(db, finding, body, principal, request)
+    except Reopened as e:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f'F-{e.number} is already open for the same rule and entity; '
+                            'work on that one instead.') from e
+    await _announce(db, finding, changes)
     await db.commit()
     await db.refresh(finding)
     return finding_out(finding)
@@ -261,17 +294,24 @@ async def bulk_update(body: BulkBody, request: Request,
                       principal: Principal = Depends(require(rbac.FINDINGS_WRITE)),
                       db: AsyncSession = Depends(get_session)) -> dict:
     ids = [parse_uuid(i, 'That finding') for i in body.ids]
-    findings = (await db.execute(select(Finding).where(Finding.id.in_(ids)))).scalars().all()
-    changed = 0
+    findings = (await db.execute(select(Finding).where(Finding.id.in_(ids))
+                                 .order_by(Finding.number))).scalars().all()
+    changed, skipped = 0, []
     for finding in findings:
-        if await _apply(db, finding, body, principal, request):
+        try:
+            changes = await _apply(db, finding, body, principal, request)
+        except Reopened:
+            skipped.append(finding.number)
+            continue
+        if changes:
             changed += 1
+            await _announce(db, finding, changes)
     await db.commit()
-    return {'updated': changed}
+    return {'updated': changed, 'skipped': skipped}
 
 
 @router.post('/{finding_id}/comments')
-async def comment(finding_id: str, body: CommentBody,
+async def comment(finding_id: str, body: CommentBody, request: Request,
                   principal: Principal = Depends(require(rbac.FINDINGS_WRITE)),
                   db: AsyncSession = Depends(get_session)) -> dict:
     finding = await _get(db, finding_id)
@@ -279,6 +319,8 @@ async def comment(finding_id: str, body: CommentBody,
                                actor_name=principal.user.display_name or principal.user.username,
                                kind='comment', body=body.body.strip())
     db.add(activity)
+    audit.record(db, 'finding.comment', principal=principal, request=request,
+                 target_type='finding', target_id=finding.id, target_label=f'F-{finding.number}')
     await db.commit()
     return {'id': activity.id, 'kind': 'comment', 'actor': activity.actor_name,
             'body': activity.body, 'at': ts(activity.created_at)}
@@ -313,9 +355,10 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
     rule.exceptions = [*(rule.exceptions or []), exception]
     if rule.builtin_key:
         rule.modified = True
-    await _apply(db, finding, FindingPatch(status='false_positive',
-                                           note=body.note or f'Exception added: {query}'),
-                 principal, request)
+    changes = await _apply(db, finding, FindingPatch(status='false_positive',
+                                                     note=body.note or f'Exception added: {query}'),
+                           principal, request)
+    await _announce(db, finding, changes)
     audit.record(db, 'rule.exception_added', principal=principal, request=request,
                  target_type='rule', target_id=rule.id, target_label=rule.name,
                  details={'query': query, 'finding': f'F-{finding.number}'})
