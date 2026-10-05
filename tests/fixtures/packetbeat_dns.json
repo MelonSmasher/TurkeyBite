@@ -1,0 +1,116 @@
+{
+  "@timestamp": "2026-10-04T15:58:40.912Z",
+  "@metadata": {
+    "beat": "packetbeat",
+    "type": "_doc",
+    "version": "8.15.3"
+  },
+  "type": "dns",
+  "status": "OK",
+  "method": "QUERY",
+  "query": "class IN, type A, metrics.casino-example.co.uk",
+  "resource": "metrics.casino-example.co.uk",
+  "network": {
+    "type": "ipv4",
+    "transport": "udp",
+    "protocol": "dns",
+    "direction": "ingress",
+    "community_id": "1:5Wq7lQ1mX6r7rPqD2b0Q8yK0X2s=",
+    "bytes": 214
+  },
+  "client": {
+    "ip": "10.100.45.140",
+    "port": 53122,
+    "bytes": 46
+  },
+  "source": {
+    "ip": "10.100.45.140",
+    "port": 53122,
+    "bytes": 46
+  },
+  "server": {
+    "ip": "10.0.0.53",
+    "port": 53,
+    "bytes": 168
+  },
+  "destination": {
+    "ip": "10.0.0.53",
+    "port": 53,
+    "bytes": 168
+  },
+  "dns": {
+    "type": "answer",
+    "id": 41853,
+    "op_code": "QUERY",
+    "flags": {
+      "authoritative": false,
+      "truncated_response": false,
+      "recursion_desired": true,
+      "recursion_available": true,
+      "authentic_data": false,
+      "checking_disabled": false
+    },
+    "response_code": "NOERROR",
+    "header_flags": ["RD", "RA"],
+    "question": {
+      "name": "metrics.casino-example.co.uk",
+      "type": "A",
+      "class": "IN",
+      "etld_plus_one": "casino-example.co.uk",
+      "registered_domain": "casino-example.co.uk",
+      "top_level_domain": "co.uk",
+      "subdomain": "metrics"
+    },
+    "opt": {
+      "version": "0",
+      "do": false,
+      "ext_rcode": "NOERROR",
+      "udp_size": 1232
+    },
+    "answers_count": 2,
+    "answers": [
+      {
+        "name": "metrics.casino-example.co.uk",
+        "type": "CNAME",
+        "class": "IN",
+        "ttl": "300",
+        "data": "casino-example.collect.tracker-example.net"
+      },
+      {
+        "name": "casino-example.collect.tracker-example.net",
+        "type": "A",
+        "class": "IN",
+        "ttl": "60",
+        "data": "203.0.113.24"
+      }
+    ],
+    "authorities_count": 0,
+    "additionals_count": 0,
+    "resolved_ip": ["203.0.113.24"]
+  },
+  "event": {
+    "dataset": "dns",
+    "kind": "event",
+    "category": ["network"],
+    "type": ["connection", "protocol"],
+    "start": "2026-10-04T15:58:40.912Z",
+    "end": "2026-10-04T15:58:40.933Z",
+    "duration": 21004000
+  },
+  "related": {
+    "ip": ["10.100.45.140", "10.0.0.53", "203.0.113.24"]
+  },
+  "host": {
+    "name": "dns1"
+  },
+  "agent": {
+    "type": "packetbeat",
+    "version": "8.15.3",
+    "name": "dns1",
+    "id": "4c1f3a52-9d0e-4b7a-8f61-2f0e5d6c9a13",
+    "ephemeral_id": "b8a2e7c4-1d3f-4a6b-9c0e-7f5d2a1b3c4e"
+  },
+  "ecs": {
+    "version": "8.0.0"
+  }
+}
