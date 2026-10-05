@@ -191,38 +191,76 @@ class RecoverOrphansTest(unittest.TestCase):
     def strand(self, consumer, *names, key=KEY):
         self.redis.rpush(f'{key}:processing:{consumer}', *names)
 
-    def test_stranded_work_is_requeued_in_order_and_the_list_removed(self):
+    def left(self, consumer):
+        return self.redis.lrange(f'{KEY}:processing:{consumer}', 0, -1)
+
+    def test_stranded_work_is_requeued_in_order_ahead_of_the_rest(self):
         self.strand('old-01', 'a', 'b', 'c')
         self.redis.rpush(KEY, 'z')
         self.assertEqual(recover_orphans(self.redis, KEY), (1, 3))
         self.assertEqual(self.redis.lrange(KEY, 0, -1), items('a', 'b', 'c', 'z'))
         self.assertNotIn(f'{KEY}:processing:old-01', self.redis.data)
 
+    def test_nothing_is_ever_deleted_only_moved(self):
+        # LRANGE, LPUSH and DEL as separate steps lost anything claimed into
+        # the list between the read and the delete
+        self.strand('old-01', 'a', 'b')
+        recover_orphans(self.redis, KEY)
+        self.assertNotIn('delete', [command for command, _ in self.redis.calls])
+
+    def test_an_item_claimed_into_the_list_meanwhile_is_requeued_too(self):
+        self.strand('old-01', 'a', 'b')
+        arrived = []
+
+        def claim_part_way(command, key):
+            if command == 'lmove' and not arrived:
+                arrived.append(True)
+                self.redis.rpush(f'{KEY}:processing:old-01', 'late')
+        self.redis.on_command = claim_part_way
+        self.assertEqual(recover_orphans(self.redis, KEY), (1, 3))
+        self.assertEqual(sorted(self.redis.lrange(KEY, 0, -1)), items('a', 'b', 'late'))
+        self.assertEqual(self.left('old-01'), [])
+
+    def test_a_list_scan_returns_twice_is_swept_and_counted_once(self):
+        self.redis = FakeRedis(scan_repeats=True)
+        self.strand('old-01', 'a', 'b')
+        self.strand('old-02', 'c')
+        self.assertEqual(recover_orphans(self.redis, KEY), (2, 3))
+        self.assertEqual(len(self.redis.lrange(KEY, 0, -1)), 3)
+
     def test_named_consumers_are_left_alone(self):
         self.strand('old-01', 'a')
         self.strand('live-01', 'b')
         self.assertEqual(recover_orphans(self.redis, KEY, keep_consumers=['live-01']), (1, 1))
-        self.assertEqual(self.redis.lrange(f'{KEY}:processing:live-01', 0, -1), items('b'))
+        self.assertEqual(self.left('live-01'), items('b'))
 
-    def test_a_prefix_leaves_another_hosts_work_alone(self):
-        self.strand('host-a-01', 'a')
-        self.strand('host-b-01', 'b')
-        self.assertEqual(recover_orphans(self.redis, KEY, match='host-a-'), (1, 1))
-        self.assertEqual(self.redis.lrange(f'{KEY}:processing:host-b-01', 0, -1), items('b'))
+    def test_a_prefix_takes_only_the_names_the_start_scripts_generate(self):
+        for prefix, theirs in (('tb-worker', 'tb-worker-b-01'), ('worker1', 'worker10-01'),
+                               ('host-a', 'host-a-b-01'), ('host', 'host-a-01')):
+            with self.subTest(prefix):
+                self.setUp()
+                self.strand(f'{prefix}-01', 'mine')
+                self.strand(f'{prefix}-102', 'mine too')
+                self.strand(theirs, 'theirs')
+                self.assertEqual(recover_orphans(self.redis, KEY, prefix=prefix), (2, 2))
+                self.assertEqual(self.left(theirs), items('theirs'))
 
-    def test_a_prefix_ending_at_the_dash_does_not_take_a_longer_name(self):
-        # worker1 is a prefix of worker10, so only the dash that ends the
-        # prefix in a consumer's name keeps one host off the other's work
-        self.strand('worker1-01', 'a')
-        self.strand('worker10-01', 'b')
-        recover_orphans(self.redis, KEY, match='worker1-')
-        self.assertEqual(self.redis.lrange(f'{KEY}:processing:worker10-01', 0, -1), items('b'))
+    def test_a_bare_prefix_match_would_have_taken_another_hosts_work(self):
+        # The control: the shape check is what keeps tb-worker-b-01 safe
+        self.strand('tb-worker-01', 'mine')
+        self.strand('tb-worker-b-01', 'theirs')
+        with mock.patch('libtb.queue.generated_names',
+                        lambda prefix: __import__('re').compile('.*')):
+            self.assertEqual(recover_orphans(self.redis, KEY, prefix='tb-worker'), (2, 2))
 
-    def test_without_the_dash_a_longer_name_is_taken(self):
-        # The control for the test above
-        self.strand('worker10-01', 'b')
-        recover_orphans(self.redis, KEY, match='worker1')
-        self.assertNotIn(f'{KEY}:processing:worker10-01', self.redis.data)
+    def test_a_consumer_named_by_hand_is_left_to_be_named(self):
+        self.strand('worker1', 'by hand')
+        self.assertEqual(recover_orphans(self.redis, KEY, prefix='worker1'), (0, 0))
+        self.assertEqual(recover_orphans(self.redis, KEY, consumers=['worker1']), (1, 1))
+        self.assertEqual(self.redis.lrange(KEY, 0, -1), items('by hand'))
+
+    def test_naming_a_consumer_with_nothing_stranded_sweeps_nothing(self):
+        self.assertEqual(recover_orphans(self.redis, KEY, consumers=['gone']), (0, 0))
 
     def test_another_queues_lists_are_left_alone(self):
         self.strand('old-01', 'a', key='other')
@@ -246,29 +284,41 @@ class QueueRecoverCommandTest(unittest.TestCase):
         cls.cli = importlib.util.module_from_spec(spec)
         loader.exec_module(cls.cli)
 
-    def sweep(self, args, **env):
+    def sweep(self, args, expect=0, **env):
         from click.testing import CliRunner
         redis = FakeRedis()
-        for consumer in ('worker1-01', 'worker10-01'):
+        for consumer in ('tb-worker-01', 'tb-worker-b-01', 'worker1'):
             redis.rpush(f'{KEY}:processing:{consumer}', consumer)
         config = {'redis': {'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'x',
                             'channel': KEY}}
+        env.setdefault('TURKEYBITE_CONSUMER_PREFIX', '')
         with mock.patch.object(self.cli, 'read_config', return_value=config), \
                 mock.patch('redis.Redis', return_value=redis), \
                 mock.patch.dict(os.environ, env):
             result = CliRunner().invoke(self.cli.cli, ['queue-recover'] + args)
-        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.exit_code, expect, result.output)
         return sorted(k.split(':')[-1] for k in redis.data if ':processing:' in k)
 
-    def test_the_hosts_own_prefix_takes_only_its_own_consumers(self):
-        # What a worker runs at start, with its prefix from the environment
-        self.assertEqual(self.sweep([], TURKEYBITE_CONSUMER_PREFIX='worker1'), ['worker10-01'])
+    def test_the_prefix_from_the_environment_and_the_flag_behave_the_same(self):
+        left = ['tb-worker-b-01', 'worker1']
+        self.assertEqual(self.sweep([], TURKEYBITE_CONSUMER_PREFIX='tb-worker'), left)
+        self.assertEqual(self.sweep(['--prefix', 'tb-worker']), left)
 
-    def test_a_prefix_given_bare_still_matches_more(self):
-        # The control: an explicit prefix is taken as written, so the dash
-        # in the worker's start-up command is what keeps worker10's work
-        self.assertEqual(self.sweep(['--prefix', 'worker1']), [])
-        self.assertEqual(self.sweep(['--prefix', 'worker1-']), ['worker10-01'])
+    def test_a_consumer_named_by_hand_is_recovered_by_name(self):
+        self.assertEqual(self.sweep(['--consumer', 'worker1']), ['tb-worker-01', 'tb-worker-b-01'])
+
+    def test_all_sweeps_everything(self):
+        self.assertEqual(self.sweep(['--all']), [])
+
+    def test_no_scope_is_refused(self):
+        self.assertEqual(self.sweep([], expect=2), ['tb-worker-01', 'tb-worker-b-01', 'worker1'])
+
+    def test_two_scopes_are_refused(self):
+        self.sweep(['--all', '--prefix', 'tb-worker'], expect=2)
+
+    def test_the_start_script_passes_the_bare_prefix(self):
+        with open(os.path.join(os.path.dirname(HERE), 'docker', 'worker', 'run-worker.sh')) as fh:
+            self.assertIn('queue-recover --prefix "${TURKEYBITE_CONSUMER_PREFIX}" ', fh.read())
 
 
 if __name__ == '__main__':

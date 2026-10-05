@@ -31,39 +31,79 @@ Depth is `LLEN` on the queue, which is the backpressure signal pub/sub could not
 provide at all.
 """
 
+import re
+
 PROCESSING_PREFIX = 'processing:'
 
+# A consumer that requeues a stranded list moves one item at a time, so it
+# stops after this many more than the list held when it began, rather than
+# chasing a consumer that is still claiming into it
+REQUEUE_SLACK = 10000
 
-def recover_orphans(redis, key, keep_consumers=(), match=None):
+
+def generated_names(prefix):
+    """The consumer names the start scripts generate for a prefix: <prefix>-NN.
+
+    tb-consume.template names each consumer TURKEYBITE_CONSUMER_PREFIX, a
+    dash and a process number, and `turkeybite consume` without --consumer
+    uses the host name, a dash and a pid. Matching exactly that shape is what
+    keeps one host's sweep off another's work when one prefix starts another:
+    tb-worker would otherwise take tb-worker-b-01, and worker1 worker10-01.
+    """
+    return re.compile(re.escape(prefix) + r'-\d+')
+
+
+def requeue_list(redis, key, name):
+    """Moves a processing list's items back to the head of the queue. Returns how many.
+
+    One atomic LMOVE at a time, from the list's tail to the queue's head, so
+    they arrive in the order they were claimed and none is ever in neither
+    place. Nothing is deleted: a list Redis empties stops existing by itself,
+    and an item claimed into it meanwhile is moved like the rest.
+    """
+    moved = 0
+    limit = redis.llen(name) + REQUEUE_SLACK
+    while moved < limit and redis.lmove(name, key, 'RIGHT', 'LEFT') is not None:
+        moved += 1
+    return moved
+
+
+def recover_orphans(redis, key, keep_consumers=(), prefix=None, consumers=None):
     """Requeues work stranded in processing lists whose consumer is gone.
 
-    A consumer only recovers its own list on startup, which relies on the
-    consumer name being stable. When a name changes, for instance because it was
-    derived from a container id, the old list is left holding claimed events that
-    nothing will ever acknowledge.
+    A consumer recovers its own list when it starts again under the same
+    name. A name that changes, for instance because it was derived from a
+    container id, leaves its list holding claimed events nothing will
+    acknowledge.
 
-    Call this before any consumer starts, so no live consumer owns a list being
-    swept. `keep_consumers` names lists to leave alone. `match` limits the sweep
-    to names starting with a prefix, which is how one host avoids reclaiming
-    another host's in-flight work.
+    Which lists: with `prefix`, those of consumers named as the start scripts
+    name them, <prefix>-NN, see generated_names; with `consumers`, exactly
+    those consumers; with neither, every processing list of this queue, which
+    is only safe when no consumer is running anywhere. `keep_consumers` are
+    left alone in every case. Call this before any consumer it could match
+    starts.
 
-    Returns (lists_swept, events_requeued).
+    Returns (lists_swept, events_requeued), each list counted once however
+    often SCAN returns it.
     """
-    pattern = f'{key}:{PROCESSING_PREFIX}{match or ""}*'
-    keep = {f'{key}:{PROCESSING_PREFIX}{c}' for c in keep_consumers}
+    base = f'{key}:{PROCESSING_PREFIX}'
+    if consumers is not None:
+        names = {base + consumer for consumer in consumers}
+    else:
+        pattern = base + (f'{prefix}-*' if prefix else '*')
+        names = {raw.decode('utf-8') if isinstance(raw, bytes) else raw
+                 for raw in redis.scan_iter(match=pattern, count=100)}
+        if prefix:
+            shape = generated_names(prefix)
+            names = {name for name in names if shape.fullmatch(name[len(base):])}
+    names -= {base + consumer for consumer in keep_consumers}
+
     swept = requeued = 0
-    for raw in redis.scan_iter(match=pattern, count=100):
-        name = raw.decode('utf-8') if isinstance(raw, bytes) else raw
-        if name in keep:
-            continue
-        items = redis.lrange(name, 0, -1)
-        if items:
-            # LPUSH reverses, so push in reverse to restore the original order
-            for payload in reversed(items):
-                redis.lpush(key, payload)
-            requeued += len(items)
-        redis.delete(name)
-        swept += 1
+    for name in sorted(names):
+        moved = requeue_list(redis, key, name)
+        if moved or consumers is None:
+            swept += 1
+        requeued += moved
     return swept, requeued
 
 

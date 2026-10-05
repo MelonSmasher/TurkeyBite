@@ -95,26 +95,32 @@ def consume(consumer, batch_size, quiet):
 
 @cli.command('queue-recover')
 @click.option('--prefix', default=None,
-              help='Only sweep consumer names starting with this. Use the host prefix with the dash '
-                   'that follows it in consumer names, such as worker1-, so one host does not '
-                   'reclaim another host\'s in-flight work: worker1 also matches worker10-01.')
+              help='Sweep the consumers the start scripts name <prefix>-NN, as '
+                   'TURKEYBITE_CONSUMER_PREFIX, which is the default, holds it.')
+@click.option('--consumer', 'consumers', multiple=True,
+              help='Sweep exactly this consumer, such as one started by hand with '
+                   '--consumer. Repeatable.')
 @click.option('--all', 'sweep_all', is_flag=True, default=False,
-              help='Sweep every processing list regardless of prefix. Only safe when no consumer is running anywhere.')
-def queue_recover(prefix, sweep_all):
-    """Requeue work stranded in processing lists whose consumer no longer exists."""
+              help='Sweep every processing list. Only safe when no consumer is running anywhere.')
+def queue_recover(prefix, consumers, sweep_all):
+    """Requeue work stranded in processing lists whose consumer no longer exists.
+
+    Every consume worker runs this at start for its own prefix, before its
+    consumers start. A consumer named by hand, such as `consume --consumer
+    worker1`, is not swept by that: recover it with --consumer worker1 once it
+    is stopped for good, or with --all.
+    """
     import os
     from redis import Redis
     from libtb.queue import recover_orphans
 
-    if not prefix and not sweep_all:
+    if sum(map(bool, (prefix, consumers, sweep_all))) > 1:
+        raise click.UsageError('give one of --prefix, --consumer and --all')
+    if not (prefix or consumers or sweep_all):
         prefix = os.environ.get('TURKEYBITE_CONSUMER_PREFIX')
-        if prefix:
-            # Consumers are named <prefix>-NN, and the bare prefix would also
-            # match a longer one, such as worker10 for worker1
-            prefix += '-'
         if not prefix:
-            print('Refusing to sweep without --prefix or --all: an unscoped sweep '
-                  'can reclaim another host\'s in-flight work.')
+            print('Refusing to sweep without --prefix, --consumer or --all: an unscoped '
+                  'sweep can reclaim another host\'s in-flight work.')
             raise SystemExit(2)
 
     config = read_config()
@@ -125,9 +131,15 @@ def queue_recover(prefix, sweep_all):
         db=queue_conf['db'],
         password=queue_conf['password']
     )
-    swept, requeued = recover_orphans(
-        redis, queue_conf['channel'], match=None if sweep_all else prefix)
-    scope = 'all consumers' if sweep_all else f'consumers matching {prefix}'
+    if consumers:
+        swept, requeued = recover_orphans(redis, queue_conf['channel'], consumers=consumers)
+        scope = 'consumer ' + ', '.join(consumers)
+    elif sweep_all:
+        swept, requeued = recover_orphans(redis, queue_conf['channel'])
+        scope = 'all consumers'
+    else:
+        swept, requeued = recover_orphans(redis, queue_conf['channel'], prefix=prefix)
+        scope = f'consumers named {prefix}-NN'
     print(f'Swept {swept} processing lists for {scope}, requeued {requeued} events')
 
 

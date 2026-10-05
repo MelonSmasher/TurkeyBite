@@ -225,6 +225,16 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    indexed, indexes those documents again, and sends their syslog copies again.
    A duplicate is the price of never dropping a batch.
 
+   A batch a worker had claimed when it died stays in that consumer's
+   processing list. Each worker container, as it starts, requeues what is
+   stranded in the lists of consumers named as it names its own,
+   `<TURKEYBITE_CONSUMER_PREFIX>-NN`, and in no others, so set a distinct
+   prefix per worker host. A consumer started by hand with a name of your own,
+   `turkeybite consume --consumer worker1`, recovers its own list when it
+   starts again under that name; if it never will, requeue its work with
+   `turkeybite queue-recover --consumer worker1`, or with `--all` when no
+   consumer is running anywhere.
+
    **`channel`, with `TURKEYBITE_PIPELINE=rq`.** Packetbeat PUBLISHes and the
    core subscribes. This is the original path and it is lossy by construction:
    pub/sub has no persistence and no acknowledgement, so every restart drops

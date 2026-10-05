@@ -41,7 +41,7 @@ needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
 | `test_resolvers.py` | Public filtering resolvers as a second opinion: when they are asked, what their answers mean, what is remembered, and that they never assert alone |
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
 | `test_end_to_end.py` | A recorded Packetbeat DNS event and Browserbeat history event, from `fixtures/`, run through `read_config`, the sieve and the processor with the shipped example config and an index built as the librarian builds it, checked at the document OpenSearch is sent |
-| `test_queue.py` | The durable queue: claiming, acknowledging only what was indexed, requeueing in order, and the recovery sweep taking only its own host's stranded work |
+| `test_queue.py` | The durable queue: claiming, acknowledging only what was indexed, requeueing in order, and the recovery sweep taking only the consumer names its own host generates, moving items one at a time so none is deleted unrequeued, and counting a list SCAN repeats once |
 | `test_consumer.py` | The consumer's claim, sieve, enrich, flush, acknowledge cycle: nothing acknowledged before the flush, and a batch OpenSearch did not take, or asked to retry, requeued under every bulk setting, with buffering off, full or due to flush, and one bad packet costing only itself |
 | `test_inlet.py` | The rq pipeline's inlet: a bad packet costs only itself and never ends the listen loop, while a dead job queue does end it |
 | `test_syslog.py` | The syslog client's priority arithmetic and UDP send, and a syslog failure costing only the syslog copy of an event |
