@@ -14,7 +14,9 @@ Either way a refusal has to reach the consumer, which used to acknowledge the
 batch and lose it, so every delivery test here runs under each of those
 settings, and none of them under settings that would never flush early.
 OpenSearch asking for a document to be retried, as it does with a 429, also
-requeues the batch; a document refused for good is logged and acknowledged.
+requeues the batch, as does any refusal about the cluster rather than the
+document: a 401, 403, 404 or 5xx. Only a refusal about the document itself,
+a 400, 409 or 413, is logged and acknowledged.
 
 One bad packet must cost that packet and no more: undecodable JSON, a sieve
 that raises, or an enrichment failure is counted and skipped, and the rest of
@@ -83,16 +85,24 @@ class Cluster(object):
     """OpenSearch as the processor sees it, through index calls and helpers.bulk.
 
     Each host accepts, refuses the connection, rejects documents for good
-    (a 400), or asks for them to be retried (a 429).
+    (`reject`, a 400), asks for them to be retried (`retry`, a 429), or answers
+    with any other status given as a number.
     """
+
+    KINDS = {400: 'mapper_parsing_exception', 401: 'security_exception',
+             403: 'cluster_block_exception', 404: 'index_not_found_exception',
+             409: 'version_conflict_engine_exception', 413: 'content_too_long',
+             429: 'es_rejected_execution_exception', 500: 'exception'}
 
     def __init__(self, test, **answers):
         self.test = test
         self.answers = answers
         self.requests = []
         self.accepted = []
+        self.bulk_kwargs = []
 
-    def bulk(self, client, docs, raise_on_error=False, stats_only=False):
+    def bulk(self, client, docs, raise_on_error=False, stats_only=False, **kwargs):
+        self.bulk_kwargs.append(kwargs)
         return self.answer(client.uri, list(docs), bulk=True)
 
     def answer(self, host, docs, bulk):
@@ -102,9 +112,9 @@ class Cluster(object):
         answer = self.answers.get(host, 'accept')
         if answer == 'refuse':
             raise ConnectionError(f'{host} refused the connection')
-        if answer in ('reject', 'retry'):
-            status, kind = ((400, 'mapper_parsing_exception') if answer == 'reject'
-                            else (429, 'es_rejected_execution_exception'))
+        if answer in ('reject', 'retry') or isinstance(answer, int):
+            status = {'reject': 400, 'retry': 429}.get(answer, answer)
+            kind = self.KINDS.get(status, 'exception')
             if not bulk:
                 raise TransportError(status, kind, {'error': {'type': kind}})
             # The first document refused, the rest taken
@@ -281,6 +291,40 @@ class ConsumerTest(unittest.TestCase):
                 _, _, err = self.deliver({'http://search-1:9200': 'reject'}, bulk=bulk)
                 self.assertIn('OpenSearch rejected a document', err)
                 self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_refusal_about_the_cluster_requeues_the_batch(self):
+        # A rotated password, a write block, a missing index, a node failing:
+        # each clears when the cluster does, so the events must wait, not go
+        for status in (401, 403, 404, 500):
+            for name, bulk in EVERY_SETTING.items():
+                with self.subTest(status=status, setting=name):
+                    self.setUp()
+                    _, payloads, _ = self.deliver(
+                        {'http://search-1:9200': status, 'http://search-2:9200': status},
+                        bulk=bulk)
+                    self.assertEqual(self.waiting(), payloads)
+                    self.assertEqual(self.in_flight(), [])
+
+    def test_counting_every_4xx_as_permanent_would_lose_them(self):
+        # The control: the classification this replaced acknowledged a 401
+        old = frozenset(range(400, 500)) - {408, 429}
+        with mock.patch.object(P, 'PERMANENT_STATUSES', old):
+            self.deliver({'http://search-1:9200': 401, 'http://search-2:9200': 401})
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_refusal_about_the_document_is_acknowledged(self):
+        for status in (400, 409, 413):
+            for name, bulk in EVERY_SETTING.items():
+                with self.subTest(status=status, setting=name):
+                    self.setUp()
+                    _, _, err = self.deliver({'http://search-1:9200': status}, bulk=bulk)
+                    self.assertIn('OpenSearch rejected a document', err)
+                    self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_bulk_request_resends_what_a_full_queue_refused(self):
+        # Within the request, so only those documents are sent again
+        self.deliver({}, bulk=BULK_AT_END)
+        self.assertEqual(self.cluster.bulk_kwargs[0]['max_retries'], P.BULK_RETRIES)
 
     def test_each_host_is_tried_before_giving_up(self):
         self.deliver(BOTH_DOWN, events=1)

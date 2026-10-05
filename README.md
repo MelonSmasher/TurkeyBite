@@ -218,9 +218,14 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    take goes back on the list instead of being acknowledged, whether
    `processor.elastic.bulk` is on or off: when every host refuses it, and when
    OpenSearch asks for any document in it to be retried later, as it does with
-   a 429 when its queues are full. A document OpenSearch refuses for good, such
-   as one that conflicts with the index mapping, is logged and acknowledged,
-   since retrying it would never succeed. Delivery is at-least-once: a crash
+   a 429 when its queues are full, and when the refusal is about the cluster
+   rather than the document: a password it no longer takes, a role without
+   write access, a blocked or missing index, or a server error. Only a document
+   OpenSearch refuses for being that document, malformed or in conflict with
+   the index mapping (400), a version conflict (409) or too large (413), is
+   logged and acknowledged, since retrying it would never succeed. Documents
+   refused with a 429 are first sent again on their own, after one, two and
+   then four seconds, before the batch goes back. Delivery is at-least-once: a crash
    between indexing and acknowledging, or a batch requeued after part of it was
    indexed, indexes those documents again, and sends their syslog copies again.
    A duplicate is the price of never dropping a batch. After a requeued batch
