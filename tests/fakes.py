@@ -2,12 +2,18 @@
 
 Only the commands the code under test uses are here, and each behaves as
 Redis does in the ways that code relies on: values come back as bytes, as
-redis-py returns them without decode_responses; a list emptied by a pop or a
-trim stops existing; LRANGE and LTRIM take inclusive, possibly negative,
-indexes; and SCAN yields keys from a snapshot, so deleting while scanning is
-safe. Nothing blocks: BLMOVE on an empty list returns None at once, and
-`listen()` ends when the queued messages run out, so a test can drive a loop
-that would otherwise run forever.
+redis-py returns them without decode_responses, published messages included;
+a list emptied by a pop or a trim stops existing; LRANGE and LTRIM take
+inclusive, possibly negative, indexes; and SCAN yields keys from a snapshot,
+so deleting while scanning is safe. SCAN may also return a key more than
+once, as Redis's can while the keyspace is rehashing, which `scan_repeats`
+reproduces.
+
+Nothing blocks. BLMOVE on an empty list returns None at once, as if its
+timeout had passed, except with a timeout of 0, which in Redis waits forever:
+there it raises, so code that would hang fails the test instead. `listen()`
+ends when the queued messages run out, so a test can drive a loop that would
+otherwise run forever.
 
 Every command is recorded in `calls` as (command, key), so a test can assert
 the order things happened in, and `on_command`, when set, is called after
@@ -44,15 +50,25 @@ def _span(length, start, end):
     return start, end + 1
 
 
+class Blocked(AssertionError):
+    """Raised where Redis would block forever."""
+
+
 class FakeRedis(object):
 
-    def __init__(self):
+    def __init__(self, scan_repeats=False, decoded_keys=False):
         self.data = {}
         self.calls = []
         self.on_command = None
         self.blocked_for = []
         self.subscribers = []
         self.published = []
+        # Sizes of each pipeline's execution, and keys unlinked one at a time
+        self.executions = []
+        self.direct_unlinks = []
+        self.scan_repeats = scan_repeats
+        # redis-py hands keys back as str when decode_responses is on
+        self.decoded_keys = decoded_keys
 
     def _did(self, command, key=None):
         self.calls.append((command, _key(key)))
@@ -146,16 +162,32 @@ class FakeRedis(object):
 
     def blmove(self, first_list, second_list, timeout, src='LEFT', dest='RIGHT'):
         # Real Redis would wait up to timeout for an item; nothing else can
-        # push while a test is waiting, so this answers at once
+        # push while a test is waiting, so this answers at once. A timeout of
+        # 0 waits forever in Redis, so here it fails rather than pretending.
         self.blocked_for.append(timeout)
+        if not timeout and not self._list(first_list):
+            raise Blocked(f'BLMOVE {first_list} with a timeout of 0 would wait forever')
         return self.lmove(first_list, second_list, src, dest)
+
+    def unlink(self, *keys):
+        removed = 0
+        for key in keys:
+            self.direct_unlinks.append(_key(key))
+            if self.data.pop(_key(key), None) is not None:
+                removed += 1
+            self._did('unlink', key)
+        return removed
+
+    def pipeline(self, transaction=True):
+        return FakePipeline(self)
 
     # -- keys -------------------------------------------------------------
 
     def scan_iter(self, match=None, count=None):
         for key in sorted(self.data):
             if match is None or fnmatch.fnmatchcase(key, match):
-                yield key.encode('utf-8')
+                for _ in range(2 if self.scan_repeats else 1):
+                    yield key if self.decoded_keys else key.encode('utf-8')
 
     # -- pub/sub ----------------------------------------------------------
 
@@ -166,13 +198,32 @@ class FakeRedis(object):
         test cannot arrange around a loop that blocks, so the message waits.
         """
         self.published.append({'type': 'message', 'pattern': None,
-                               'channel': _bytes(channel), 'data': data})
+                               'channel': _bytes(channel), 'data': _bytes(data)})
         self._did('publish', channel)
 
     def pubsub(self):
         subscriber = FakePubSub(self.published)
         self.subscribers.append(subscriber)
         return subscriber
+
+
+class FakePipeline(object):
+    """Queues UNLINKs and runs them on execute, recording how many each time."""
+
+    def __init__(self, redis):
+        self.redis = redis
+        self.queued = []
+
+    def unlink(self, *keys):
+        self.queued.extend(_key(key) for key in keys)
+        return self
+
+    def execute(self):
+        results = [1 if self.redis.data.pop(key, None) is not None else 0
+                   for key in self.queued]
+        self.redis.executions.append(len(self.queued))
+        self.queued = []
+        return results
 
 
 class FakePubSub(object):

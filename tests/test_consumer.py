@@ -104,8 +104,9 @@ class ConsumerTest(unittest.TestCase):
                            'ignore': {'clients': ['10.9.9.9'], 'domains': [], 'hosts': []},
                            'browserbeat': {'ignore': {'clients': [], 'users': [],
                                                       'domains': [], 'hosts': []}}})
+        # A small timeout, since the fake fails a 0, which in Redis blocks forever
         return Consumer(self.queue, filters, processor, batch_size=kwargs.pop('batch_size', 500),
-                        block_seconds=0, name='worker1-01', **kwargs)
+                        block_seconds=0.01, name='worker1-01', **kwargs)
 
     def processor(self):
         processor = Processor({

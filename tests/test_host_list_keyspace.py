@@ -6,55 +6,25 @@ prefix. Gating too widely stops populating the keyspace that `compare` mode
 reads as authoritative, which turns a comparison into a false agreement.
 """
 
-import fnmatch
 import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
+sys.path.insert(0, HERE)
 
+from fakes import FakeRedis
 from libtb.util import (TAGGED_KEY, VALKEY_BACKED_MODES, purge_tagged_keyspace,
                         unlink_matching)
 
 
-class StubPipeline(object):
-
-    def __init__(self, store, executions):
-        self.store = store
-        self.executions = executions
-        self.queued = []
-
-    def unlink(self, name):
-        self.queued.append(name)
-
-    def execute(self):
-        for name in self.queued:
-            self.store.pop(name, None)
-        self.executions.append(len(self.queued))
-        self.queued = []
-
-
-class StubRedis(object):
-    """Enough of redis-py for this sweep, with keys returned as bytes."""
-
-    def __init__(self, keys):
-        self.store = {k: b'v' for k in keys}
-        self.executions = []
-        self.direct_unlinks = []
-
-    def scan_iter(self, match=None, count=None):
-        # A snapshot, which is what SCAN approximates and what makes deleting
-        # while iterating safe
-        for name in list(self.store):
-            if match is None or fnmatch.fnmatch(name, match):
-                yield name.encode('utf-8')
-
-    def pipeline(self, transaction=True):
-        return StubPipeline(self.store, self.executions)
-
-    def unlink(self, key):
-        self.direct_unlinks.append(key)
-        self.store.pop(key, None)
+def holding(keys, **options):
+    """The shared fake Redis, holding these keys."""
+    redis = FakeRedis(**options)
+    for key in keys:
+        redis.set(key, 'v')
+    return redis
 
 
 class TaggedKeyPatternTest(unittest.TestCase):
@@ -95,83 +65,78 @@ class PurgeTaggedKeyspaceTest(unittest.TestCase):
         ]
 
     def test_tagged_domain_keys_are_removed(self):
-        r = StubRedis(self.keyspace())
+        r = holding(self.keyspace())
         removed = purge_tagged_keyspace(r)
         self.assertEqual(removed, 3)
-        self.assertNotIn('turkey-bite:1787333025:example.com', r.store)
-        self.assertNotIn('turkey-bite:1787200000:stale.example.org', r.store)
+        self.assertNotIn('turkey-bite:1787333025:example.com', r.data)
+        self.assertNotIn('turkey-bite:1787200000:stale.example.org', r.data)
 
     def test_the_published_index_survives(self):
-        r = StubRedis(self.keyspace())
+        r = holding(self.keyspace())
         purge_tagged_keyspace(r)
-        self.assertIn('turkey-bite:index:manifest', r.store)
-        self.assertIn('turkey-bite:index:1787333025:0', r.store)
-        self.assertIn('turkey-bite:index:1787333025:1', r.store)
+        self.assertIn('turkey-bite:index:manifest', r.data)
+        self.assertIn('turkey-bite:index:1787333025:0', r.data)
+        self.assertIn('turkey-bite:index:1787333025:1', r.data)
 
     def test_bookkeeping_is_cleared_so_lookups_degrade_instead_of_lying(self):
-        r = StubRedis(self.keyspace())
+        r = holding(self.keyspace())
         purge_tagged_keyspace(r)
         self.assertEqual(sorted(r.direct_unlinks),
                          ['turkey-bite:current-tag', 'turkey-bite:old-tag',
                           'turkey-bite:tags'])
-        self.assertNotIn('turkey-bite:current-tag', r.store)
+        self.assertNotIn('turkey-bite:current-tag', r.data)
 
     def test_an_empty_keyspace_is_a_no_op(self):
-        r = StubRedis(['turkey-bite:index:manifest'])
+        r = holding(['turkey-bite:index:manifest'])
         self.assertEqual(purge_tagged_keyspace(r), 0)
-        self.assertIn('turkey-bite:index:manifest', r.store)
+        self.assertIn('turkey-bite:index:manifest', r.data)
 
     def test_work_is_batched_rather_than_one_round_trip_per_key(self):
         keys = [f'turkey-bite:1787333025:h{i}.example.com' for i in range(2500)]
-        r = StubRedis(keys)
+        r = holding(keys)
         removed = purge_tagged_keyspace(r, batch=1000)
         self.assertEqual(removed, 2500)
         self.assertEqual(r.executions, [1000, 1000, 500])
 
     def test_a_partial_final_batch_is_flushed(self):
         keys = [f'turkey-bite:1787333025:h{i}.example.com' for i in range(7)]
-        r = StubRedis(keys)
+        r = holding(keys)
         self.assertEqual(purge_tagged_keyspace(r, batch=1000), 7)
         self.assertEqual(r.executions, [7])
-        self.assertEqual([k for k in r.store if TAGGED_KEY.match(k)], [])
+        self.assertEqual([k for k in r.data if TAGGED_KEY.match(k)], [])
 
     def test_str_key_names_are_accepted_too(self):
-        class StrRedis(StubRedis):
-            def scan_iter(self, match=None, count=None):
-                for name in list(self.store):
-                    if match is None or fnmatch.fnmatch(name, match):
-                        yield name
-
-        r = StrRedis(self.keyspace())
+        # What redis-py returns with decode_responses on
+        r = holding(self.keyspace(), decoded_keys=True)
         self.assertEqual(purge_tagged_keyspace(r), 3)
-        self.assertIn('turkey-bite:index:manifest', r.store)
+        self.assertIn('turkey-bite:index:manifest', r.data)
 
 
 class UnlinkMatchingTest(unittest.TestCase):
     """The batched sweep used to retire a superseded tag."""
 
     def test_only_the_named_tag_is_swept(self):
-        r = StubRedis(['turkey-bite:1787200000:a.example.com',
+        r = holding(['turkey-bite:1787200000:a.example.com',
                        'turkey-bite:1787200000:b.example.com',
                        'turkey-bite:1787333025:keep.example.com',
                        'turkey-bite:index:manifest'])
         removed = unlink_matching(r, 'turkey-bite:1787200000:*')
         self.assertEqual(removed, 2)
-        self.assertIn('turkey-bite:1787333025:keep.example.com', r.store)
-        self.assertIn('turkey-bite:index:manifest', r.store)
+        self.assertIn('turkey-bite:1787333025:keep.example.com', r.data)
+        self.assertIn('turkey-bite:index:manifest', r.data)
 
     def test_it_batches(self):
         keys = [f'turkey-bite:1787200000:h{i}.example.com' for i in range(2200)]
-        r = StubRedis(keys)
+        r = holding(keys)
         self.assertEqual(unlink_matching(r, 'turkey-bite:1787200000:*', batch=1000),
                          2200)
         self.assertEqual(r.executions, [1000, 1000, 200])
 
     def test_no_match_is_a_no_op(self):
-        r = StubRedis(['turkey-bite:index:manifest'])
+        r = holding(['turkey-bite:index:manifest'])
         self.assertEqual(unlink_matching(r, 'turkey-bite:1787200000:*'), 0)
         self.assertEqual(r.executions, [])
-        self.assertIn('turkey-bite:index:manifest', r.store)
+        self.assertIn('turkey-bite:index:manifest', r.data)
 
 
 class ModeGateTest(unittest.TestCase):

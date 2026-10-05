@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
-from fakes import FakeRedis
+from fakes import Blocked, FakeRedis
 from libtb.queue import ListQueue, recover_orphans
 
 KEY = 'turkeybite'
@@ -57,6 +57,31 @@ class FakeRedisTest(unittest.TestCase):
         redis = FakeRedis()
         redis.lpush('l', 'a', 'b', 'c')
         self.assertEqual(redis.lrange('l', 0, -1), items('c', 'b', 'a'))
+
+    def test_a_blocking_move_that_would_wait_forever_fails_instead(self):
+        # BLMOVE with a timeout of 0 never returns on an empty list in Redis
+        redis = FakeRedis()
+        with self.assertRaises(Blocked):
+            redis.blmove('empty', 'other', 0)
+        self.assertIsNone(redis.blmove('empty', 'other', 0.01))
+        redis.rpush('l', 'a')
+        self.assertEqual(redis.blmove('l', 'm', 0), b'a')
+
+    def test_published_messages_are_bytes(self):
+        redis = FakeRedis()
+        redis.publish('c', 'text')
+        redis.publish('c', b'raw')
+        self.assertEqual([m['data'] for m in redis.published], [b'text', b'raw'])
+
+    def test_a_scan_can_repeat_keys(self):
+        redis = FakeRedis(scan_repeats=True)
+        redis.set('k', 'v')
+        self.assertEqual(list(redis.scan_iter(match='*')), [b'k', b'k'])
+
+    def test_globs_are_case_sensitive(self):
+        redis = FakeRedis()
+        redis.set('Key', 'v')
+        self.assertEqual(list(redis.scan_iter(match='key*')), [])
 
     def test_values_come_back_as_bytes(self):
         redis = FakeRedis()

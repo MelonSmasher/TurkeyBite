@@ -51,10 +51,12 @@ needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
 | `test_setup.py` | Running setup.py again: settings an operator set by hand survive, the OpenSearch password reaches both files that hold it or neither, and the retention prompt offers the period already set |
 | `test_opensearch_access.py` | How workers and the librarian reach OpenSearch: certificate verification only when asked for and a warning when not, and the shipped default password refused by workers, the librarian's script and setup.py, with the escape hatch opened only by `yes`. The librarian's script runs against a fake curl |
 
-`fakes.py` holds an in-memory Redis for the suites that need one. It
-implements only the commands the code under test uses, behaves as Redis does
-where that code relies on it, and `test_queue.py` checks it does. Add a command
-there, with a check, rather than writing another fake.
+`fakes.py` holds the one in-memory Redis every suite uses. It implements only
+the commands the code under test uses, behaves as Redis does where that code
+relies on it, and `test_queue.py` checks it does. Where Redis would block
+forever, a BLMOVE with a timeout of 0, it raises, so code that would hang fails
+instead; use a small positive timeout in tests. Add a command there, with a
+check, rather than writing another fake.
 
 Three habits are worth keeping when adding to these.
 
