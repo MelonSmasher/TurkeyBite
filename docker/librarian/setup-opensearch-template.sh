@@ -92,6 +92,13 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "contexts_candidate": { "type": "keyword" },
                             "contexts_suppressed": { "type": "keyword" },
                             "incidental": { "type": "boolean" },
+                            "resolvers": {
+                                "properties": {
+                                    "quad9": { "type": "keyword" },
+                                    "cloudflare-security": { "type": "keyword" },
+                                    "cloudflare-family": { "type": "keyword" }
+                                }
+                            },
                             "claims": { "type": "keyword" },
                             "purpose": { "type": "keyword" },
                             "service": { "type": "keyword" },

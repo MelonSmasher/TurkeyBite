@@ -422,10 +422,15 @@ def sources_of(claims):
 
 
 def matched_keys(claims):
-    """The index keys that matched, most specific first, without repeats."""
+    """The index keys that matched, most specific first, without repeats.
+
+    A claim with no key, such as a resolver's vote, matched nothing in the
+    index and is left out, so a correction is never aimed at an entry that
+    does not exist.
+    """
     keys = []
     for key, _, _ in claims:
-        if key not in keys:
+        if key is not None and key not in keys:
             keys.append(key)
     return keys
 
@@ -443,11 +448,31 @@ def claims_for(index, host, psl_path=PSL_PATH, disabled=frozenset()):
 
 
 def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
-               disabled=frozenset(), navigation=False):
+               disabled=frozenset(), navigation=False, checker=None):
     """Claims and verdict for one host, exactly as a worker reaches them.
 
     Shared by the worker and the audit, so what the audit reports is what the
-    events will say.
+    events will say. With a `checker`, a libtb.evidence.resolvers.Checker,
+    public resolvers are asked to corroborate a candidate, except for a
+    navigation, and the verdict carries `resolvers`, what each one said.
     """
     claims = claims_for(index, host, psl_path, disabled)
-    return claims, resolve(claims, min_publishers, navigation)
+    verdict = resolve(claims, min_publishers, navigation)
+    return second_opinion(host, claims, verdict, min_publishers, checker, navigation)
+
+
+def second_opinion(host, claims, verdict, min_publishers, checker, navigation=False):
+    """Asks public resolvers to corroborate a candidate. Returns (claims, verdict).
+
+    The one place it is done, called by `categorise` and, outside its guard
+    for a broken index, by the worker. Nothing is asked without a `checker`,
+    or for a navigation: a page someone opened was opened on purpose, and a
+    browser history upload would reach the resolvers as a burst. The verdict
+    gains `resolvers`, what each one asked said, when any was asked.
+    """
+    if checker is None or navigation:
+        return claims, verdict
+    claims, verdict, statuses = checker.corroborate(host, claims, verdict, min_publishers)
+    if statuses:
+        verdict = dict(verdict, resolvers=statuses)
+    return claims, verdict

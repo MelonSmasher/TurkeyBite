@@ -551,7 +551,7 @@
     },
     {
         "url": "https://v.firebog.net/hosts/Prigent-Crypto.txt",
-        "categories": ["malicious", "crypto"],
+        "categories": ["crypto"],
         "file": "lists/malicious/Prigent-Crypto",
         "name": "Prigent-malicious-crypto",
         "publisher": "ut1",

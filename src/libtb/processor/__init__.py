@@ -14,6 +14,9 @@ from libtb.index import DomainIndex
 from libtb.evidence import (cancels, categorise, claims_for, demote_incidental,
                             describe, drop_disabled, evidence_settings,
                             matched_keys, resolve, sources_of)
+from libtb.evidence import second_opinion
+from libtb.evidence.resolvers import checker_for
+from libtb.evidence.resolvers import settings as resolver_settings
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -447,6 +450,7 @@ class Processor(object):
         # Read once here so a mistake in the evidence settings stops the process
         # at start, and so no event pays to parse them again
         self._evidence = evidence_settings(config.get('evidence'))
+        self._resolvers = resolver_settings((config.get('evidence') or {}).get('resolvers'))
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -470,6 +474,14 @@ class Processor(object):
         One number, or a mapping from taxonomy branches or paths to numbers.
         """
         return self._evidence[0]
+
+    def resolver_conf(self):
+        """Public filtering resolvers as a second opinion, see libtb.evidence.resolvers.
+
+        Off unless processor.evidence.resolvers.enable is true. Parsed once,
+        with the other evidence settings, when the processor starts.
+        """
+        return self._resolvers
 
     def disabled_categories(self):
         """Taxonomy branches or paths switched off, see libtb.evidence.
@@ -544,6 +556,14 @@ class Processor(object):
             return (drop_disabled(self.valkey_contexts(searches), disabled),
                     {'index_error': str(e)})
 
+        # Asked only in index mode, since compare mode measures the lists
+        # against Valkey and a vote from outside both would muddy that. Outside
+        # the guard above, so a fault here, or RQ stopping a job that ran too
+        # long, is not mistaken for a broken index and answered from Valkey.
+        if mode == 'index':
+            claims, verdict = second_opinion(host, claims, verdict, self.min_publishers(),
+                                             checker_for(self.resolver_conf()), navigation)
+
         contexts = verdict['asserted']
         extra = {
             'sources': sources_of(claims),
@@ -563,6 +583,10 @@ class Processor(object):
                 extra['incidental'] = True
             if verdict['corrected']:
                 extra[CORRECTED] = verdict['corrected']
+            if verdict.get('resolvers'):
+                # Which resolvers were asked and what each said, so one that
+                # stops answering shows up in a query, as ptr_status does
+                extra['resolvers'] = verdict['resolvers']
             return contexts, extra
 
         # compare: Valkey stays authoritative while the index is on trial
