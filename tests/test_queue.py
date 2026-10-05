@@ -11,9 +11,12 @@ No test touches the network. Redis is tests/fakes.py, which is checked here
 against the Redis behaviour the queue relies on.
 """
 
+import importlib.machinery
+import importlib.util
 import os
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
@@ -205,6 +208,42 @@ class RecoverOrphansTest(unittest.TestCase):
         self.redis.rpush(KEY, 'waiting')
         recover_orphans(self.redis, KEY)
         self.assertEqual(self.redis.lrange(KEY, 0, -1), items('waiting'))
+
+
+class QueueRecoverCommandTest(unittest.TestCase):
+    """`turkeybite queue-recover`, which every consume worker runs at start."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(os.path.dirname(HERE), 'src', 'turkeybite')
+        loader = importlib.machinery.SourceFileLoader('turkeybite_queue_cli', path)
+        spec = importlib.util.spec_from_loader('turkeybite_queue_cli', loader)
+        cls.cli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.cli)
+
+    def sweep(self, args, **env):
+        from click.testing import CliRunner
+        redis = FakeRedis()
+        for consumer in ('worker1-01', 'worker10-01'):
+            redis.rpush(f'{KEY}:processing:{consumer}', consumer)
+        config = {'redis': {'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'x',
+                            'channel': KEY}}
+        with mock.patch.object(self.cli, 'read_config', return_value=config), \
+                mock.patch('redis.Redis', return_value=redis), \
+                mock.patch.dict(os.environ, env):
+            result = CliRunner().invoke(self.cli.cli, ['queue-recover'] + args)
+        self.assertEqual(result.exit_code, 0, result.output)
+        return sorted(k.split(':')[-1] for k in redis.data if ':processing:' in k)
+
+    def test_the_hosts_own_prefix_takes_only_its_own_consumers(self):
+        # What a worker runs at start, with its prefix from the environment
+        self.assertEqual(self.sweep([], TURKEYBITE_CONSUMER_PREFIX='worker1'), ['worker10-01'])
+
+    def test_a_prefix_given_bare_still_matches_more(self):
+        # The control: an explicit prefix is taken as written, so the dash
+        # in the worker's start-up command is what keeps worker10's work
+        self.assertEqual(self.sweep(['--prefix', 'worker1']), [])
+        self.assertEqual(self.sweep(['--prefix', 'worker1-']), ['worker10-01'])
 
 
 if __name__ == '__main__':

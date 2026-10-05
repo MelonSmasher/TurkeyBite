@@ -95,7 +95,9 @@ def consume(consumer, batch_size, quiet):
 
 @cli.command('queue-recover')
 @click.option('--prefix', default=None,
-              help='Only sweep consumer names starting with this. Use the host prefix so one host does not reclaim another host\'s in-flight work.')
+              help='Only sweep consumer names starting with this. Use the host prefix with the dash '
+                   'that follows it in consumer names, such as worker1-, so one host does not '
+                   'reclaim another host\'s in-flight work: worker1 also matches worker10-01.')
 @click.option('--all', 'sweep_all', is_flag=True, default=False,
               help='Sweep every processing list regardless of prefix. Only safe when no consumer is running anywhere.')
 def queue_recover(prefix, sweep_all):
@@ -106,6 +108,10 @@ def queue_recover(prefix, sweep_all):
 
     if not prefix and not sweep_all:
         prefix = os.environ.get('TURKEYBITE_CONSUMER_PREFIX')
+        if prefix:
+            # Consumers are named <prefix>-NN, and the bare prefix would also
+            # match a longer one, such as worker10 for worker1
+            prefix += '-'
         if not prefix:
             print('Refusing to sweep without --prefix or --all: an unscoped sweep '
                   'can reclaim another host\'s in-flight work.')

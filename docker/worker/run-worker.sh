@@ -94,8 +94,10 @@ export TURKEYBITE_CONSUMER_PREFIX=${TURKEYBITE_CONSUMER_PREFIX:-$(hostname)}
 
 if [ "${TURKEYBITE_PIPELINE}" = "consume" ]; then
     # No consumer in this container is running yet, so anything left in a
-    # processing list under our prefix belongs to a previous incarnation.
-    python turkeybite queue-recover --prefix "${TURKEYBITE_CONSUMER_PREFIX}" || true
+    # processing list under our prefix belongs to a previous incarnation. The
+    # dash is the one every consumer name puts after the prefix; without it a
+    # worker1 would also sweep worker10's in-flight work.
+    python turkeybite queue-recover --prefix "${TURKEYBITE_CONSUMER_PREFIX}-" || true
 
     cat /etc/supervisor/conf.d/tb-consume.template | envsubst | tee /etc/supervisor/conf.d/tb-consume.conf
 else
