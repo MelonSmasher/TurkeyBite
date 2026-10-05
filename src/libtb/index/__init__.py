@@ -56,6 +56,8 @@ File layout, little-endian throughout:
 import mmap
 import os
 import struct
+import sys
+from array import array
 from collections import namedtuple
 
 MAGIC = b'TBIDX\x00\x00\x03'
@@ -68,6 +70,11 @@ FLAG_LOCAL = 0x01
 # A claim whose category starts with this cancels that category. Only the
 # ignorelist makes them.
 NEGATION = '!'
+
+# Not a category but a mark on a host, made by the curated list of that name:
+# lookups of it are mostly made by other pages or by the operating system, so
+# they say little about what the person was doing. libtb.evidence acts on it.
+INCIDENTAL = 'incidental'
 
 # What the index knows about one list file. `local` marks the operator's own
 # lists, which are the only ones allowed to categorise a whole public suffix.
@@ -247,6 +254,33 @@ class DomainIndex(object):
             return ()
         (attr_id,) = struct.unpack_from('<I', self._map, self._attr_index_at + 4 * found)
         return self._decode_attr(attr_id)
+
+    def _uint32s(self, at, count):
+        """`count` little-endian uint32s from the file, compactly.
+
+        An array holds them in 4 bytes each where a tuple of ints would take
+        about 30, which matters at 7 million names.
+        """
+        values = array('I')
+        if values.itemsize != 4:
+            return struct.unpack_from(f'<{count}I', self._map, at)
+        values.frombytes(self._map[at:at + 4 * count])
+        if sys.byteorder != 'little':
+            values.byteswap()
+        return values
+
+    def entries(self):
+        """Every key in the index with its (source, category) claims, in index order.
+
+        For reports over the whole index, such as how much of one list another
+        repeats. Nothing on the lookup path needs it.
+        """
+        offsets = self._uint32s(self._offsets_at, self.n_domains + 1)
+        attrs = self._uint32s(self._attr_index_at, self.n_domains)
+        blob = self._blob_at
+        for i in range(self.n_domains):
+            name = self._map[blob + offsets[i]:blob + offsets[i + 1]].decode('utf-8')
+            yield reverse_labels(name), self._decode_attr(attrs[i])
 
     def match(self, host, boundary=None):
         """Every claim that applies to a host, as (key, source, category).

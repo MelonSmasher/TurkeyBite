@@ -59,10 +59,11 @@ export VALKEY_PASSWORD=$(cat /run/secrets/valkey_password)
 export TURKEYBITE_HOSTS_INTERVAL_MIN=${TURKEYBITE_HOSTS_INTERVAL_MIN:-720}
 export TURKEYBITE_IGNORELIST_INTERVAL_MIN=${TURKEYBITE_IGNORELIST_INTERVAL_MIN:-5}
 
-# Export OpenSearch credentials - these will be available to the template script
+# Export OpenSearch credentials - these will be available to the template script.
+# OPENSEARCH_PASSWORD has no fallback: the default it used to fall back to is
+# public, and the template script refuses to run without a password or with it.
 export OPENSEARCH_HOST=${OPENSEARCH_HOST:-opensearch}
 export OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME:-admin}
-export OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD:-Changeit12345!}
 
 cat /etc/supervisor/conf.d/tb-librarian-hosts.template | envsubst | tee /etc/supervisor/conf.d/tb-librarian-hosts.conf
 cat /etc/supervisor/conf.d/tb-librarian-ignorelist.template | envsubst | tee /etc/supervisor/conf.d/tb-librarian-ignorelist.conf

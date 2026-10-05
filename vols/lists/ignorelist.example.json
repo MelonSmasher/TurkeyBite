@@ -278,7 +278,43 @@
     "perchance.org",
     "www.glamour.com",
     "glamour.com",
-    "glamourmagazine.co.uk"
+    "glamourmagazine.co.uk",
+    "*.1337x.to",
+    "*.1337xx.to",
+    "*.1377x.to",
+    "*.rarbg.to",
+    "*.rutor.info",
+    "*.rutracker.net",
+    "*.sktorrent.eu",
+    "*.thepiratebay0.org",
+    "*.torrentdownloads.pro",
+    "*.bt4gprx.com",
+    "*.opentor.org",
+    "*.igg-games.com",
+    "*.kickasstorrents.to",
+    "*.skymovieshd.ceo",
+    "*.skymovieshd.forex",
+    "*.7starhd.latino",
+    "*.filmyfly.soy",
+    "*.hdfilmcehennemi.now",
+    "*.huavod.com",
+    "*.egyshare.my",
+    "*.mlhbd.xyz",
+    "*.dizikorea3.com",
+    "*.anitube.biz",
+    "*.olevod.com",
+    "*.aletorrenty.pl",
+    "*.anime-sharing.com",
+    "*.bldramaturkey.co",
+    "*.effedupmovies.com",
+    "*.alivegore.com",
+    "*.livegore.com",
+    "*.goresee.com",
+    "*.forogore.net",
+    "*.reactor.cc",
+    "*.napiszar.hu",
+    "*.truyenc.com",
+    "*.novelhubapp.com"
   ],
   "torrent":[
     "opera.com",
@@ -301,7 +337,30 @@
     "x.com",
     "api.x.com",
     "ton.x.com",
-    "cf.x.com"
+    "cf.x.com",
+    "*.anime.com",
+    "*.anime-planet.com",
+    "*.bellator.com",
+    "*.ccmixter.org",
+    "*.filmzie.com",
+    "*.kcnawatch.org",
+    "*.popcornflix.com",
+    "*.simkl.com",
+    "*.snagfilms.com",
+    "*.southparkstudios.com",
+    "*.topdocumentaryfilms.com",
+    "*.universalmediaserver.com"
+  ],
+  "proxy": [
+    "*.piracyproxy.net",
+    "*.unblocked.id",
+    "*.unblocked.krd"
+  ],
+  "streaming": [
+    "*.snagfilms.com"
+  ],
+  "streaming-video": [
+    "*.snagfilms.com"
   ],
   "advertising": [
     "x.com",
@@ -318,7 +377,10 @@
   "games": [
     "sites.google.com",
     "www.nytimes.com",
-    "mail.aol.com"
+    "mail.aol.com",
+    "*.mit.edu",
+    "*.watchdocumentaries.com",
+    "*.monkeytype.com"
   ],
   "crypto": [
     "monster.com",
@@ -462,7 +524,13 @@
     "www.today.com",
     "aamt.today.com",
     "ted.com",
-    "www.ted.com"
+    "www.ted.com",
+    "*.archive.ph",
+    "*.archive.today",
+    "*.archive.is",
+    "*.bithumb.com",
+    "w3s.link",
+    "ewp.live"
   ],
   "drugs": [
     "ring.com",

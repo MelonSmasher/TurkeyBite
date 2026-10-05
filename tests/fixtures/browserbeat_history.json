@@ -1,0 +1,66 @@
+{
+  "@timestamp": "2026-10-04T16:00:07.412Z",
+  "@metadata": {
+    "beat": "browserbeat",
+    "type": "_doc",
+    "version": "7.4.2"
+  },
+  "type": "browser.history",
+  "data": {
+    "@timestamp": "2026-10-04T15:58:41Z",
+    "@processed": "2026-10-04T12:00:07.4011273-04:00",
+    "host": {
+      "hostname": "LIB-1-01-23-A",
+      "short": "LIB-1-01-23-A"
+    },
+    "event": {
+      "data": {
+        "entry": {
+          "date": "2026-10-04 15:58:41",
+          "url": "https://vertor:hunter2@www.casino-example.co.uk/slots/play?session=8f3a2c91d4&email=vertor%40example.edu#deposit",
+          "title": "Play slots - Casino Example",
+          "url_data": {
+            "Scheme": "https",
+            "Opaque": "",
+            "User": {},
+            "Host": "www.casino-example.co.uk",
+            "Path": "/slots/play",
+            "RawPath": "",
+            "ForceQuery": false,
+            "RawQuery": "session=8f3a2c91d4&email=vertor%40example.edu",
+            "Fragment": "deposit"
+          }
+        },
+        "client": {
+          "ip_addresses": [
+            "169.254.31.109",
+            "10.100.45.140",
+            "fe80::1c2d:3e4f:5a6b:7c8d",
+            "169.254.130.241"
+          ],
+          "user": "vertor",
+          "platform": "windows",
+          "browser": "chrome",
+          "Hostname": {
+            "hostname": "LIB-1-01-23-A",
+            "short": "LIB-1-01-23-A"
+          }
+        }
+      },
+      "module": "browserbeat-chrome"
+    }
+  },
+  "agent": {
+    "type": "browserbeat",
+    "version": "7.4.2",
+    "hostname": "LIB-1-01-23-A",
+    "id": "9e2d4c61-3b8a-4f0e-a7d5-1c6b2e9f4a08",
+    "ephemeral_id": "0f7a3d92-6c1e-4b5a-8d2f-3e9c7a1b5d64"
+  },
+  "ecs": {
+    "version": "1.1.0"
+  },
+  "host": {
+    "name": "LIB-1-01-23-A"
+  }
+}

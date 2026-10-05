@@ -11,8 +11,15 @@ from libtb.sieve import normalize_host
 from libtb.taxonomy import classify
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain, using_psl
 from libtb.index import DomainIndex
-from libtb.evidence import (DEFAULT_MIN_PUBLISHERS, categorise, describe,
+from libtb.evidence import (cancels, categorise, claims_for, demote_incidental,
+                            describe, drop_disabled, evidence_settings,
                             matched_keys, resolve, sources_of)
+from libtb.evidence import second_opinion
+from libtb.evidence.resolvers import checker_for
+from libtb.evidence.resolvers import settings as resolver_settings
+from libtb.opensearch import ConfigurationError, check_hosts, client_kwargs, report_once
+from libtb.privacy import redact
+from libtb.privacy import settings as privacy_settings
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -20,7 +27,12 @@ from redis import Redis
 from opensearchpy import OpenSearch
 from opensearchpy import helpers as opensearch_helpers
 from dns import reversename, resolver, exception
-from urllib.parse import urlparse
+
+
+# The key resolve_contexts uses to hand the ignorelist's corrections on the asked
+# name to its caller. Never part of an event: both callers pop it before
+# shipping, and it is underscored so an oversight is obvious in a document.
+CORRECTED = '_corrected'
 
 
 # One OpenSearch client per process, per host. Unlike the read-only mmap above,
@@ -161,21 +173,56 @@ def opensearch_client(host):
     if client is not None:
         return client
 
-    parsed = urlparse(host['uri'])
-    use_ssl = parsed.scheme == 'https'
-    kwargs = {
-        'hosts': [{'host': parsed.hostname, 'port': parsed.port or (443 if use_ssl else 80)}],
-        'use_ssl': use_ssl,
-        'verify_certs': False,
-        'ssl_show_warn': False,
-        'request_timeout': 30,
-        'retry_on_timeout': True,
-    }
-    if host.get('username') and host.get('password'):
-        kwargs['http_auth'] = (host['username'], host['password'])
+    try:
+        kwargs = client_kwargs(host)
+    except ValueError as e:
+        # The settings were checked at start, so this is a host whose
+        # configuration came from elsewhere, such as a job the core queued
+        # with its own config.yaml, or a CA file gone since the check
+        raise ConfigurationError(str(e)) from e
     client = OpenSearch(**kwargs)
     _opensearch_clients[key] = client
     return client
+
+
+def _report_host_error(host, error, action):
+    """Logs a failure to use a host: a configuration error once, anything else each time."""
+    if isinstance(error, ConfigurationError):
+        report_once(f"CONFIGURATION ERROR: OpenSearch at {host.get('uri')} cannot be used, "
+                    f"so no event reaches it: {error}. Run `python turkeybite check` in this "
+                    f"container, fix config.yaml and restart. Reported once; it applies to "
+                    f"every event until fixed.")
+    else:
+        print(f"Error {action} to OpenSearch at {host.get('uri')}: {str(error)}",
+              file=sys.stderr)
+
+
+class DeliveryError(RuntimeError):
+    """OpenSearch did not take an event, and it is worth trying again later."""
+
+
+# Per-document statuses in a bulk response that mean try again later rather
+# than never: rejected because a queue was full, or a shard was unavailable
+RETRYABLE_STATUSES = frozenset((429, 502, 503, 504))
+
+
+def retryable_rejection(error):
+    """True when one per-document bulk error says to try again later.
+
+    opensearch-py reports each as {operation: {status, error}}. A mapping
+    error and the like is a 400, permanent, and retrying it would only
+    requeue the same document forever.
+    """
+    if not isinstance(error, dict):
+        return False
+    return any(isinstance(item, dict) and item.get('status') in RETRYABLE_STATUSES
+               for item in error.values())
+
+
+def permanent_refusal(error):
+    """True when OpenSearch refused one document for good: a 4xx other than 408 or 429."""
+    status = getattr(error, 'status_code', None)
+    return isinstance(status, int) and 400 <= status < 500 and status not in (408, 429)
 
 
 # Documents waiting to be flushed as one bulk request, keyed by pid for the same
@@ -433,10 +480,28 @@ def client_identity(event_data):
 
 class Processor(object):
 
+    # Set by the consumer, which acknowledges a batch only after it is indexed
+    # and so can requeue one that is not. When OpenSearch does not take an
+    # event, process_packet then raises DeliveryError rather than dropping it.
+    # The RQ path leaves it off: a job has nothing to requeue to, and is lossy
+    # by design. A class attribute, so a processor pickled before it existed
+    # still has it.
+    strict_delivery = False
+
     def __init__(self, config, redis_conf):
         """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
         self.config = config
         self.redis_conf = redis_conf
+        # Read once here so a mistake in the evidence settings stops the process
+        # at start, and so no event pays to parse them again
+        self._evidence = evidence_settings(config.get('evidence'))
+        self._resolvers = resolver_settings((config.get('evidence') or {}).get('resolvers'))
+        # The same for the OpenSearch hosts. This is also where a host with the
+        # default admin password is refused, and where a host used without
+        # verifying its certificate is reported. Under the rq pipeline that is
+        # the core, whose processor travels with every job.
+        check_hosts(config.get('elastic'))
+        self._privacy = privacy_settings(config.get('privacy'))
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -455,9 +520,41 @@ class Processor(object):
         )
 
     def min_publishers(self):
-        """Independent publishers a medium trust category needs, see libtb.evidence."""
-        settings = self.config.get('evidence') or {}
-        return int(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+        """Independent publishers a medium trust category needs, see libtb.evidence.
+
+        One number, or a mapping from taxonomy branches or paths to numbers.
+        """
+        return self._evidence[0]
+
+    def resolver_conf(self):
+        """Public filtering resolvers as a second opinion, see libtb.evidence.resolvers.
+
+        Off unless processor.evidence.resolvers.enable is true. Parsed once,
+        with the other evidence settings, when the processor starts.
+        """
+        return self._resolvers
+
+    def privacy(self):
+        """What events keep of their URLs and the raw packet, see libtb.privacy.
+
+        Trimmed URLs and the packet kept, unless processor.privacy says
+        otherwise. Parsed once, when the processor starts.
+        """
+        try:
+            return self._privacy
+        except AttributeError:
+            # Under the rq pipeline a job carries the processor the core
+            # pickled, and one queued by a core older than these settings has
+            # none. Its configuration is read now rather than failing the job.
+            self._privacy = privacy_settings(self.config.get('privacy'))
+            return self._privacy
+
+    def disabled_categories(self):
+        """Taxonomy branches or paths switched off, see libtb.evidence.
+
+        Absent means libtb.evidence.DEFAULT_DISABLED, the editorial branch.
+        """
+        return self._evidence[1]
 
     def valkey_contexts(self, searches):
         """The original lookup: one Valkey GET per synthesised key."""
@@ -484,7 +581,7 @@ class Processor(object):
                 print(f"Malformed host list entry at {key}: {e}", file=sys.stderr)
         return contexts
 
-    def resolve_contexts(self, searches):
+    def resolve_contexts(self, searches, navigation=False):
         """Categories for a set of search terms.
 
         Returns (contexts, extra) where extra carries index-only fields. Three
@@ -499,21 +596,39 @@ class Processor(object):
         Only the index weighs its evidence. Valkey holds a bare category list
         per key, so it cannot tell one noisy list from three that agree, and in
         compare mode a disagreement is now mostly the index declining a
-        category Valkey would have asserted.
+        category Valkey would have asserted. Switched-off categories are taken
+        out of every mode's answer, Valkey's included, since keeping them in one
+        mode would store the label the switch exists to keep off the event.
+
+        `navigation` says the host is a page someone opened, which the
+        incidental mark does not apply to. In index mode extra also carries
+        CORRECTED, the ignorelist's corrections on the host, for the caller to
+        hold over a CNAME chain and then pop before the event is shipped.
         """
         mode, path = self.index_settings()
         host = searches[0]
+        disabled = self.disabled_categories()
 
         if mode == 'valkey':
-            return self.valkey_contexts(searches), {}
+            return drop_disabled(self.valkey_contexts(searches), disabled), {}
 
         try:
             index = domain_index(path)
-            claims, verdict = categorise(index, host, self.min_publishers())
+            claims, verdict = categorise(index, host, self.min_publishers(),
+                                         disabled=disabled, navigation=navigation)
         except Exception as e:
             # A missing or corrupt index must not cost the event. Fall back.
             print(f"Domain index unavailable at {path}: {e}", file=sys.stderr)
-            return self.valkey_contexts(searches), {'index_error': str(e)}
+            return (drop_disabled(self.valkey_contexts(searches), disabled),
+                    {'index_error': str(e)})
+
+        # Asked only in index mode, since compare mode measures the lists
+        # against Valkey and a vote from outside both would muddy that. Outside
+        # the guard above, so a fault here, or RQ stopping a job that ran too
+        # long, is not mistaken for a broken index and answered from Valkey.
+        if mode == 'index':
+            claims, verdict = second_opinion(host, claims, verdict, self.min_publishers(),
+                                             checker_for(self.resolver_conf()), navigation)
 
         contexts = verdict['asserted']
         extra = {
@@ -530,10 +645,18 @@ class Processor(object):
                 extra['contexts_candidate'] = verdict['candidate']
             if verdict['suppressed']:
                 extra['contexts_suppressed'] = verdict['suppressed']
+            if verdict['incidental']:
+                extra['incidental'] = True
+            if verdict['corrected']:
+                extra[CORRECTED] = verdict['corrected']
+            if verdict.get('resolvers'):
+                # Which resolvers were asked and what each said, so one that
+                # stops answering shows up in a query, as ptr_status does
+                extra['resolvers'] = verdict['resolvers']
             return contexts, extra
 
         # compare: Valkey stays authoritative while the index is on trial
-        legacy = self.valkey_contexts(searches)
+        legacy = drop_disabled(self.valkey_contexts(searches), disabled)
         extra['contexts_index'] = contexts
         extra['context_match'] = sorted(legacy) == sorted(contexts)
         return legacy, extra
@@ -559,10 +682,13 @@ class Processor(object):
             return [], [], []
 
         # Weighed together, so two publishers agreeing about different links
-        # of one chain still corroborate each other
+        # of one chain still corroborate each other. A link marked incidental
+        # demotes what the chain contributes, but leaves the name that was
+        # asked for alone: that name was not marked.
         claims = []
+        disabled = self.disabled_categories()
         for target in chain:
-            claims.extend(categorise(index, target, self.min_publishers())[0])
+            claims.extend(claims_for(index, target, disabled=disabled))
         verdict = resolve(claims, self.min_publishers())
         return verdict['asserted'], sources_of(claims), matched_keys(claims)
 
@@ -627,6 +753,7 @@ class Processor(object):
             return False
 
         contexts, extra = self.resolve_contexts(searches)
+        corrected = extra.pop(CORRECTED, ())
 
         # The answer section, which Packetbeat has already parsed and which bite
         # has never carried. Merged after resolve_contexts so compare mode keeps
@@ -646,12 +773,27 @@ class Processor(object):
                 # cname_contexts shows what merging would add before it does.
                 if self.index_settings()[0] == 'index':
                     # A correction on the name that was asked for holds over
-                    # whatever that name happens to be hosted on
-                    added = set(chain_contexts) - set(extra.get('contexts_suppressed') or [])
+                    # whatever that name happens to be hosted on, read
+                    # through the taxonomy as resolve() reads it. These are
+                    # the corrections themselves, not what they suppressed on
+                    # the name, since the name may have had no such claim.
+                    cancelled = {c for c in chain_contexts if cancels(corrected, c)}
+                    added = set(chain_contexts) - cancelled
+                    if cancelled:
+                        extra['contexts_suppressed'] = sorted(
+                            set(extra.get('contexts_suppressed') or []) | cancelled)
+                    demoted = set()
+                    if extra.get('incidental'):
+                        # So does the incidental mark. connect.facebook.net is
+                        # hosted on scontent.xx.fbcdn.net, which the lists call
+                        # Facebook, and merging that back would undo the mark.
+                        kept, demoted = demote_incidental(added)
+                        added, demoted = set(kept), set(demoted)
                     if added:
                         match_source.append('cname')
                     contexts = sorted(set(contexts) | added)
-                    held_back = sorted(set(extra.get('contexts_candidate') or []) - added)
+                    held_back = sorted((set(extra.get('contexts_candidate') or []) | demoted)
+                                       - added)
                     if held_back:
                         extra['contexts_candidate'] = held_back
                     else:
@@ -794,7 +936,10 @@ class Processor(object):
         if not searches:
             return False
 
-        contexts, extra = self.resolve_contexts(searches)
+        # A history entry is a page the person opened, so the incidental mark,
+        # which is about lookups made on someone else's behalf, does not apply
+        contexts, extra = self.resolve_contexts(searches, navigation=True)
+        extra.pop(CORRECTED, None)
         extra.update(taxonomy_fields(contexts))
         extra.update(domain_fields(searches[0]))
         identity = client_identity(dig(data, 'data', 'event', 'data'))
@@ -850,14 +995,22 @@ class Processor(object):
         return ''.join([self.config['elastic']['index_prefix'], '-',
                         datetime.now().strftime("%Y-%m-%d")])
 
-    def flush_bulk(self, force=True, raise_on_total_failure=False):
+    def flush_bulk(self, force=True, raise_on_total_failure=None):
         """Sends buffered documents as one bulk request.
 
-        Returns the number accepted. With raise_on_total_failure the caller is
-        told when every host refused, so a consumer that acknowledges after the
-        flush can requeue instead of losing the batch. The RQ path leaves it off
-        because it has nothing to requeue to.
+        Returns the number accepted. With raise_on_total_failure, which
+        defaults to strict_delivery, the caller is told with DeliveryError
+        when every host refused, or when OpenSearch asked for any document to
+        be retried later, so a consumer that acknowledges after the flush can
+        requeue the batch instead of losing it. The batch is requeued whole,
+        so documents that were indexed in it are indexed again: at-least-once
+        delivery already allows that, and losing the rest does not. A
+        document refused for good, by a mapping error say, is logged and not
+        retried. The RQ path passes nothing and keeps its behaviour, which is
+        to log and drop.
         """
+        if raise_on_total_failure is None:
+            raise_on_total_failure = self.strict_delivery
         buffer = _bulk_buffers.get(os.getpid())
         if not buffer or not buffer['docs']:
             return 0
@@ -871,38 +1024,65 @@ class Processor(object):
             try:
                 ok, errors = opensearch_helpers.bulk(
                     opensearch_client(host), docs, raise_on_error=False, stats_only=False)
-                for error in errors or []:
-                    print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
-                return ok
             except Exception as e:
-                print(f"Error bulk sending to OpenSearch at {host['uri']}: {str(e)}",
-                      file=sys.stderr)
+                _report_host_error(host, e, 'bulk sending')
                 continue
+            retry = [error for error in errors or [] if retryable_rejection(error)]
+            for error in errors or []:
+                if error not in retry:
+                    print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
+            if retry and raise_on_total_failure:
+                raise DeliveryError(f'OpenSearch asked for {len(retry)} of {len(docs)} '
+                                    f'documents to be retried: {retry[0]}')
+            for error in retry:
+                print(f"Dropped a document OpenSearch asked to retry: {error}", file=sys.stderr)
+            return ok
         if raise_on_total_failure:
-            raise RuntimeError(f'every OpenSearch host refused {len(docs)} documents')
+            raise DeliveryError(f'every OpenSearch host refused {len(docs)} documents')
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
         return 0
 
+    def discard_bulk(self):
+        """Forgets anything buffered, for a caller about to requeue the events it came from."""
+        _bulk_buffers.pop(os.getpid(), None)
+
     def ship_bite(self, bite):
+        """Sends one event to every enabled output.
+
+        The one place an event leaves the processor, so it is also the one
+        place processor.privacy is applied: OpenSearch and syslog get the same
+        document, and an event type added later cannot skip it.
+        """
+        bite = redact(bite, self.privacy())
         if self.config['elastic']['enable']:
             bulk_enabled, size, _ = self.bulk_settings()
             if bulk_enabled:
                 buffer = _bulk_buffers.setdefault(
                     os.getpid(), {'docs': [], 'since': time.monotonic()})
-                if not buffer['docs']:
+                if not buffer['docs'] and not self.strict_delivery:
+                    # The consumer flushes, and handles signals, itself
                     _install_flush_hooks(self.flush_bulk)
                 buffer['docs'].append({'_index': self.index_name(), '_source': bite})
+                # Raises DeliveryError for the consumer when this flush fails
                 self.flush_bulk(force=False)
             else:
                 index = self.index_name()
+                delivered = refused = False
                 for host in self.config['elastic']['hosts']:
                     try:
                         opensearch_client(host).index(index=index, body=bite)
+                        delivered = True
                         break
                     except Exception as e:
-                        print(f"Error sending to OpenSearch at {host['uri']}: {str(e)}",
-                              file=sys.stderr)
+                        if permanent_refusal(e):
+                            # Another host of the same cluster would refuse it too
+                            print(f"OpenSearch rejected a document: {e}", file=sys.stderr)
+                            refused = True
+                            break
+                        _report_host_error(host, e, 'sending')
                         continue
+                if not (delivered or refused) and self.strict_delivery:
+                    raise DeliveryError('every OpenSearch host failed to take an event')
 
         if self.config['syslog']['enable']:
             try:

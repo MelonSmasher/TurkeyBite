@@ -24,19 +24,243 @@ same goes for a list that copies another: oisd's NSFW list ingests hagezi's, so
 the two agreeing is hagezi's opinion counted twice. Each source names what it
 copies in `derived_from`, and a copy never corroborates its original.
 
+Agreement is counted on what a category means rather than on how a list spells
+it. StevenBlack calls a site `fake-news` and the local list calls it `fakenews`;
+one vendor list says `signal` and another `whispersystems`. Each spelling maps to
+the same taxonomy path, so two sources agree when their categories reach the
+same path. A vendor category makes more than one statement: `steam` says the
+host is Steam and that it is a game storefront. It is believed only when every
+statement it makes is supported, so a list saying `steam` and another saying
+`epicgames` agree that the host sells games but not on whose store it is, and
+neither is asserted. Events still carry the categories the lists used, so a
+query for `fakenews` means what it meant before.
+
+How many independent publishers a medium claim needs can differ by what is
+being claimed. The bar is set per taxonomy branch or path, the same thing the
+agreement is counted on, so `threat: 1` covers malware, phishing and every other
+threat however a list spells it, and the bar for `fake-news` can never differ
+from the bar for `fakenews`. A flat category name would allow both mistakes.
+
 A category that falls short is not thrown away. It is reported as a candidate,
 so it can be searched for, and an audit can see what the bar is holding back.
 
 The ignorelist's corrections arrive as claims too, with the category negated,
-and cancel the category outright whichever source asserted it.
+and cancel the category outright whichever source asserted it. A correction
+is read through the taxonomy like everything else, so correcting `fakenews`
+also cancels `fake-news`. More precisely it cancels every category that would
+put back what the corrected one says: correcting `games` on a host cancels
+`ea` there too, since `ea` says the host is a game platform, while correcting
+`facebook` leaves `social` alone, since a host can be social media without
+being Facebook.
+
+Some lookups are not evidence of what the person was doing. A news article
+with a Facebook pixel makes the browser look up connect.facebook.net, and
+Windows looks up msftconnecttest.com whenever it joins a network. The curated
+`incidental` list names such hosts. On them, a category stands only if all it
+says is a risk: the pixel still tracks the person whether or not they use
+Facebook. Anything that says what a host is for or whose service it is is
+reported as a candidate instead, including a vendor such as expressvpn that
+names a risk as well, since keeping it would put the service back on the event.
+The verdict says the host was incidental, so an event can too. Only a lookup is
+judged this way: a page someone opened in their browser was opened on purpose.
+
+An operator can also switch whole categories off, by taxonomy branch or path,
+without deleting the lists that carry them. A disabled category is dropped
+before anything is weighed, so events record nothing of it: not as asserted,
+candidate or suppressed, and not in the claims. That is what removing the list
+would do, and it is the point. A category is usually switched off because its
+label should not be stored against the people whose traffic it matches, and
+keeping it anywhere on the event would still store it.
+
+The editorial branch is off unless the operator turns it on. Its lists label
+news and opinion sites by viewpoint, as fake news, fascist or zionist, and
+those labels are stored against identifiable people. That is a decision for
+whoever runs the deployment to make on purpose, not one a default should make
+for them.
 """
 
+from functools import lru_cache
 from itertools import combinations
 
-from libtb.index import NEGATION
+from libtb.index import INCIDENTAL, NEGATION
 from libtb.psl import DEFAULT_PATH as PSL_PATH, registrable_domain
+from libtb.taxonomy import RISK, TAXONOMY
 
 DEFAULT_MIN_PUBLISHERS = 2
+
+# The key in a min_publishers mapping that applies to everything not named
+DEFAULT_KEY = 'default'
+
+
+def _prefixes(path):
+    """threat.phishing -> threat.phishing, threat"""
+    labels = path.split('.')
+    return ['.'.join(labels[:i]) for i in range(len(labels), 0, -1)]
+
+
+# Every branch and path a threshold can name. Checked so that a misspelt key,
+# which would otherwise apply to nothing, is refused rather than ignored.
+TAXONOMY_PREFIXES = frozenset(prefix for rows in TAXONOMY.values()
+                              for _, path in rows for prefix in _prefixes(path))
+
+
+def _count(value, name):
+    """A threshold as a whole number. Below 1 means 1, as it always has.
+
+    2.0 is accepted, since YAML and environment templating both produce it and
+    the old int() conversion took it; 2.5 is refused rather than rounded.
+    """
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f'min_publishers {name} must be a whole number, not {value!r}')
+    try:
+        return max(1, int(value))
+    except ValueError:
+        raise ValueError(f'min_publishers {name} must be a whole number, not {value!r}')
+
+
+def _taxonomy_key(entry, setting, example):
+    """A setting's key as a taxonomy branch or path, refused if it is neither.
+
+    A misspelt key would otherwise apply to nothing and fail silently.
+    """
+    key = str(entry).strip().lower()
+    if key not in TAXONOMY_PREFIXES:
+        raise ValueError(f'{setting} names {key!r}, which is not a taxonomy '
+                         f'branch or path, such as {example}')
+    return key
+
+
+class Bar(dict):
+    """A min_publishers setting already checked by `thresholds`.
+
+    Passed around as is, so the worker validates its settings once at start
+    rather than on every claim of every event.
+    """
+
+
+def thresholds(min_publishers=DEFAULT_MIN_PUBLISHERS):
+    """processor.evidence.min_publishers as {taxonomy prefix or 'default': count}.
+
+    Either one number for everything, or a mapping from taxonomy branches or
+    paths to numbers, with `default` for the rest:
+
+        min_publishers: 2
+        min_publishers: {default: 2, threat: 1, adult.pornography: 3}
+
+    Raises ValueError for a key that is no branch or path in the taxonomy, so a
+    typo fails loudly instead of quietly changing nothing.
+    """
+    if isinstance(min_publishers, Bar):
+        return min_publishers
+    if not isinstance(min_publishers, dict):
+        return Bar({DEFAULT_KEY: _count(min_publishers, 'default')})
+    result = Bar({DEFAULT_KEY: DEFAULT_MIN_PUBLISHERS})
+    for key, value in min_publishers.items():
+        if str(key).strip().lower() == DEFAULT_KEY:
+            key = DEFAULT_KEY
+        else:
+            key = _taxonomy_key(key, 'min_publishers', 'threat or adult.pornography')
+        result[key] = _count(value, key)
+    return result
+
+
+def needed(statement, bar):
+    """Publishers a statement needs under `bar`, a dict from `thresholds`.
+
+    The most specific key wins, so {threat: 1, threat.phishing: 2} asks two
+    publishers for phishing and one for every other threat. A category the
+    taxonomy does not know takes the default.
+    """
+    facet, path = statement
+    if facet is not None:
+        for prefix in _prefixes(path):
+            if prefix in bar:
+                return bar[prefix]
+    return bar[DEFAULT_KEY]
+
+
+# What is switched off when processor.evidence.disabled_categories is absent
+DEFAULT_DISABLED = ('editorial',)
+
+
+def disabled_paths(setting):
+    """processor.evidence.disabled_categories as a frozenset of taxonomy prefixes.
+
+    Absent (None) means DEFAULT_DISABLED. An explicit list replaces the
+    default rather than adding to it, so [] switches everything on.
+
+    Raises ValueError for an entry that is no branch or path in the taxonomy,
+    as `thresholds` does, so a typo cannot leave a category switched on.
+    """
+    if setting is None:
+        setting = DEFAULT_DISABLED
+    if isinstance(setting, str):
+        setting = [setting]
+    if not isinstance(setting, (list, tuple, set, frozenset)):
+        raise ValueError(f'disabled_categories must be a list of taxonomy branches or '
+                         f'paths, such as [editorial], not {setting!r}')
+    return frozenset(_taxonomy_key(entry, 'disabled_categories',
+                                   'editorial or editorial.fakenews')
+                     for entry in setting)
+
+
+def evidence_settings(settings):
+    """(bar, disabled) from processor.evidence, checked. Raises ValueError.
+
+    The one reading of these settings, shared by the worker and the audit so
+    the audit always reports what the workers do. disabled_categories absent
+    means DEFAULT_DISABLED; present but empty, as YAML reads a key whose
+    entries are all commented out, means nothing is switched off, which is
+    how every other list in config.yaml behaves.
+    """
+    settings = settings or {}
+    if not isinstance(settings, dict):
+        raise ValueError(f'processor.evidence must be a mapping, not {settings!r}')
+    bar = thresholds(settings.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+    if 'disabled_categories' in settings:
+        disabled = disabled_paths(settings['disabled_categories'] or [])
+    else:
+        disabled = disabled_paths(None)
+    return bar, disabled
+
+
+def is_disabled(category, disabled):
+    """True when anything the category says falls under a disabled prefix.
+
+    Any rather than all, so switching off `policy.anonymiser` switches off
+    `expressvpn` too. It also names a service, and leaving it on would keep
+    the anonymiser label on the event through bite.risk.
+    """
+    if not disabled:
+        return False
+    if category.startswith(NEGATION):
+        category = category[len(NEGATION):]
+    return category.strip().lower() in _disabled_spellings(disabled)
+
+
+@lru_cache(maxsize=16)
+def _disabled_spellings(disabled):
+    """Every category spelling the disabled prefixes switch off.
+
+    Worked out once per setting, since it depends on nothing else, so the
+    filter costs one set lookup per claim. A category the taxonomy does not
+    know names no branch, so it is never switched off.
+    """
+    return frozenset(category for category, rows in TAXONOMY.items()
+                     if any(prefix in disabled
+                            for facet, path in rows if facet is not None
+                            for prefix in _prefixes(path)))
+
+
+def drop_disabled(categories, disabled):
+    """The categories with every disabled one taken out.
+
+    For answers that never went through the claims, such as the Valkey
+    lookup, so switching a category off holds in every lookup mode.
+    """
+    return [category for category in categories if not is_disabled(category, disabled)]
 
 
 def ownership_boundary(host, path=PSL_PATH):
@@ -76,37 +300,110 @@ def corroborated(sources, needed):
                for group in combinations(sources, needed))
 
 
-def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS):
+def statements(category):
+    """The (facet, path) pairs a category asserts, which is what sources agree on.
+
+    A category the taxonomy does not know is a statement of its own, so it is
+    corroborated only by the same spelling, as every category was before.
+    """
+    key = category.strip().lower()
+    return TAXONOMY.get(key) or ((None, key),)
+
+
+def is_risk(category):
+    """True when all a category says is a risk, which an incidental lookup keeps.
+
+    All rather than any: expressvpn names a service as well as an anonymiser,
+    and keeping it would put the service on the event through bite.service.
+    A category the taxonomy does not know is not a risk either, so it is
+    demoted with the rest: an unknown label is no reason to keep asserting.
+    """
+    return all(facet == RISK for facet, _ in statements(category))
+
+
+def demote_incidental(categories):
+    """Splits categories into (kept, demoted) for a host marked incidental."""
+    kept = [c for c in categories if is_risk(c)]
+    return kept, [c for c in categories if not is_risk(c)]
+
+
+def cancels(corrections, category):
+    """True when one of the corrected categories rules this category out.
+
+    That is when the category makes every statement a corrected category
+    makes, so asserting it would put the correction back on the event through
+    the facets: `fake-news` for a correction of `fakenews`, or `ea` for one of
+    `games`. A category saying less than the correction is not ruled out,
+    which is why correcting `facebook` leaves `social` standing.
+    """
+    made = set(statements(category))
+    return any(set(statements(corrected)) <= made for corrected in corrections)
+
+
+def resolve(claims, min_publishers=DEFAULT_MIN_PUBLISHERS, navigation=False):
     """Weighs (key, source, category) claims as DomainIndex.match returns them.
 
-    Returns a dict of sorted lists:
+    `min_publishers` is a number, a mapping or a Bar, as `thresholds`
+    describes. Returns a dict of sorted lists:
 
         asserted    categories the evidence supports
         candidate   categories some list claims, but not convincingly enough
         suppressed  categories the ignorelist cancelled
+        corrected   the categories the ignorelist corrects on this host,
+                    claimed or not, so a caller can hold them over anything
+                    else it merges in, such as a CNAME chain
+
+    and `incidental`, True when the host is marked incidental, in which case
+    only risk categories are asserted and the rest are candidates. With
+    `navigation` the mark is not applied: a page someone opened in a browser
+    was opened on purpose, whatever its host is otherwise looked up for.
+
+    The lists hold categories as the sources spelled them, while the weighing
+    is done on taxonomy paths, see the module docstring.
     """
-    needed = max(1, int(min_publishers))
+    bar = thresholds(min_publishers)
+    corrections = {category[len(NEGATION):] for _, _, category in claims
+                   if category.startswith(NEGATION)}
     claimed = set()
     trusted = set()
-    cancelled = set()
     backers = {}
     for _, source, category in claims:
         if category.startswith(NEGATION):
-            cancelled.add(category[len(NEGATION):])
             continue
         claimed.add(category)
-        if source.trust == 'high':
-            trusted.add(category)
-        elif source.trust == 'medium':
-            backers.setdefault(category, set()).add(source)
+        if cancels(corrections, category):
+            # A claim the ignorelist corrected is wrong, so it must not prop
+            # up another spelling of the same judgement either
+            continue
+        for statement in statements(category):
+            if source.trust == 'high':
+                trusted.add(statement)
+            elif source.trust == 'medium':
+                backers.setdefault(statement, set()).add(source)
         # A low trust claim is recorded and counts towards nothing
 
+    supported = {}
+    for statement in set(trusted) | set(backers):
+        supported[statement] = (statement in trusted
+                                or corroborated(backers.get(statement, ()),
+                                                needed(statement, bar)))
     asserted = {c for c in claimed
-                if c in trusted or corroborated(backers.get(c, ()), needed)}
+                if all(supported.get(statement) for statement in statements(c))}
+
+    # The mark is weighed like a category, so the ignorelist can lift it, and
+    # then taken out, since it says nothing about what the host is
+    incidental = INCIDENTAL in asserted and not navigation
+    for found in (claimed, asserted):
+        found.discard(INCIDENTAL)
+    cancelled = {c for c in claimed if cancels(corrections, c)}
+    if incidental:
+        asserted = set(demote_incidental(asserted)[0])
     return {
         'asserted': sorted(asserted - cancelled),
         'candidate': sorted(claimed - asserted - cancelled),
         'suppressed': sorted(claimed & cancelled),
+        'corrected': sorted(corrections),
+        'incidental': incidental,
     }
 
 
@@ -125,19 +422,57 @@ def sources_of(claims):
 
 
 def matched_keys(claims):
-    """The index keys that matched, most specific first, without repeats."""
+    """The index keys that matched, most specific first, without repeats.
+
+    A claim with no key, such as a resolver's vote, matched nothing in the
+    index and is left out, so a correction is never aimed at an entry that
+    does not exist.
+    """
     keys = []
     for key, _, _ in claims:
-        if key not in keys:
+        if key is not None and key not in keys:
             keys.append(key)
     return keys
 
 
-def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH):
+def claims_for(index, host, psl_path=PSL_PATH, disabled=frozenset()):
+    """The claims that apply to one host, with disabled categories dropped.
+
+    Claims for a `disabled` category, a set from `disabled_paths`, go here,
+    before anything else sees them.
+    """
+    claims = index.match(host, ownership_boundary(host, psl_path))
+    if disabled:
+        claims = [claim for claim in claims if not is_disabled(claim[2], disabled)]
+    return claims
+
+
+def categorise(index, host, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
+               disabled=frozenset(), navigation=False, checker=None):
     """Claims and verdict for one host, exactly as a worker reaches them.
 
     Shared by the worker and the audit, so what the audit reports is what the
-    events will say.
+    events will say. With a `checker`, a libtb.evidence.resolvers.Checker,
+    public resolvers are asked to corroborate a candidate, except for a
+    navigation, and the verdict carries `resolvers`, what each one said.
     """
-    claims = index.match(host, ownership_boundary(host, psl_path))
-    return claims, resolve(claims, min_publishers)
+    claims = claims_for(index, host, psl_path, disabled)
+    verdict = resolve(claims, min_publishers, navigation)
+    return second_opinion(host, claims, verdict, min_publishers, checker, navigation)
+
+
+def second_opinion(host, claims, verdict, min_publishers, checker, navigation=False):
+    """Asks public resolvers to corroborate a candidate. Returns (claims, verdict).
+
+    The one place it is done, called by `categorise` and, outside its guard
+    for a broken index, by the worker. Nothing is asked without a `checker`,
+    or for a navigation: a page someone opened was opened on purpose, and a
+    browser history upload would reach the resolvers as a burst. The verdict
+    gains `resolvers`, what each one asked said, when any was asked.
+    """
+    if checker is None or navigation:
+        return claims, verdict
+    claims, verdict, statuses = checker.corroborate(host, claims, verdict, min_publishers)
+    if statuses:
+        verdict = dict(verdict, resolvers=statuses)
+    return claims, verdict

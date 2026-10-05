@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  # Branches are tested through their pull request, so a push to one is not
+  # tested twice; master is tested on every push
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request makes the run for the older one moot. Runs
+# for master are grouped by commit, so every commit there gets its result.
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    # The librarian's script waits up to ten minutes for OpenSearch, so a test
+    # that let it reach a real cluster would hang rather than fail
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Python the suite is checked against, and the newest
+        # release, which is what the containers' python:3-alpine runs
+        python: ['3.12', '3.x']
+    steps:
+      # Pinned to commits, since a tag can be moved to point at other code
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: src/requirements.txt
+
+      - name: Install the runtime requirements
+        run: TB_VENV=$PWD/.venv tests/run.sh --prepare
+
+      - name: Run the tests without network access
+        # In a network namespace holding only loopback, so a test that reaches
+        # the network fails here instead of passing while the network is up.
+        # Making the namespace needs root; the tests run as the runner again.
+        run: >-
+          sudo unshare --net sh -c
+          "ip link set lo up && exec sudo -u $(id -un) env TB_VENV=$PWD/.venv tests/run.sh"

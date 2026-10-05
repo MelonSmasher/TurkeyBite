@@ -46,6 +46,19 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ## Setup
 
+### Upgrading an existing deployment
+
+**Read this before deploying a new version onto a running install.** Some changes affect a deployment that is already running, and one of them stops it until you act:
+
+* **The default OpenSearch password is refused.** If your OpenSearch admin password is still `Changeit12345!`, the password TurkeyBite used to ship with, the core and the workers refuse to start and the librarian refuses to set up OpenSearch. Change it first, as [Changing the OpenSearch admin password](#changing-the-opensearch-admin-password) describes.
+* **The librarian needs `OPENSEARCH_PASSWORD`.** It used to fall back to the default password when the variable was missing, which a `.env` written from `example.env` rather than by `setup.sh` relied on. Set `OPENSEARCH_PASSWORD` in `.env` to the admin password.
+* **TurkeyBite indices can now be deleted after a retention period, once you set one.** With `TURKEYBITE_RETENTION_DAYS` set and passed to the librarian, the librarian creates an OpenSearch retention policy at start, and every daily index created from then on is deleted that many days after it is created. Unset, which is what an existing `docker-compose.yml` gives the librarian, nothing is created and the librarian logs that retention is not configured. Indices from before the upgrade are kept until you decide otherwise, and a shorter period is never applied without your confirmation; see [Data retention](#data-retention).
+* **URLs are trimmed by default.** Events now drop the query string, the fragment and any `user:password@` from every URL they store, in `bite.url` and in the raw packet, and the per-event log lines and the jobs the core queues do the same. Set `processor.privacy.urls: full` in `config.yaml` to keep them whole as before. Indices already written are unchanged; see [URLs and the raw packet](#urls-and-the-raw-packet).
+* **The worker and core containers check `config.yaml` before they start.** They run `python turkeybite check` and exit, with the reason in `docker compose logs`, if anything a worker reads is wrong: a CA file missing from that container, the default password, or a setting the workers would refuse. Under the `rq` pipeline the workers used to start regardless and drop events at ship time.
+* **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
+
+`docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build`.
+
 ### Prerequisites
 
 * Docker and Docker Compose installed on your host system
@@ -73,9 +86,11 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    - Deployment type (Development, Small Scale, or Full Scale)
    - DNS lookup configuration for client IPs
    - Output options (OpenSearch and/or Syslog)
-   - Service passwords and connection settings
+   - Service passwords and connection settings. Press Enter at the OpenSearch admin password prompt to have one generated; `Changeit12345!`, the password TurkeyBite used to ship with, is refused
    
    For distributed deployments, you'll run this script on each node with the appropriate configuration.
+
+   Running it again on an existing install edits `config.yaml` and `.env` rather than replacing them, if you let it update them: it changes only what it asks about, adds settings that are missing, and keeps everything else you set, such as `processor.privacy`, a host's `verify_certs` and `ca_certs`, or `OPENSEARCH_CA_CERT`. Comments in `config.yaml` are not kept. It offers the retention period and OpenSearch password already in `.env`, so pressing Enter keeps them. A new OpenSearch password is written to both files or, if you decline to update either, to neither.
 
 3. **Review configuration (optional)**
 
@@ -92,6 +107,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    ```bash
    # Key environment variables (automatically configured by setup)
    OPENSEARCH_INITIAL_ADMIN_PASSWORD=******      # Password for OpenSearch admin
+   OPENSEARCH_PASSWORD=******                    # The same password, for the librarian
    OPENSEARCH_HOSTS='["https://opensearch:9200"]'  # OpenSearch connection URL array
    bootstrap.memory_lock=true                     # Enable memory locking for OpenSearch
    node.name=${OPENSEARCH_HOST}                  # Set node name to match host
@@ -105,6 +121,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    TURKEYBITE_WORKER_PROCS=2                    # Number of worker processes
    TURKEYBITE_HOSTS_INTERVAL_MIN=720            # Host list refresh interval (minutes)
    TURKEYBITE_IGNORELIST_INTERVAL_MIN=5         # Ignorelist refresh interval (minutes)
+   TURKEYBITE_RETENTION_DAYS=90                 # Days before OpenSearch deletes an index, 0 keeps them
    ```
    
    **Application Configuration** in `config.yaml`:
@@ -197,8 +214,26 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    Valkey list. Workers claim a batch, sieve and enrich it, index it, and only
    then acknowledge. The list persists, so a restart resumes instead of losing
    what was in flight, `LLEN` gives you a real backlog metric, and a burst makes
-   the list grow visibly rather than disappearing. Delivery is at-least-once, so
-   a crash between indexing and acknowledging can duplicate a batch.
+   the list grow visibly rather than disappearing. A batch OpenSearch does not
+   take goes back on the list instead of being acknowledged, whether
+   `processor.elastic.bulk` is on or off: when every host refuses it, and when
+   OpenSearch asks for any document in it to be retried later, as it does with
+   a 429 when its queues are full. A document OpenSearch refuses for good, such
+   as one that conflicts with the index mapping, is logged and acknowledged,
+   since retrying it would never succeed. Delivery is at-least-once: a crash
+   between indexing and acknowledging, or a batch requeued after part of it was
+   indexed, indexes those documents again, and sends their syslog copies again.
+   A duplicate is the price of never dropping a batch.
+
+   A batch a worker had claimed when it died stays in that consumer's
+   processing list. Each worker container, as it starts, requeues what is
+   stranded in the lists of consumers named as it names its own,
+   `<TURKEYBITE_CONSUMER_PREFIX>-NN`, and in no others, so set a distinct
+   prefix per worker host. A consumer started by hand with a name of your own,
+   `turkeybite consume --consumer worker1`, recovers its own list when it
+   starts again under that name; if it never will, requeue its work with
+   `turkeybite queue-recover --consumer worker1`, or with `--all` when no
+   consumer is running anywhere.
 
    **`channel`, with `TURKEYBITE_PIPELINE=rq`.** Packetbeat PUBLISHes and the
    core subscribes. This is the original path and it is lossy by construction:
@@ -221,9 +256,170 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 
 ### Troubleshooting
 
+* Check the configuration a worker reads: `docker compose run --rm --no-deps --entrypoint python turkeybite-worker turkeybite check`. The worker and core containers run this at start and refuse to start if it fails.
 * Check container logs: `docker compose logs -f [service_name]`
 * Restart services: `docker compose restart [service_name]`
 * Verify connectivity between containers: `docker compose exec turkeybite-core ping valkey`
+
+## Security and privacy
+
+Every event TurkeyBite indexes says who looked up or visited what, so the index is a record of people's browsing. This section covers who can reach it and how it travels.
+
+### Data retention
+
+Each day's events go into an index of their own, `tb-index-YYYY-MM-DD`, where the prefix is `processor.elastic.index_prefix`. Nothing used to delete them. The librarian now keeps an OpenSearch Index State Management (ISM) policy, `turkeybite-retention`, that deletes each TurkeyBite index once it is older than `TURKEYBITE_RETENTION_DAYS`. Deleting cannot be undone, so nothing that deletes sooner than what is already in force happens without you asking for it.
+
+* **What is deleted.** Whole daily indices, with every event in them, DNS and browser history alike. Nothing else.
+* **When.** OpenSearch's own ISM job checks each index the policy manages every few minutes, 5 by default, and deletes it once it is older than the period. Its age counts from when OpenSearch created it, which for a daily index is its day. This does not depend on any TurkeyBite container running.
+* **Which indices.** The policy carries an ISM template for `<prefix>-2*`, so OpenSearch attaches it to each new daily index as it is created, and never to an index such as `tb-index-incident-4711`. Indices that existed before the policy are not attached; see below.
+* **Unset does nothing.** Without `TURKEYBITE_RETENTION_DAYS` the librarian creates, changes and removes nothing, and logs loudly at every start that retention is not configured and whether a policy is in force. `setup.sh` asks for the period, suggesting 90, and writes it to `.env`. A `docker-compose.yml` generated before this change does not pass the variable to the librarian, so add `- TURKEYBITE_RETENTION_DAYS` to the `turkeybite-librarian` service's `environment`, or run `setup.sh` again.
+* **Lengthening is applied at start.** Set the period in `.env` and recreate the librarian with `docker compose up -d turkeybite-librarian`. The librarian updates the policy and moves every index it manages onto the new version, since ISM keeps each index on the version it started with.
+* **Shortening needs confirming.** A period shorter than the one in force would delete indices that are being kept now, at ISM's next check, so the librarian refuses it at start, leaves the policy as it is, and logs how many indices it would delete and the command that confirms it. List them, then confirm with the same number:
+
+  ```bash
+  docker compose exec turkeybite-librarian python turkeybite retention --apply --confirm-days 30 --dry-run
+  docker compose exec turkeybite-librarian python turkeybite retention --apply --confirm-days 30
+  ```
+
+  A policy edited so that it deletes nothing counts as longer than any period, so replacing it needs confirming too.
+* **Keeping everything.** `0` keeps indices forever. The librarian takes the policy's template off first, so no new index is attached, then takes the policy off every index it manages, under any prefix, looks again a moment later for any index OpenSearch attached just before, and deletes the policy once none is left under it. Deleting the policy alone would not be enough: ISM gives each index it manages a copy of the policy and goes on running that copy after the policy is deleted. If any index cannot be taken off, the policy is kept, since it can still delete that index, and the librarian says so, exits with an error, and tries again at its next start. With the variable unset, the librarian's log also says if any index still holds such a copy.
+* **Getting there.** At every start the librarian also moves any index still on an older version of the policy onto the current one. If OpenSearch refuses a move, the librarian exits with an error and tries again at its next start. Its OpenSearch setup step exits with an error too when a shorter period is waiting to be confirmed or another policy conflicts, so `docker compose logs turkeybite-librarian` shows why.
+* **Your own policies win.** If another ISM policy has a template matching the same indices, `turkeybite-retention` is kept without a template, so it attaches to no new index, and the librarian logs the conflict loudly for you to settle; no template priority is set that could outrank yours. The librarian leaves alone any index another policy manages. It does rewrite `turkeybite-retention` itself whenever that differs from the period, so change the period through the variable rather than in Dashboards.
+
+**Existing indices are kept until you decide.** An upgrade does not delete history. OpenSearch attaches a policy's template only to indices created after it, and the librarian never attaches the policy to indices you already have. At every start it logs how many TurkeyBite indices the policy does not cover, and how many of those are already older than the period. To bring them under it, list them, then attach:
+
+```bash
+docker compose exec turkeybite-librarian python turkeybite retention --attach-existing --dry-run
+docker compose exec turkeybite-librarian python turkeybite retention --attach-existing
+```
+
+The second command is the one that deletes. Every index it attaches that is older than the period is gone within minutes, and there is no undo, so take a snapshot first if you may want them back. Only indices named `<prefix>-YYYY-MM-DD` that no ISM policy manages are attached, and nothing is attached while a shorter period is waiting to be confirmed.
+
+**Checking it.** In OpenSearch Dashboards, Index Management lists the policy and the indices it manages. From Dev Tools:
+
+```
+GET _plugins/_ism/policies/turkeybite-retention
+GET _plugins/_ism/explain/tb-index-*
+```
+
+The first shows the period as `min_index_age`, and its `_seq_no` is the policy's version. In the second, each index the policy manages shows `"policy_id": "turkeybite-retention"` and, once ISM has started on it, the version it is on as `policy_seq_no`; each index no policy manages shows `"index.plugins.index_state_management.policy_id": null`. An index just attached takes a few minutes to show its state.
+
+### URLs and the raw packet
+
+A browser history event used to store the page's full URL twice, in `bite.url` and in the raw Browserbeat packet under `packet`, which also breaks it into parts in `url_data`. A full URL says far more than where someone went: the search terms in a query string, session tokens, password reset links, email addresses, and now and then a user name and password. Categorising a visit needs only its host. `processor.privacy` in `config.yaml` decides how much is kept:
+
+```yaml
+processor:
+  privacy:
+    urls: trimmed   # full, trimmed or host
+    packet: keep    # keep or none
+```
+
+| `urls` | What every URL the event stores keeps, in `bite` and in `packet` alike |
+|---|---|
+| `full` | All of it, as the browser recorded it, which is what events held before this setting existed. |
+| `trimmed` | The default. Scheme, host, port and path; the query string, the fragment and any `user:password@` are dropped, so `https://alice:pw@www.google.com/search?q=flu#top` is stored as `https://www.google.com/search`. |
+| `host` | Scheme, host and port only, `https://www.google.com`. |
+
+In `url_data` the same parts are blanked, as Go writes a URL without them: `RawQuery`, `Fragment` and `RawFragment` empty, `ForceQuery` false and `User` null, and with `host` also `Path`, `RawPath` and `Opaque`.
+
+A string counts as a URL when it starts, after any leading whitespace, with `http:` or `https:` in any case, or with another scheme followed by `//`, possibly inside a wrapper such as `view-source:`. Trimming fails closed: such a string is always cut at its first `?` or `#` and loses everything up to the last `@` of its host, so a space, a tab or a no-break space in it cannot carry the query through. Every other string, a hostname, a DNS record that is not a URL, or a sentence that mentions a URL part way through, is left exactly as it arrived. A browser history event is searched for URLs throughout. A DNS event has none in its own fields, so only the data of its resource records is looked at, where a TXT record can hold one.
+
+`packet: none` leaves the raw packet off the event altogether, which is the only way to drop what it holds that is not a URL. The page title is the one to know about: `trimmed` keeps it whole, and for a search results page it is usually the search, as in `flu symptoms - Google Search`. What TurkeyBite derives from the packet is already in `bite`, but a dashboard or saved search of your own that reads `packet` fields will find them gone. DNS events carry no URLs, so for them only `packet: none` changes anything.
+
+OpenSearch and syslog are sent the same trimmed event, since the settings are applied where an event leaves the worker, and the per-event `Queued` and `Dropped` log lines trim URLs the same way. Unknown keys or values stop the worker at start.
+
+Before an event is indexed it waits in Valkey, and how long depends on the pipeline:
+
+* **`rq`.** The core trims each event's URLs as these settings say before it queues the event as a job, so Valkey never holds the full URL; the worker needs only the host. A job that fails is kept with its event for 24 hours, where RQ would keep it for a year, so it can still be looked at and requeued the next day.
+* **`consume`.** The beats push their events into Valkey as they are, so the full event waits there from when it arrives until a worker has indexed it and acknowledged it, normally under a second. It waits longer when OpenSearch is unreachable, since a batch that cannot be indexed is put back, and Valkey's periodic snapshot to disk can include whatever is waiting at that moment.
+
+These settings apply from the next event. **Indices already written keep the full URLs and packets they hold** until they are deleted, by the retention policy or by hand.
+
+### Changing the OpenSearch admin password
+
+`Changeit12345!` was the OpenSearch admin password in `setup.py`, `example.env` and `config.example.yaml`, so anyone who has read this repository knows it, and the admin account can read and delete every event. The core and the workers refuse to start when a host in `processor.elastic.hosts` uses it, and the librarian refuses to set up OpenSearch when `OPENSEARCH_PASSWORD` is it. `setup.sh` no longer offers it: it generates a password when you press Enter, and refuses the old one if you type it. When it sets a new password it writes it to `.env` and `config.yaml` together, and abandons the change if you decline to update either; it does not change the password inside a running OpenSearch, so it reminds you to do that as below.
+
+OpenSearch reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` only when its data volume is new, so on a cluster that already holds data, changing `.env` is not enough: change the password in OpenSearch itself, then everywhere TurkeyBite reads it. These steps were checked against `opensearchproject/opensearch:3` (3.9.0) with its demo security configuration:
+
+1. Choose a password of at least 8 characters with upper and lower case letters, a digit and a symbol, using only the symbols `- _ . + = , % @ : ^ !`. OpenSearch also scores it for strength and refuses one it finds weak. Others can break `.env` or the healthcheck below.
+
+2. Set it in the running cluster. The demo `admin` user is reserved, so it cannot change its own password through the API; the demo admin certificate, which is inside the container, can:
+
+   ```bash
+   NEW='your-new-password'
+   docker compose exec -e NEW="$NEW" opensearch sh -c 'cd /usr/share/opensearch/config && curl -sS --cacert root-ca.pem --cert kirk.pem --key kirk-key.pem -X PATCH https://localhost:9200/_plugins/_security/api/internalusers/admin -H "Content-Type: application/json" -d "[{\"op\":\"add\",\"path\":\"/password\",\"value\":\"$NEW\"}]"'
+   ```
+
+   It answers `{"status":"OK","message":"'admin' updated."}`, or `Weak password` if OpenSearch wants a stronger one. The change is stored in the data volume, so it survives the container being recreated. If you have replaced the demo certificates, use your own admin certificate.
+
+3. In `.env`, set both `OPENSEARCH_INITIAL_ADMIN_PASSWORD` and `OPENSEARCH_PASSWORD` to the new password. The opensearch healthcheck logs in with `OPENSEARCH_INITIAL_ADMIN_PASSWORD`, so leaving the old one there marks OpenSearch unhealthy, and the services that wait for it never start.
+
+4. In `config.yaml`, set the `password` of each host under `processor.elastic.hosts`.
+
+5. Recreate the containers so they read the new values: `docker compose up -d --build`. OpenSearch Dashboards takes the new password at its next login.
+
+In a distributed deployment, do step 2 on the search node and steps 3 to 5 on every node.
+
+`TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes` lets the core, the workers and the librarian use the default anyway, with a warning. It is for a disposable test install that holds no real traffic, never for a deployment that does. Only the exact value `yes` counts.
+
+### Verifying OpenSearch's certificate
+
+The workers and the librarian connect to OpenSearch over https without checking its certificate unless told to. That default is kept because the bundled OpenSearch serves its security plugin's demo certificates, which nothing trusts out of the box, so turning verification on for everyone would stop existing installs shipping. It is no longer silent: each worker process logs one warning at start for every https host it will use unverified, and the librarian logs one when it falls back to `curl --insecure`.
+
+Each entry in `processor.elastic.hosts` takes two settings:
+
+| Setting | Meaning |
+|---|---|
+| `verify_certs` | `true` checks the host's certificate and its name. Default `false`. |
+| `ca_certs` | The CA to check it against, as a path inside the container. Without it the system's trusted CAs are used, which suits a cluster with a publicly trusted certificate. It has no effect unless `verify_certs` is `true`. |
+
+The librarian reads `OPENSEARCH_CA_CERT`, a path inside its own container, and checks against it with `curl --cacert`. A `ca_certs` or `OPENSEARCH_CA_CERT` that is not a file stops the process at start.
+
+**Know what verifying the bundled cluster proves.** The demo certificates are the same in every OpenSearch install, and the node's private key ships with them, so a server presenting the demo certificate proves only that it holds a key anyone can download. Verifying against the demo CA catches a connection that reaches the wrong server by mistake. It does not stop an attacker on the network. For that, replace the demo certificates with your own, as OpenSearch's [guide to generating self-signed certificates](https://docs.opensearch.org/latest/security/configuration/generate-certificates/) describes, and follow the steps below with your CA and your node's name.
+
+To turn verification on with the bundled cluster (checked against `opensearchproject/opensearch:3`, version 3.9.0):
+
+1. Copy the CA out. The demo installer writes it when the container first starts, so it is in the running container rather than the image:
+
+   ```bash
+   docker compose cp opensearch:/usr/share/opensearch/config/root-ca.pem vols/secrets/opensearch-root-ca.pem
+   ```
+
+2. The demo certificate is issued to `node-0.example.com` and `localhost`, not `opensearch`, so a verified connection to `https://opensearch:9200` fails the name check. Give the opensearch service that name on the Docker network, in `docker-compose.yml`:
+
+   ```yaml
+     opensearch:
+       networks:
+         tb-net:
+           aliases:
+             - node-0.example.com
+   ```
+
+3. Mount the CA into the worker, the core and the librarian, under each service's `volumes`:
+
+   ```yaml
+         - ./vols/secrets/opensearch-root-ca.pem:/turkey-bite/opensearch-root-ca.pem:ro
+   ```
+
+   The core never talks to OpenSearch, but it checks the settings that travel with every job it queues, so it needs the file too. Both containers run `python turkeybite check` before they start, and stop with `CONFIGURATION ERROR` in their log if the file is not where `ca_certs` says. If a host still cannot be used when an event is shipped, because the core's `config.yaml` names a CA the worker's container lacks for instance, the worker logs that once rather than once per event, and no event reaches that host until it is fixed.
+
+4. In `config.yaml`:
+
+   ```yaml
+       hosts:
+         - uri: https://node-0.example.com:9200
+           username: admin
+           password: your-admin-password
+           verify_certs: true
+           ca_certs: /turkey-bite/opensearch-root-ca.pem
+   ```
+
+5. In the `turkeybite-librarian` service's `environment` in `docker-compose.yml`, add `- OPENSEARCH_CA_CERT=/turkey-bite/opensearch-root-ca.pem` and change `- OPENSEARCH_HOST` to `- OPENSEARCH_HOST=node-0.example.com`. Set the host there and not in `.env`, because the opensearch service takes its container name from `OPENSEARCH_HOST`.
+
+6. Recreate the containers with `docker compose up -d`. A worker that verifies logs no warning, and the librarian logs `Verifying OpenSearch's certificate against /turkey-bite/opensearch-root-ca.pem`.
+
+On a separate search node, workers connect by the node's own name, which the demo certificate does not carry, so a distributed deployment needs its own certificates. OpenSearch Dashboards has its own setting for this and is not covered here. The opensearch container's own healthcheck talks to `localhost` inside the container and is left as it is.
 
 ## How traffic is categorised
 
@@ -242,14 +438,45 @@ Every category comes from a domain list, and every list is wrong about something
 | `derived_from` | Publishers whose lists this one copies. A copy never corroborates its original. |
 | `match` | For plain domain lists only: `exact` if a line names one host, `subtree` if it covers subdomains. Default `exact`. |
 
-The number of independent publishers a `medium` category needs is `processor.evidence.min_publishers` in `config.yaml`, 2 by default. Events carry:
+A list file that `host_files.json` does not mention, other than your own `turkeybite` and `custom` lists, is read at `low` trust: recorded on events, never believed. That is usually a download whose entry has since been removed, since the file stays on disk. Block List Project's thirteen lists were removed from `host_files.example.json` because they never decided a category, cost half of every download and more than half of the index, and had stopped updating; if you used them, their `blocklistproject-*` files are still under `vols/lists` and you can delete them. The librarian names every such file each time it builds the index.
+
+Sources agree when their categories mean the same thing, which is decided by the taxonomy behind `bite.purpose`, `bite.service` and `bite.risk` rather than by spelling. StevenBlack's `fake-news` and the local list's `fakenews` corroborate each other, as do `signal` and `whispersystems`. A vendor category says two things, `steam` that the host is Steam and that it is a game storefront, and is believed only when both are supported: a list saying `steam` and another saying `epicgames` agree on the second and not the first, so neither is asserted. Events keep the categories as the lists spelled them.
+
+The number of independent publishers a `medium` category needs is `processor.evidence.min_publishers` in `config.yaml`, 2 by default. It can also be set per taxonomy branch or path, the names `bite.purpose` and `bite.risk` use, as in `{default: 2, threat: 1}`. The most specific key wins. Keys are taxonomy paths rather than category names so that every spelling of one judgement gets the same bar; a key the taxonomy does not know stops the worker at start. Lowering the bar brings false positives back: `threat: 1` takes the Tranco top 10,000 domains carrying a threat category from 5 to 57. Events carry:
 
 * `bite.contexts` the categories the evidence supports, which the facets are built from
 * `bite.contexts_candidate` categories some list claimed without enough support
-* `bite.contexts_suppressed` categories your ignorelist cancelled
+* `bite.contexts_suppressed` categories your ignorelist cancelled, matched through the taxonomy so a correction covers every spelling
 * `bite.claims` which list said what, as `category:list`
+* `bite.incidental` true when the name looked up is marked incidental, see below
+
+Whole categories can be switched off with `processor.evidence.disabled_categories`, a list of taxonomy branches or paths, without deleting the lists that carry them. A disabled category is dropped before anything is weighed, so it appears nowhere on the event, including `bite.claims` and `bite.contexts_suppressed`: the usual reason to switch one off is that its label should not be stored against the people whose traffic it matches. Unlike the rest of this section this holds in every lookup mode, `valkey` and `compare` included, since a switch that worked in one mode only would still store the label in the others.
+
+The `editorial` branch is off by default. It covers the `fakenews`, `fascist` and `zionist` lists and StevenBlack's `fake-news`, which label news and opinion sites by viewpoint, and leaving the key out of `config.yaml` means `[editorial]`. A list you write replaces the default rather than adding to it, so `disabled_categories: []` switches the editorial lists back on, as does the key with every entry under it commented out, and `[editorial, adult.gambling]` keeps them off and gambling too. `turkeybite audit --disable` does the same for one run, and `--disable ""` switches nothing off.
 
 A new index format carries this, so upgrading needs a rebuild. The librarian does that when it starts, or run `python turkeybite index`.
+
+### Incidental lookups
+
+A DNS lookup is not always a choice. A news article with a Facebook pixel makes the browser look up `connect.facebook.net`; Windows looks up `msftconnecttest.com` whenever it joins a network; signing in to Gmail visits `accounts.youtube.com`. None of those says the person used Facebook or YouTube. The curated list [`vols/lists/incidental/turkeybite`](vols/lists/incidental/turkeybite) names hosts like these: social plugins, pixels and embedded players that other sites load, connectivity checks, and sign-in endpoints. It only names hosts that are looked up mostly on someone else's behalf and that are not the service's own site, so `www.youtube.com` is not on it and `youtube-nocookie.com`, which exists only for embeds, is.
+
+On a marked host the categories that say what a host is for or whose service it is, those under `bite.purpose` and `bite.service`, become candidates, and the event carries `bite.incidental: true`. A category stays asserted only if everything it says is a risk: the pixel tracks the person whether or not they use Facebook. A vendor category such as `expressvpn`, which names a service as well as a risk, is demoted, since keeping it would put the service back on the event. The mark reaches the CNAME chain too. `connect.facebook.net` is hosted on `scontent.xx.fbcdn.net`, which every Facebook list names, so what the chain contributes to a marked name is demoted the same way; and a name whose chain passes through a marked host gets no purpose or service from that chain, though its own categories stand. It applies to DNS lookups only. A browser history entry is a page someone opened, which is deliberate whatever its host is otherwise looked up for, so history events are never marked. Like everything in this section it needs `index` mode: the `valkey` loader skips the list. To lift the mark from a host, add it under `incidental` in your [ignorelist](vols/lists/ignorelist.md).
+
+### Asking public resolvers for a second opinion
+
+Threat lists rarely agree with each other, so most real threats stop at `bite.contexts_candidate`: one list names them and no second publisher does. Quad9 and Cloudflare run filtering resolvers on commercial threat intelligence, maintained daily and independent of the community lists. With `processor.evidence.resolvers.enable`, a host one list already flags is checked against them, and a block counts as one more independent publisher agreeing.
+
+* **When it asks.** Only for a name looked up whose verdict holds a candidate a `medium` trust list claims: `malicious` goes to Quad9 (`9.9.9.9`), then to Cloudflare (`1.1.1.2`) if Quad9 did not settle it. A name the lists say nothing about, or one they or an earlier resolver already settle, is never sent. In `index` mode only, for DNS lookups only, not browser history, and only the name asked for, not its CNAME targets.
+* **What counts as a block.** Only the exact shape measured from each provider: Quad9's NXDOMAIN carrying Extended DNS Error 17, Cloudflare's `0.0.0.0` carrying EDE 16. A name genuinely published as `0.0.0.0`, or a block from a box on your own network that intercepts port 53, such as Pi-hole or AdGuard, does not have that shape and is not a vote. A block is then confirmed against the provider's unfiltered resolver, `9.9.9.10` or `1.1.1.1`: a name blocked there too was blocked for some other reason, such as a court order or an intercepting box, and is reported as `censored` rather than counted.
+* **What it can do.** Corroborate, never assert. A block is a vote for the generic `malicious` from a `medium` source whose publisher is `quad9` or `cloudflare`, weighed under the usual rules, so it settles a list's `malicious` but not a specific `phishing`. Two resolvers never count without a list, and Cloudflare's resolvers are one publisher.
+* **Adult content.** `resolvers.adult: true` also asks Cloudflare's family resolver (`1.1.1.3`) about `porn` candidates, counting its EDE 17 block as a `porn` vote. It is off by default: in testing about 1 in 20 of the porn votes it produced were wrong, because Cloudflare's family filter also covers torrent indexes, pirate streaming and gore.
+* **What it sends, and to whom.** Domain names, never client addresses, to Quad9 (a Swiss foundation) and Cloudflare (a US company), under their own privacy policies, including one extra question to the unfiltered resolver when there is a block to confirm. The query comes from the worker, so they see the worker's address.
+* **What it needs.** Outbound UDP and TCP port 53 from every worker to `9.9.9.9`, `9.9.9.10`, `1.1.1.1` and `1.1.1.2`, plus `1.1.1.3` with `adult`, or the addresses you configure.
+* **What a blocked or slow path costs.** A lookup waits at most `timeout_sec`, 0.5 s by default, in all, however many resolvers it asks. A resolver that fails three times in a row is not asked for `backoff_sec`, 60 s by default, doubling while it stays down up to 15 minutes, so a firewalled path costs a few timeouts and then nothing. Both last as long as the worker process: with the `consume` pipeline that is the life of the worker, but under the forking `rq.Worker` a process handles one event, so nothing is remembered and every qualifying lookup can wait the full `timeout_sec`.
+* **How much it sends.** Little. Weighting the Tranco top 100,000 by popularity, about 0.9% of lookups are of a name that qualifies, which is about 12 resolver queries per 1,000 events before caching. Each worker process remembers settled answers for an hour, which in a simulation of that traffic saves about 40% of queries at 100,000 events an hour and about 75% at a million. In testing, `1.1.1.3` stopped answering this tester after about 3,000 queries in 20 minutes while `1.0.0.3` kept answering, so a busy deployment may want the secondary addresses (`1.0.0.2`, `1.0.0.3`, `149.112.112.112`).
+* **What events carry.** A vote appears in `bite.claims` as `malicious:quad9`, `malicious:cloudflare-security` or `porn:cloudflare-family`, and `bite.resolvers` says what each resolver asked answered: `blocked`, `clear`, `nxdomain`, `censored`, `security` (1.1.1.3 blocked it as a threat, not as adult content), a failure such as `timeout`, `servfail` or `error`, or `unavailable` (backed off) and `deadline` (the lookup's time was spent), which were not asked at all. A vote never appears in `bite.matched_on`, which names index entries only. Settled answers are remembered for an hour per worker process, failures never.
+
+To try it before enabling it, `turkeybite audit lists/top-1m.csv --resolvers` runs the same code, at most 20 queries a second, and `--adult-vote` adds the family resolver. The report ends with what the resolvers said, and says so plainly if questions went unanswered, so a firewalled path is not mistaken for resolvers that disagree with the lists.
 
 ### Finding false positives
 
@@ -264,3 +491,5 @@ docker compose exec turkeybite-worker python turkeybite audit lists/top-1m.csv -
 `vols/lists` is mounted into the worker as `lists`. A file directly inside it is not read as a domain list; only files in its subdirectories are.
 
 Popular is not the same as harmless, so read the report rather than trusting it: popular sites really are social networks, and some really are adult. A threat category on a top 10,000 domain is a different matter, and the report names the lists behind every one. Then either correct the host in the [ignorelist](vols/lists/ignorelist.md), or, if one list keeps appearing, lower its `trust`.
+
+Corroboration is only worth something between independent lists, and `derived_from` is the only record of which lists copy which. `turkeybite overlap` reads the index and reports every pair of lists where one holds at least half of the other's names, marking with `!` the pairs that are weighed as independent although their agreement may be one opinion counted twice. It also measures each declared `derived_from` against the lists it names. A heavy overlap is a reason to read the publishers' documentation, not proof of copying: two good lists of popular gambling sites will overlap because there are only so many popular gambling sites.

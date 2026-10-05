@@ -25,14 +25,6 @@
         "trust": "medium"
     },
     {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/porn-nl.txt",
-        "categories": ["porn"],
-        "file": "lists/porn/blocklistproject-porn-nl",
-        "name": "blocklistproject-porn-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
         "url": "https://raw.githubusercontent.com/tiuxo/hosts/master/porn",
         "categories": ["porn"],
         "file": "lists/porn/tiuxo-porn",
@@ -68,28 +60,12 @@
         "trust": "medium"
     },
     {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/piracy-nl.txt",
-        "categories": ["piracy"],
-        "file": "lists/piracy/blocklistproject-piracy-nl",
-        "name": "blocklistproject-piracy-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/torrent-nl.txt",
-        "categories": ["piracy", "torrent"],
-        "file": "lists/piracy/blocklistproject-torrent-nl",
-        "name": "blocklistproject-torrent-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
         "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/torrent-websites",
         "categories": ["piracy", "torrent"],
         "file": "lists/piracy/nextdns-torrent-websites",
         "name": "nextdns-torrent-websites",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
     {
@@ -98,7 +74,7 @@
         "file": "lists/piracy/nextdns-torrent-trackers",
         "name": "nextdns-torrent-trackers",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
     {
@@ -107,7 +83,7 @@
         "file": "lists/piracy/nextdns-torrent-clients",
         "name": "nextdns-torrent-clients",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
 
@@ -254,15 +230,6 @@
     },
 
     {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/drugs-nl.txt",
-        "categories": ["drugs"],
-        "file": "lists/drugs/blocklistproject-drugs-nl",
-        "name": "blocklistproject-drugs-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-
-    {
         "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/gambling-only/hosts",
         "categories": ["gambling"],
         "file": "lists/gambling/StevenBlack-gambling-only",
@@ -277,25 +244,41 @@
         "file": "lists/gambling/hagezi-gambling",
         "name": "hagezi-gambling",
         "publisher": "hagezi",
-        "derived_from": ["ut1", "ShadowWhisperer", "bigdargon"],
+        "derived_from": ["ut1", "ShadowWhisperer", "bigdargon", "sinfonietta"],
         "trust": "medium"
     },
     {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/gambling-nl.txt",
+        "url": "https://raw.githubusercontent.com/PheeLeep/Barikada/main/anti_scatter.txt",
         "categories": ["gambling"],
-        "file": "lists/gambling/blocklistproject-gambling-nl",
-        "name": "blocklistproject-gambling-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
+        "file": "lists/gambling/PheeLeep-barikada",
+        "name": "PheeLeep-barikada",
+        "publisher": "PheeLeep",
+        "trust": "medium"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/dancharlton9/gambling-blocklist/main/lists/blocklist-adguard.txt",
+        "categories": ["gambling"],
+        "file": "lists/gambling/dancharlton9-non-gamstop",
+        "name": "dancharlton9-non-gamstop",
+        "publisher": "dancharlton9",
+        "trust": "medium"
     },
 
     {
-        "url": "https://raw.githubusercontent.com/IREK-szef/games-blocklist/main/lists/Adblock-dns/games.txt",
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/games/domains",
         "categories": ["games"],
-        "file": "lists/games/IREK-szef-games",
-        "name": "IREK-szef-games",
-        "publisher": "IREK-szef",
-        "derived_from": ["ut1"],
+        "file": "lists/games/olbat-games",
+        "name": "olbat-games",
+        "publisher": "ut1",
+        "trust": "medium",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/dkorunic/browser-games-blocklist/main/hosts.txt",
+        "categories": ["games"],
+        "file": "lists/games/dkorunic-browser-games",
+        "name": "dkorunic-browser-games",
+        "publisher": "dkorunic",
         "trust": "medium"
     },
     {
@@ -507,20 +490,20 @@
     },
     {
         "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/streaming-video",
-        "categories": ["streaming", "streaming-video"],
+        "categories": ["streaming", "streaming-video", "piracy"],
         "file": "lists/streaming/nextdns-streaming-video",
         "name": "nextdns-streaming-video",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
     {
         "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/streaming-audio",
-        "categories": ["streaming", "streaming-audio"],
+        "categories": ["streaming", "streaming-audio", "piracy"],
         "file": "lists/streaming/nextdns-streaming-audio",
         "name": "nextdns-streaming-audio",
         "publisher": "nextdns",
-        "trust": "high",
+        "trust": "medium",
         "match": "subtree"
     },
 
@@ -541,30 +524,6 @@
         "publisher": "hagezi",
         "derived_from": ["phishing.army", "DandelionSprout", "ut1", "ShadowWhisperer", "bigdargon"],
         "trust": "medium"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/fraud-nl.txt",
-        "categories": ["malicious", "fraud"],
-        "file": "lists/malicious/blocklistproject-fraud-nl",
-        "name": "blocklistproject-fraud-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/ransomware-nl.txt",
-        "categories": ["malicious", "ransomware"],
-        "file": "lists/malicious/blocklistproject-ransomware-nl",
-        "name": "blocklistproject-ransomware-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/scam-nl.txt",
-        "categories": ["malicious", "scam"],
-        "file": "lists/malicious/blocklistproject-scam-nl",
-        "name": "blocklistproject-scam-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
     },
     {
         "url": "https://phishing.army/download/phishing_army_blocklist_extended.txt",
@@ -592,35 +551,11 @@
     },
     {
         "url": "https://v.firebog.net/hosts/Prigent-Crypto.txt",
-        "categories": ["malicious", "crypto"],
+        "categories": ["crypto"],
         "file": "lists/malicious/Prigent-Crypto",
         "name": "Prigent-malicious-crypto",
         "publisher": "ut1",
         "trust": "medium"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/crypto-nl.txt",
-        "categories": ["malicious", "crypto"],
-        "file": "lists/malicious/blocklistproject-crypto-nl",
-        "name": "blocklistproject-crypto-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/malware-nl.txt",
-        "categories": ["malicious", "malware"],
-        "file": "lists/malicious/blocklistproject-malware-nl",
-        "name": "blocklistproject-malware-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/phishing-nl.txt",
-        "categories": ["malicious", "phishing"],
-        "file": "lists/malicious/blocklistproject-phishing-nl",
-        "name": "blocklistproject-phishing-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
     },
     {
         "url": "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Risk/hosts",
@@ -636,7 +571,7 @@
         "file": "lists/malicious/RPiList-Malware",
         "name": "RPiList-malicious",
         "publisher": "RPiList",
-        "derived_from": ["phishing.army"],
+        "derived_from": ["phishing.army", "ut1"],
         "trust": "medium"
     },
     {
@@ -673,14 +608,6 @@
         "trust": "high"
     },
     {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/tracking-nl.txt",
-        "categories": ["tracking"],
-        "file": "lists/tracking/blocklistproject-tracking-nl",
-        "name": "blocklistproject-tracking-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
         "url": "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt",
         "categories": ["tracking", "windows-tracking"],
         "file": "lists/tracking/WindowsSpyBlocker",
@@ -706,14 +633,6 @@
     },
 
     {
-        "url": "https://blocklistproject.github.io/Lists/alt-version/ads-nl.txt",
-        "categories": ["advertising"],
-        "file": "lists/advertising/blocklistproject-ads-nl",
-        "name": "blocklistproject-ads-nl",
-        "publisher": "blocklistproject",
-        "trust": "low"
-    },
-    {
         "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/popupads.txt",
         "categories": ["advertising"],
         "file": "lists/advertising/hagezi-popupads",
@@ -728,7 +647,7 @@
         "file": "lists/advertising/AdAway",
         "name": "advertising-AdAway",
         "publisher": "AdAway",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://v.firebog.net/hosts/AdguardDNS.txt",
@@ -743,7 +662,7 @@
         "categories": ["advertising"],
         "file": "lists/advertising/Admiral",
         "name": "advertising-Admiral",
-        "publisher": "jdlingyu",
+        "publisher": "LanikSJ",
         "trust": "high"
     },
     {

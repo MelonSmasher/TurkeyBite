@@ -11,6 +11,7 @@ It generates appropriate docker-compose.yml and configuration files based on use
 """
 
 import os
+import re
 import sys
 import yaml
 import getpass
@@ -19,6 +20,84 @@ import secrets
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
+
+# The OpenSearch admin password TurkeyBite used to ship with. Anyone who has read
+# this repository knows it, and the admin account can read and delete every
+# event, so the workers and the librarian refuse it and so does this script.
+DEFAULT_OPENSEARCH_PASSWORD = "Changeit12345!"
+
+# The symbols a new OpenSearch password may use. Each survives unquoted in .env,
+# where docker compose would expand $ and cut at #, and in the opensearch
+# healthcheck, which compose pastes into an unquoted shell command, where & ; |
+# ( ) < > * ? and quotes would break it and leave OpenSearch marked unhealthy.
+OPENSEARCH_PASSWORD_SYMBOLS = "-_.+=,%@:^!"
+
+
+def opensearch_password_problem(password: str) -> Optional[str]:
+    """Why a new OpenSearch admin password would be refused, or None.
+
+    OpenSearch 2.12 and later refuse an initial admin password without eight
+    characters, upper and lower case letters, a digit and a symbol, and then
+    score what is left for strength. This checks the rules it states; the
+    strength score it can only check itself.
+    """
+    if password.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+        return (f"{DEFAULT_OPENSEARCH_PASSWORD} is the password TurkeyBite used to ship "
+                "with, which anyone can look up. Choose another.")
+    if len(password) < 8:
+        return "The password must be at least 8 characters long."
+    if not (any(c.isupper() for c in password) and any(c.islower() for c in password)
+            and any(c.isdigit() for c in password)):
+        return "The password must contain an uppercase letter, a lowercase letter and a digit."
+    others = set(c for c in password if not c.isalnum())
+    if not others:
+        return f"The password must contain one of these symbols: {OPENSEARCH_PASSWORD_SYMBOLS}"
+    unusable = others - set(OPENSEARCH_PASSWORD_SYMBOLS)
+    if unusable:
+        return (f"The password cannot contain {''.join(sorted(unusable))!r}, which .env or "
+                f"the OpenSearch healthcheck would change. Use these symbols: "
+                f"{OPENSEARCH_PASSWORD_SYMBOLS}")
+    return None
+
+
+def generate_opensearch_password(length: int = 32) -> str:
+    """A random OpenSearch admin password that meets its rules.
+
+    One character from each class OpenSearch requires, the rest from all of
+    them, shuffled so the classes do not sit in a predictable order.
+    """
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    upper = lower.upper()
+    digits = "0123456789"
+    every = lower + upper + digits + OPENSEARCH_PASSWORD_SYMBOLS
+    chars = [secrets.choice(lower), secrets.choice(upper), secrets.choice(digits),
+             secrets.choice(OPENSEARCH_PASSWORD_SYMBOLS)]
+    chars += [secrets.choice(every) for _ in range(length - len(chars))]
+    secrets.SystemRandom().shuffle(chars)
+    return ''.join(chars)
+
+
+# Days OpenSearch keeps each daily index, unless the operator says otherwise.
+# The same as libtb.retention.SUGGESTED_DAYS, which a test checks. Only a
+# suggestion: the librarian does nothing while the variable is unset.
+DEFAULT_RETENTION_DAYS = 90
+
+
+def retention_days_problem(answer: str) -> Optional[str]:
+    """Why an answer to the retention prompt is refused, or None"""
+    if not re.fullmatch(r"[0-9]+", answer.strip()):
+        return "Enter a whole number of days, or 0 to keep indices forever."
+    return None
+
+
+def section(data: Dict, *keys: str) -> Dict:
+    """The nested mapping at keys in data, created where missing"""
+    for key in keys:
+        if not isinstance(data.get(key), dict):
+            data[key] = {}
+        data = data[key]
+    return data
+
 
 # Custom YAML representer for None values in volume definitions
 def represent_none(self, _):
@@ -49,7 +128,13 @@ class TurkeyBiteSetup:
         self.deployment_type = ""
         self.valkey_host = "valkey"
         self.opensearch_host = "opensearch"
-        self.opensearch_admin_password = "Changeit12345!"  # Default OpenSearch admin password
+        # Chosen or generated in setup_opensearch_password; there is no default
+        self.opensearch_admin_password = None
+        self.retention_days = DEFAULT_RETENTION_DAYS
+        # Whether an existing config.yaml and .env may be updated, asked once
+        # before either is written, see decide_updates
+        self.update_config = True
+        self.update_env = True
         self.enable_dns_lookups = False
         self.dns_resolver = "172.172.0.100"  # Default resolver (Bind9 container)
         self.use_opensearch = True  # Default to using OpenSearch
@@ -209,67 +294,72 @@ class TurkeyBiteSetup:
         return password
 
     def setup_config(self):
-        """Set up the configuration file"""
+        """Set up the configuration file.
+
+        A new config.yaml starts from the example. An existing one starts from
+        itself, so a rerun changes only the settings this script asks about and
+        keeps everything else an operator set, such as processor.privacy or a
+        host's verify_certs and ca_certs. Comments do not survive the rewrite.
+        """
         # Skip config creation if no TurkeyBite components are present
-        if not any(comp in self.components for comp in ['core', 'librarian', 'worker']):
+        if not self.runs_app():
             self.print_info("No TurkeyBite application components selected, skipping config.yaml creation.")
             return
-        
+
         example_config = self.support_dir / "config.example.yaml"
         target_config = self.base_dir / self.config_file
-        
+
         if target_config.exists():
-            self.print_step(f"Configuration file {self.config_file} exists.")
-            if not self.prompt_yes_no("Do you want to update it?", default=False):
+            if not self.update_config:
                 return
-        
-        # Copy and modify the config
-        config_data = self.load_yaml(example_config)
-        
+            config_data = self.load_yaml(target_config) or {}
+        else:
+            config_data = self.load_yaml(example_config)
+
         # Update Redis/Valkey connection settings
-        config_data['redis']['host'] = self.valkey_host
-        
+        section(config_data, 'redis')['host'] = self.valkey_host
+
         # Update DNS lookup settings
-        config_data['processor']['dns']['lookup_ips'] = self.enable_dns_lookups
+        dns = section(config_data, 'processor', 'dns')
+        dns['lookup_ips'] = self.enable_dns_lookups
         if self.enable_dns_lookups:
             # Set the resolver to either the bind container IP or user-provided IP
-            config_data['processor']['dns']['resolvers'] = [self.dns_resolver]
-        
+            dns['resolvers'] = [self.dns_resolver]
+
         # Update output settings
         # OpenSearch
-        config_data['processor']['elastic']['enable'] = self.use_opensearch
+        elastic = section(config_data, 'processor', 'elastic')
+        elastic['enable'] = self.use_opensearch
         if self.use_opensearch:
-            # Update OpenSearch connection details with admin password and host
             # Always use HTTPS for OpenSearch connections
             opensearch_uri = f"https://{self.opensearch_host}:9200"
-            
-            # Reset hosts array if needed for distributed deployments
-            if self.is_distributed and self.opensearch_host != "opensearch":
-                config_data['processor']['elastic']['hosts'] = [
-                    {
-                        "uri": opensearch_uri,
-                        "username": "admin",
-                        "password": self.opensearch_admin_password
-                    }
-                ]
-            else:
-                # Update existing hosts with password and possibly URI
-                for i, host in enumerate(config_data['processor']['elastic']['hosts']):
-                    if isinstance(host, dict) and 'uri' in host and 'username' in host and 'password' in host:
-                        config_data['processor']['elastic']['hosts'][i]['password'] = self.opensearch_admin_password
-                        if self.opensearch_host != "opensearch":
-                            config_data['processor']['elastic']['hosts'][i]['uri'] = opensearch_uri
-        
+            hosts = [h for h in (elastic.get('hosts') or []) if isinstance(h, dict)]
+            if not hosts:
+                hosts = [{"uri": opensearch_uri, "username": "admin"}]
+            elif self.opensearch_host != "opensearch":
+                if len(hosts) == 1:
+                    hosts[0]['uri'] = opensearch_uri
+                else:
+                    self.print_info(f"{self.config_file} lists {len(hosts)} OpenSearch hosts; "
+                                    "their addresses are left as they are.")
+            for host in hosts:
+                # Every host is the same cluster, so has the same admin password.
+                # Anything else on the host, such as verify_certs, is kept.
+                host.setdefault('username', 'admin')
+                host['password'] = self.opensearch_admin_password
+            elastic['hosts'] = hosts
+
         # Syslog
-        config_data['processor']['syslog']['enable'] = self.use_syslog
+        syslog = section(config_data, 'processor', 'syslog')
+        syslog['enable'] = self.use_syslog
         if self.use_syslog:
-            config_data['processor']['syslog']['host'] = self.syslog_host
-            config_data['processor']['syslog']['port'] = self.syslog_port
-        
+            syslog['host'] = self.syslog_host
+            syslog['port'] = self.syslog_port
+
         # Save the updated config
         self.save_yaml(target_config, config_data)
         self.print_success(f"Configuration file {self.config_file} updated.")
-        
+
         # Show a summary of the configuration
         self.print_step("Configuration Summary:")
         print(f"  DNS Lookups: {'Enabled' if self.enable_dns_lookups else 'Disabled'}")
@@ -282,95 +372,88 @@ class TurkeyBiteSetup:
             print(f"  OpenSearch Host: {self.opensearch_host}")
         print(f"  Components: {', '.join(self.components)}")
 
-    def setup_env(self):
-        """Set up the environment file based on components being deployed"""
-        example_env = self.support_dir / "example.env"
-        target_env = self.base_dir / self.env_file
-        
-        if target_env.exists():
-            self.print_step(f"Environment file {self.env_file} exists.")
-            if not self.prompt_yes_no("Do you want to update it?", default=False):
-                return
-        
-        # Define component-specific environment variables
-        component_env_vars = {
-            # Common variables for all deployments
-            'common': [
-                "# TurkeyBite Environment Variables\n",
-                "TZ=UTC\n"
-            ],
-            # Core/librarian/worker need Valkey connection details
-            'core': [
-                f"VALKEY_HOST={self.valkey_host}\n"
-            ],
-            'librarian': [
-                "TURKEYBITE_HOSTS_INTERVAL_MIN=720\n",
-                "TURKEYBITE_IGNORELIST_INTERVAL_MIN=5\n"
-            ],
-            'worker': [
-                "TURKEYBITE_WORKER_PROCS=2\n"
-            ],
-            # Valkey specific settings
-            'valkey': [
-                "VALKEY_PORT=6379\n",
-                "VALKEY_LOGLEVEL=warning\n",
-                "VALKEY_SAVE_INTERVAL_SECONDS=60\n",
-                "VALKEY_SAVE_KEYS=1000\n"
-            ],
-            # OpenSearch specific settings
-            'opensearch': [
-                "OPENSEARCH_PORT=9200\n",
-                "OPENSEARCH_PERFORMANCE_PORT=9600\n",
-                "OPENSEARCH_DASHBOARD_PORT=5601\n",
-                f"OPENSEARCH_INITIAL_ADMIN_PASSWORD={self.opensearch_admin_password}\n",
-                f"OPENSEARCH_HOSTS='[\"https://{self.opensearch_host}:9200\"]'\n",
-                "bootstrap.memory_lock=true\n",
-                f"node.name=${{OPENSEARCH_HOST}}\n",
-                "discovery.type=single-node\n",
-                "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m\n"
-            ],
-            # Bind9 specific settings
-            'bind': [
-                "BIND9_IP=172.172.0.100\n"
-            ]
-        }
-        
-        # If using OpenSearch for output, all components need this
+    def env_settings(self) -> List[Tuple[str, str, bool]]:
+        """What .env should hold for this node, as (key, value, managed).
+
+        Managed settings come from the answers given here and are always
+        written. The rest are starting values, written only where .env does
+        not have the key yet, so a rerun keeps whatever an operator changed.
+        """
+        app = self.runs_app() and self.node_type != 'search'
+        settings = [("TZ", "UTC", False)]
         if self.use_opensearch:
-            component_env_vars['common'].append(f"OPENSEARCH_HOST={self.opensearch_host}\n")
-            component_env_vars['common'].append(f"OPENSEARCH_USERNAME=admin\n")
-            component_env_vars['common'].append(f"OPENSEARCH_PASSWORD={self.opensearch_admin_password}\n")
-        
-        # If using Syslog for output, all components need this
+            settings += [("OPENSEARCH_HOST", self.opensearch_host, True),
+                         ("OPENSEARCH_USERNAME", "admin", False),
+                         ("OPENSEARCH_PASSWORD", self.opensearch_admin_password, True)]
         if self.use_syslog:
-            component_env_vars['common'].append(f"SYSLOG_HOST={self.syslog_host}\n")
-            component_env_vars['common'].append(f"SYSLOG_PORT={self.syslog_port}\n")
-        
-        # Initialize environment variable content list
-        env_content = []
-        
-        # Determine which sections to include based on components
-        sections_to_include = ['common']
-        
-        # Include core section with Valkey connection details if we have app components,
-        # but skip for search nodes since they don't need Valkey info
-        if any(comp in self.components for comp in ['core', 'librarian', 'worker']) and self.node_type != 'search':
-            sections_to_include.append('core')
-        
-        # Add component variables for direct services
-        for component in ['librarian', 'worker', 'valkey', 'opensearch', 'bind']:
-            if component in self.components:
-                sections_to_include.append(component)
-        
-        # Add all environment variables from included sections
-        for section in sections_to_include:
-            if section in component_env_vars:
-                env_content.extend(component_env_vars[section])
-        
+            settings += [("SYSLOG_HOST", self.syslog_host, True),
+                         ("SYSLOG_PORT", str(self.syslog_port), True)]
+        # Core/librarian/worker need Valkey connection details, but search
+        # nodes do not
+        if app:
+            settings += [("VALKEY_HOST", self.valkey_host, True)]
+        if "librarian" in self.components:
+            settings += [("TURKEYBITE_HOSTS_INTERVAL_MIN", "720", False),
+                         ("TURKEYBITE_IGNORELIST_INTERVAL_MIN", "5", False)]
+            if self.use_opensearch:
+                settings += [("TURKEYBITE_RETENTION_DAYS", str(self.retention_days), True)]
+        if "worker" in self.components:
+            settings += [("TURKEYBITE_WORKER_PROCS", "2", False)]
+        if "valkey" in self.components:
+            settings += [("VALKEY_PORT", "6379", False),
+                         ("VALKEY_LOGLEVEL", "warning", False),
+                         ("VALKEY_SAVE_INTERVAL_SECONDS", "60", False),
+                         ("VALKEY_SAVE_KEYS", "1000", False)]
+        if "opensearch" in self.components:
+            settings += [("OPENSEARCH_PORT", "9200", False),
+                         ("OPENSEARCH_PERFORMANCE_PORT", "9600", False),
+                         ("OPENSEARCH_DASHBOARD_PORT", "5601", False),
+                         ("OPENSEARCH_INITIAL_ADMIN_PASSWORD", self.opensearch_admin_password, True),
+                         ("OPENSEARCH_HOSTS", f"'[\"https://{self.opensearch_host}:9200\"]'", True),
+                         ("bootstrap.memory_lock", "true", False),
+                         ("node.name", "${OPENSEARCH_HOST}", False),
+                         ("discovery.type", "single-node", False),
+                         ("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m", False)]
+        if "bind" in self.components:
+            settings += [("BIND9_IP", "172.172.0.100", False)]
+        return settings
+
+    def setup_env(self):
+        """Set up the environment file based on components being deployed.
+
+        An existing .env is edited rather than replaced: the settings this
+        script asks about are changed in place, keys it would add are added
+        only if missing, and every other line, an OPENSEARCH_CA_CERT or a
+        comment, is kept as it was.
+        """
+        target_env = self.base_dir / self.env_file
+        settings = self.env_settings()
+
+        if target_env.exists():
+            if not self.update_env:
+                return
+            with open(target_env, 'r') as f:
+                lines = f.readlines()
+        else:
+            lines = ["# TurkeyBite Environment Variables\n"]
+
+        values = {key: (value, managed) for key, value, managed in settings}
+        seen = set()
+        for i, line in enumerate(lines):
+            key = line.split('=', 1)[0].strip() if '=' in line and not line.lstrip().startswith('#') else None
+            if key in values:
+                seen.add(key)
+                value, managed = values[key]
+                if managed:
+                    lines[i] = f"{key}={value}\n"
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        lines += [f"{key}={value}\n" for key, value, _ in settings if key not in seen]
+
         # Write the updated content
         with open(target_env, 'w') as f:
-            f.writelines(env_content)
-        
+            f.writelines(lines)
+
         self.print_success(f"Environment file {self.env_file} updated.")
 
         if self.use_syslog:
@@ -695,45 +778,177 @@ class TurkeyBiteSetup:
         
         self.print_success(f"Docker Compose file {self.compose_file} created.")
 
+    def runs_app(self) -> bool:
+        """True when this node runs a TurkeyBite container, so has a config.yaml"""
+        return any(comp in self.components for comp in ['core', 'librarian', 'worker'])
+
+    def existing_password(self) -> Optional[str]:
+        """The OpenSearch admin password a previous run left, from .env or config.yaml"""
+        found = (self.existing_env_value("OPENSEARCH_PASSWORD")
+                 or self.existing_env_value("OPENSEARCH_INITIAL_ADMIN_PASSWORD"))
+        target_config = self.base_dir / self.config_file
+        if not found and target_config.exists():
+            config = self.load_yaml(target_config) or {}
+            for host in ((config.get('processor') or {}).get('elastic') or {}).get('hosts') or []:
+                if isinstance(host, dict) and host.get('password'):
+                    return str(host['password'])
+        return found
+
+    def decide_updates(self):
+        """Asks once whether an existing config.yaml and .env may be updated.
+
+        Asked before either is written, so a password can be kept from reaching
+        only one of them, see keep_password_in_step.
+        """
+        if self.runs_app() and (self.base_dir / self.config_file).exists():
+            self.print_step(f"Configuration file {self.config_file} exists.")
+            self.update_config = self.prompt_yes_no("Do you want to update it?", default=False)
+        if (self.base_dir / self.env_file).exists():
+            self.print_step(f"Environment file {self.env_file} exists.")
+            self.update_env = self.prompt_yes_no("Do you want to update it?", default=False)
+
+    def keep_password_in_step(self, previous: Optional[str]) -> bool:
+        """Stops a new OpenSearch password reaching only some of the files that hold it.
+
+        .env holds it for the librarian and for OpenSearch's first start, and
+        config.yaml for the workers. A new password written to one and not the
+        other leaves them disagreeing, so if an existing file holding it is not
+        to be updated the change is abandoned. Returns True when the password
+        is changing.
+        """
+        new = self.opensearch_admin_password
+        if new is None or previous is None or new == previous:
+            return False
+        declined = []
+        if self.use_opensearch and self.runs_app() and not self.update_config \
+                and (self.base_dir / self.config_file).exists():
+            declined.append(self.config_file)
+        if not self.update_env and (self.base_dir / self.env_file).exists():
+            declined.append(self.env_file)
+        if not declined:
+            return True
+        self.print_error(f"The new OpenSearch password would not be written to "
+                         f"{' or '.join(declined)}, which would leave the files that hold it "
+                         f"disagreeing, so it is not changed. Run setup again and update both "
+                         f"files to change it.")
+        self.opensearch_admin_password = previous
+        if previous.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+            self.print_error(f"The password stays {DEFAULT_OPENSEARCH_PASSWORD}, which the "
+                             "workers and the librarian refuse.")
+        return False
+
+    def existing_env_value(self, name: str) -> Optional[str]:
+        """A value from the .env a previous run wrote, or None"""
+        target_env = self.base_dir / self.env_file
+        if not target_env.exists():
+            return None
+        with open(target_env, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(name + "="):
+                    return line[len(name) + 1:]
+        return None
+
     def setup_opensearch_password(self):
         """Set up the OpenSearch admin password"""
         self.print_step("OpenSearch Admin Password Configuration")
-        
-        self.print_info("For security reasons, you must set an OpenSearch admin password.")
-        
-        # Custom password with validation
+        runs_opensearch = "opensearch" in self.components
+
+        # A rerun should not quietly replace the password a running cluster
+        # already uses: OpenSearch reads OPENSEARCH_INITIAL_ADMIN_PASSWORD only
+        # when its data volume is new, so a new one here would lock the workers
+        # out rather than change anything
+        existing = self.existing_password()
+        if existing and existing.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+            self.print_error(f"The existing .env uses {DEFAULT_OPENSEARCH_PASSWORD}, the password "
+                             "TurkeyBite used to ship with. The workers and the librarian now "
+                             "refuse to start with it.")
+            self.print_info("If this OpenSearch already holds data, setting a new password here "
+                            "is not enough: change it in OpenSearch too. See 'Changing the "
+                            "OpenSearch admin password' in the README.")
+        elif existing:
+            if self.prompt_yes_no("Keep the OpenSearch admin password already in .env?", default=True):
+                self.opensearch_admin_password = existing
+                return
+
+        if runs_opensearch:
+            message = ("Enter an OpenSearch admin password, or press Enter to generate one "
+                       f"(at least 8 characters with upper and lower case, a digit and one of "
+                       f"{OPENSEARCH_PASSWORD_SYMBOLS})")
+        else:
+            message = "Enter the OpenSearch admin password set on the search node"
+
         while True:
-            password = self.prompt("Enter OpenSearch admin password (min 8 chars, including uppercase, lowercase, and special character)")
-            
-            # Check if it's the default password
-            if password == "Changeit12345!":
-                if self.prompt_yes_no("Using the default password (Changeit12345!) is not recommended. Are you sure?", default=False):
-                    self.print_info("Using default password. IMPORTANT: Change this password for production use!")
-                else:
+            password = self.prompt(message)
+
+            if not password:
+                if not runs_opensearch:
+                    self.print_error("Enter the password the search node's .env sets as "
+                                     "OPENSEARCH_INITIAL_ADMIN_PASSWORD.")
                     continue
-            
-            # Perform validation
-            if len(password) < 8:
-                self.print_error("Password must be at least 8 characters long.")
+                self.opensearch_admin_password = generate_opensearch_password()
+                self.print_success("Generated an OpenSearch admin password.")
+                self.print_info("IMPORTANT: Save this password. It logs in to OpenSearch "
+                                "Dashboards as admin, and other nodes need it:")
+                print(self.opensearch_admin_password)
+                return
+
+            # A password for this node's own OpenSearch has to meet its rules. A
+            # search node elsewhere chose its own, so only the default is refused
+            problem = None
+            if runs_opensearch or password.strip() == DEFAULT_OPENSEARCH_PASSWORD:
+                problem = opensearch_password_problem(password)
+            if problem:
+                self.print_error(problem)
                 continue
-            
-            has_upper = any(c.isupper() for c in password)
-            has_lower = any(c.islower() for c in password)
-            has_special = any(not c.isalnum() for c in password)
-            
-            if not (has_upper and has_lower and has_special):
-                self.print_error("Password must contain at least one uppercase letter, one lowercase letter, and one special character.")
-                continue
-            
+
             # Confirm password
             confirm = self.prompt("Confirm password")
             if password != confirm:
                 self.print_error("Passwords do not match.")
                 continue
-            
+
             self.opensearch_admin_password = password
             self.print_success("OpenSearch admin password set successfully.")
+            if runs_opensearch:
+                self.print_info("OpenSearch also scores the password for strength and will not "
+                                "start if it finds it weak.")
             break
+
+    def setup_retention(self):
+        """Ask how long OpenSearch keeps TurkeyBite's indices.
+
+        A rerun offers the period already in .env, so pressing Enter keeps it
+        rather than putting back the suggestion for a new install.
+        """
+        self.print_step("Data Retention")
+        self.print_info("Every TurkeyBite index holds per-user browsing data. The librarian "
+                        "has OpenSearch delete each daily index once it is older than this "
+                        "many days. 0 keeps them forever. A shorter period than the one in "
+                        "force is only applied once you confirm it; see 'Data retention' in "
+                        "the README.")
+        offered = DEFAULT_RETENTION_DAYS
+        existing = self.existing_env_value("TURKEYBITE_RETENTION_DAYS")
+        if existing is not None and not retention_days_problem(existing):
+            offered = int(existing.strip())
+        while True:
+            answer = self.prompt(f"Delete indices older than how many days? "
+                                 f"(default: {offered})")
+            if not answer.strip():
+                self.retention_days = offered
+                break
+            problem = retention_days_problem(answer)
+            if problem:
+                self.print_error(problem)
+                continue
+            self.retention_days = int(answer.strip())
+            break
+        if self.retention_days == 0:
+            self.print_info("Indices will be kept forever. Set TURKEYBITE_RETENTION_DAYS in "
+                            ".env to change that.")
+        else:
+            self.print_success(f"Indices will be deleted {self.retention_days} days after "
+                               "they are created.")
 
     def prompt_for_client_lookups(self):
         """Ask if client IP lookups should be enabled"""
@@ -905,13 +1120,29 @@ class TurkeyBiteSetup:
         if self.node_type != 'search':
             self.setup_valkey()
         
-        # Setup OpenSearch admin password if using OpenSearch
-        if self.use_opensearch:
+        # Setup OpenSearch admin password if using OpenSearch, or running it:
+        # a node that runs OpenSearch needs an admin password whether or not
+        # events are sent to it
+        previous_password = self.existing_password()
+        if self.use_opensearch or "opensearch" in self.components:
             self.setup_opensearch_password()
-        
-        # Setup the main configuration files
+
+        # The librarian is what applies the retention policy
+        if self.use_opensearch and "librarian" in self.components:
+            self.setup_retention()
+
+        # Setup the main configuration files, both or neither of them getting
+        # a new password
+        self.decide_updates()
+        password_changed = self.keep_password_in_step(previous_password)
         self.setup_config()
         self.setup_env()
+        if password_changed:
+            self.print_info("The OpenSearch admin password changed in this setup. If OpenSearch "
+                            "already holds data it still has the old one, since it reads "
+                            "OPENSEARCH_INITIAL_ADMIN_PASSWORD only when its data volume is "
+                            "new: change it in OpenSearch too, as 'Changing the OpenSearch admin "
+                            "password' in the README describes, then recreate the containers.")
         
         # Setup Bind9 only if it's in the components
         if "bind" in self.components:

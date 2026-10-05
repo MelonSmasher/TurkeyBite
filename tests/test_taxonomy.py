@@ -197,7 +197,7 @@ class FacetWiringTest(unittest.TestCase):
 
     def test_a_dns_event_carries_the_facets(self):
         processor = self.dns_processor()
-        processor.resolve_contexts = lambda s: (['facebook', 'social'], {})
+        processor.resolve_contexts = lambda s, **kwargs: (['facebook', 'social'], {})
         processor.resolve_chain = lambda c: ([], [], [])
         processor.process_dns_packet(self.dns_packet())
         bite = self.shipped[0]['bite']
@@ -207,7 +207,7 @@ class FacetWiringTest(unittest.TestCase):
 
     def test_a_category_from_the_chain_is_faceted_too(self):
         processor = self.dns_processor()
-        processor.resolve_contexts = lambda s: ([], {})
+        processor.resolve_contexts = lambda s, **kwargs: ([], {})
         processor.resolve_chain = lambda c: (['tracking'], [], list(c))
         processor.process_dns_packet(self.dns_packet(
             answers=[{'type': 'CNAME', 'data': 'metrics.vendor.example'}]))
@@ -219,7 +219,7 @@ class FacetWiringTest(unittest.TestCase):
         processor = Processor({}, {})
         shipped = []
         processor.ship_bite = shipped.append
-        processor.resolve_contexts = lambda s: (['malware'], {})
+        processor.resolve_contexts = lambda s, **kwargs: (['malware'], {})
         processor.process_browser_history({
             'type': 'browser.history',
             'data': {'@timestamp': '2026-08-22T04:00:00Z',
@@ -234,7 +234,7 @@ class FacetWiringTest(unittest.TestCase):
     def test_contexts_is_left_exactly_as_it_was(self):
         # The whole migration rests on nothing that reads the flat array breaking
         processor = self.dns_processor()
-        processor.resolve_contexts = lambda s: (['social', 'facebook'], {})
+        processor.resolve_contexts = lambda s, **kwargs: (['social', 'facebook'], {})
         processor.resolve_chain = lambda c: ([], [], [])
         processor.process_dns_packet(self.dns_packet())
         self.assertEqual(self.shipped[0]['bite']['contexts'], ['social', 'facebook'])

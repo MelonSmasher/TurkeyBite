@@ -340,6 +340,36 @@ class RebuildStabilityTest(unittest.TestCase):
             index.close()
 
 
+class BuildLogTest(unittest.TestCase):
+    """The librarian names the list files nobody configured, so they can go."""
+
+    def test_leftover_files_are_named_when_the_index_is_built(self):
+        import contextlib
+        import io
+        from libtb import util
+
+        root = tempfile.mkdtemp(prefix='tb-buildlog-')
+        self.addCleanup(shutil.rmtree, root, True)
+        for category, name in (('porn', 'blocklistproject-porn-nl'), ('news', 'turkeybite')):
+            os.makedirs(os.path.join(root, 'lists', category))
+            with open(os.path.join(root, 'lists', category, name), 'w') as fh:
+                fh.write('example.com\n')
+        with open(os.path.join(root, 'lists', 'host_files.json'), 'w') as fh:
+            fh.write('[]')
+        cwd = os.getcwd()
+        os.chdir(root)
+        self.addCleanup(os.chdir, cwd)
+        settings = {'path': os.path.join('lists', 'index', 'domains.tbidx'), 'publish': False}
+        out = io.StringIO()
+        with unittest.mock.patch.object(util, 'read_config', return_value={}), \
+                unittest.mock.patch.object(util, 'index_config', return_value=settings), \
+                contextlib.redirect_stdout(out):
+            self.assertIsNotNone(util.build_domain_index())
+        log = out.getvalue()
+        self.assertIn(os.path.join('porn', 'blocklistproject-porn-nl'), log)
+        self.assertNotIn(os.path.join('news', 'turkeybite'), log)
+
+
 class NegativeControlTest(unittest.TestCase):
     """Proves both layers of the fix are load-bearing rather than decorative.
 

@@ -37,6 +37,7 @@ services:
       - TURKEYBITE_PIPELINE
       - TURKEYBITE_CONSUMER_PREFIX
       - TURKEYBITE_INDEX_SYNC_INTERVAL_SEC
+      - TURKEYBITE_ALLOW_DEFAULT_PASSWORD
     networks:
       - tb-net
     ulimits:

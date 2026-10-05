@@ -6,7 +6,7 @@ echo "Setting up OpenSearch index template for TurkeyBite..."
 # Variables for OpenSearch connection
 OPENSEARCH_URL="https://${OPENSEARCH_HOST:-opensearch}:9200"
 OPENSEARCH_USER="${OPENSEARCH_USERNAME:-admin}"
-OPENSEARCH_PASS="${OPENSEARCH_PASSWORD:-Changeit12345!}"
+OPENSEARCH_PASS="${OPENSEARCH_PASSWORD:-}"
 # A single-node cluster cannot assign replica shards, so leaving this at 1
 # leaves cluster health permanently yellow and therefore useless as a signal.
 OPENSEARCH_REPLICAS="${OPENSEARCH_INDEX_REPLICAS:-0}"
@@ -15,10 +15,49 @@ RETRY_INTERVAL=5
 
 echo "OpenSearch URL: $OPENSEARCH_URL"
 
-# Function to check if OpenSearch is available
+# No fallback password. The one this used to fall back to shipped in the
+# repository, so anyone can look it up, and the admin account can read and
+# delete every event. See "Changing the OpenSearch admin password" in the README.
+if [ -z "$OPENSEARCH_PASS" ]; then
+    echo "Error: OPENSEARCH_PASSWORD is not set. Set it in .env to the OpenSearch admin password and recreate the librarian." >&2
+    exit 1
+fi
+if [ "$OPENSEARCH_PASS" = 'Changeit12345!' ]; then
+    if [ "${TURKEYBITE_ALLOW_DEFAULT_PASSWORD:-}" = "yes" ]; then
+        echo "WARNING: OPENSEARCH_PASSWORD is Changeit12345!, the OpenSearch admin password TurkeyBite used to ship with, which anyone can look up. TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes lets it through. Do this only on a disposable test install that holds no real traffic." >&2
+    else
+        echo "Error: OPENSEARCH_PASSWORD is Changeit12345!, the OpenSearch admin password TurkeyBite used to ship with, which anyone can look up. Refusing to run. Change the admin password in OpenSearch, then in .env and config.yaml: see \"Changing the OpenSearch admin password\" in the README. On a disposable test install only, set TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes to run anyway." >&2
+        exit 1
+    fi
+fi
+
+# The bundled OpenSearch serves its demo certificates, which curl cannot
+# verify, so verification needs the cluster's CA. Without one this falls back
+# to not verifying, as it always has, and says so rather than doing it quietly.
+if [ -n "${OPENSEARCH_CA_CERT:-}" ]; then
+    if [ ! -f "$OPENSEARCH_CA_CERT" ]; then
+        echo "Error: OPENSEARCH_CA_CERT is $OPENSEARCH_CA_CERT, which is not a file in this container. Mount the CA certificate into the librarian." >&2
+        exit 1
+    fi
+    echo "Verifying OpenSearch's certificate against $OPENSEARCH_CA_CERT"
+else
+    echo "WARNING: OPENSEARCH_CA_CERT is not set, so the librarian talks to OpenSearch without verifying its certificate (curl --insecure). See \"Verifying OpenSearch's certificate\" in the README." >&2
+fi
+
+# curl with the TLS choice above, so no call can forget it
+opensearch_curl() {
+    if [ -n "${OPENSEARCH_CA_CERT:-}" ]; then
+        curl --cacert "$OPENSEARCH_CA_CERT" "$@"
+    else
+        curl --insecure "$@"
+    fi
+}
+
+# Function to check if OpenSearch is available. -S so a certificate that does
+# not verify says why, instead of looking like a cluster still starting.
 check_opensearch() {
-    local status_code=$(curl -s -o /dev/null -w "%{http_code}" --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
-    if [[ "$status_code" -ge 200 && "$status_code" -lt 300 ]]; then
+    local status_code=$(opensearch_curl -sS -o /dev/null -w "%{http_code}" -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
+    if [ "$status_code" -ge 200 ] && [ "$status_code" -lt 300 ]; then
         return 0  # Success
     else
         return 1  # Failure
@@ -41,10 +80,9 @@ done
 echo "OpenSearch is available! Creating/updating index template..."
 
 # Create or update the index template
-    curl -XPUT "$OPENSEARCH_URL/_index_template/turkeybite-template" \
+    opensearch_curl -XPUT "$OPENSEARCH_URL/_index_template/turkeybite-template" \
         -H "Content-Type: application/json" \
         -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" \
-        --insecure \
         -d '{
         "index_patterns": ["tb-index-*"],
         "template": {
@@ -91,6 +129,14 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "contexts": { "type": "keyword" },
                             "contexts_candidate": { "type": "keyword" },
                             "contexts_suppressed": { "type": "keyword" },
+                            "incidental": { "type": "boolean" },
+                            "resolvers": {
+                                "properties": {
+                                    "quad9": { "type": "keyword" },
+                                    "cloudflare-security": { "type": "keyword" },
+                                    "cloudflare-family": { "type": "keyword" }
+                                }
+                            },
                             "claims": { "type": "keyword" },
                             "purpose": { "type": "keyword" },
                             "service": { "type": "keyword" },
@@ -111,4 +157,10 @@ echo "OpenSearch is available! Creating/updating index template..."
     }'
 
 echo "✅ Index template created successfully!"
+
+# The retention policy, see libtb/retention. Python rather than curl so the
+# policy and the decision to create, update or remove it can be tested.
+echo "Applying the retention policy..."
+python turkeybite retention --url "$OPENSEARCH_URL"
+
 echo "OpenSearch template setup complete!"

@@ -55,4 +55,15 @@ EOF
 
 export VALKEY_PASSWORD=$(cat /run/secrets/valkey_password)
 
+# Check config.yaml before anything starts, and stop the container if it is
+# wrong. Under the rq pipeline a worker process never reads the settings
+# itself, so a CA file missing from this container would otherwise only show
+# as events failing to ship. Configuration errors found while shipping are
+# reported once per container; clearing the record lets this start say so again.
+rm -rf "${TMPDIR:-/tmp}/turkeybite-config-errors"
+if ! python turkeybite check; then
+    echo "Refusing to start the core: fix config.yaml as above, then restart the container." >&2
+    exit 1
+fi
+
 python turkeybite run

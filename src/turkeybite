@@ -26,6 +26,31 @@ def run():
     inlet.open()
 
 
+@cli.command('check')
+def check():
+    """Check config.yaml as a worker reads it, before anything starts.
+
+    Loads it and validates everything a worker needs: the sieve, the evidence,
+    resolver and privacy settings, and each OpenSearch host, including that a
+    ca_certs file is there and that the password is not the shipped default.
+    The worker and core containers run this before they start anything, and
+    exit if it fails: under the rq pipeline a worker process never reads the
+    settings itself, so a CA file missing from its container would otherwise
+    only show as events failing to ship.
+    """
+    try:
+        config = read_config()
+        if not isinstance(config, dict):
+            raise ValueError('config.yaml could not be read as YAML')
+        Filters(config['sieve'])
+        Processor(config['processor'], config['redis'])
+    except (OSError, KeyError, TypeError, ValueError) as e:
+        detail = f'missing setting {e}' if isinstance(e, KeyError) else str(e)
+        click.echo(f'CONFIGURATION ERROR: {detail}', err=True)
+        raise SystemExit(1)
+    click.echo('config.yaml checked: the settings a worker reads are valid.')
+
+
 @cli.command('consume')
 @click.option('--consumer', default=None, help='Stable name for this consumer, used to recover its own in-flight work.')
 @click.option('--batch-size', default=None, type=int, help='Maximum events claimed per batch.')
@@ -70,20 +95,32 @@ def consume(consumer, batch_size, quiet):
 
 @cli.command('queue-recover')
 @click.option('--prefix', default=None,
-              help='Only sweep consumer names starting with this. Use the host prefix so one host does not reclaim another host\'s in-flight work.')
+              help='Sweep the consumers the start scripts name <prefix>-NN, as '
+                   'TURKEYBITE_CONSUMER_PREFIX, which is the default, holds it.')
+@click.option('--consumer', 'consumers', multiple=True,
+              help='Sweep exactly this consumer, such as one started by hand with '
+                   '--consumer. Repeatable.')
 @click.option('--all', 'sweep_all', is_flag=True, default=False,
-              help='Sweep every processing list regardless of prefix. Only safe when no consumer is running anywhere.')
-def queue_recover(prefix, sweep_all):
-    """Requeue work stranded in processing lists whose consumer no longer exists."""
+              help='Sweep every processing list. Only safe when no consumer is running anywhere.')
+def queue_recover(prefix, consumers, sweep_all):
+    """Requeue work stranded in processing lists whose consumer no longer exists.
+
+    Every consume worker runs this at start for its own prefix, before its
+    consumers start. A consumer named by hand, such as `consume --consumer
+    worker1`, is not swept by that: recover it with --consumer worker1 once it
+    is stopped for good, or with --all.
+    """
     import os
     from redis import Redis
     from libtb.queue import recover_orphans
 
-    if not prefix and not sweep_all:
+    if sum(map(bool, (prefix, consumers, sweep_all))) > 1:
+        raise click.UsageError('give one of --prefix, --consumer and --all')
+    if not (prefix or consumers or sweep_all):
         prefix = os.environ.get('TURKEYBITE_CONSUMER_PREFIX')
         if not prefix:
-            print('Refusing to sweep without --prefix or --all: an unscoped sweep '
-                  'can reclaim another host\'s in-flight work.')
+            print('Refusing to sweep without --prefix, --consumer or --all: an unscoped '
+                  'sweep can reclaim another host\'s in-flight work.')
             raise SystemExit(2)
 
     config = read_config()
@@ -94,9 +131,15 @@ def queue_recover(prefix, sweep_all):
         db=queue_conf['db'],
         password=queue_conf['password']
     )
-    swept, requeued = recover_orphans(
-        redis, queue_conf['channel'], match=None if sweep_all else prefix)
-    scope = 'all consumers' if sweep_all else f'consumers matching {prefix}'
+    if consumers:
+        swept, requeued = recover_orphans(redis, queue_conf['channel'], consumers=consumers)
+        scope = 'consumer ' + ', '.join(consumers)
+    elif sweep_all:
+        swept, requeued = recover_orphans(redis, queue_conf['channel'])
+        scope = 'all consumers'
+    else:
+        swept, requeued = recover_orphans(redis, queue_conf['channel'], prefix=prefix)
+        scope = f'consumers named {prefix}-NN'
     print(f'Swept {swept} processing lists for {scope}, requeued {requeued} events')
 
 
@@ -128,6 +171,80 @@ def index_sync():
     sync_domain_index()
 
 
+@cli.command('retention')
+@click.option('--apply', 'apply_now', is_flag=True, default=False,
+              help='Apply TURKEYBITE_RETENTION_DAYS now. With --confirm-days, also when it '
+                   'is shorter than the period in force, which the librarian refuses at start.')
+@click.option('--confirm-days', type=int, default=None,
+              help='With --apply: confirms a shorter period. Must equal '
+                   'TURKEYBITE_RETENTION_DAYS. Indices older than it are deleted within '
+                   'minutes, irreversibly.')
+@click.option('--attach-existing', is_flag=True, default=False,
+              help='Also attach the policy to the TurkeyBite indices that existed before it. '
+                   'Those already older than TURKEYBITE_RETENTION_DAYS are deleted within '
+                   'minutes, irreversibly.')
+@click.option('--dry-run', is_flag=True, default=False,
+              help='Say what would be done, listing the indices that would be deleted or '
+                   'attached, and change nothing.')
+@click.option('--url', default=None,
+              help='OpenSearch URL. Defaults to https://$OPENSEARCH_HOST:9200, as the '
+                   'librarian uses.')
+@click.option('--prefix', default=None,
+              help='Index prefix. Defaults to processor.elastic.index_prefix in config.yaml.')
+def retention(apply_now, confirm_days, attach_existing, dry_run, url, prefix):
+    """Have OpenSearch delete TurkeyBite indices older than TURKEYBITE_RETENTION_DAYS.
+
+    Keeps the ISM policy that does it in line with the variable, which the
+    librarian does at every start. Unset, nothing is done; 0 keeps indices
+    forever. Nothing that deletes sooner is done without asking: a shorter
+    period is refused until confirmed, and the indices that existed before the
+    policy are left alone unless --attach-existing is given. List what either
+    would delete first:
+
+    \b
+        docker compose exec turkeybite-librarian python turkeybite retention --apply --confirm-days 30 --dry-run
+        docker compose exec turkeybite-librarian python turkeybite retention --attach-existing --dry-run
+
+    Exits non-zero when a change was refused or did not complete. Connects with
+    OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD and OPENSEARCH_CA_CERT, as the
+    librarian's script does.
+    """
+    import os
+    import opensearchpy
+    from libtb import retention as R
+    from libtb.opensearch import client_kwargs, librarian_host, unverified, unverified_warning
+
+    if confirm_days is not None and not apply_now:
+        raise click.UsageError('--confirm-days goes with --apply')
+    try:
+        days = R.retention_days(os.environ.get(R.DAYS_ENV))
+        if days is None and (apply_now or attach_existing):
+            raise ValueError(f'{R.DAYS_ENV} is not set, so there is no period to apply')
+        if days == 0 and attach_existing:
+            raise ValueError(f'{R.DAYS_ENV} is 0, so there is no retention policy to attach')
+        host = librarian_host(url=url)
+        if prefix is None:
+            elastic = (read_config().get('processor') or {}).get('elastic') or {}
+            prefix = elastic.get('index_prefix') or 'tb-index'
+        R.index_pattern(prefix)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if unverified(host):
+        click.echo(unverified_warning(host), err=True)
+
+    client = opensearchpy.OpenSearch(**client_kwargs(host))
+    cluster = R.Cluster(client.transport.perform_request, dry_run=dry_run, log=click.echo)
+    try:
+        result = R.reconcile(cluster, days, prefix, log=click.echo, confirm_days=confirm_days,
+                             attach_existing=attach_existing)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    except opensearchpy.exceptions.OpenSearchException as e:
+        raise click.ClickException(f'OpenSearch refused the retention change: {e}')
+    if not result['ok']:
+        raise SystemExit(1)
+
+
 @cli.command('audit')
 @click.argument('reference', type=click.Path(exists=True, dir_okay=False))
 @click.option('--top', default=10000, show_default=True,
@@ -138,9 +255,22 @@ def index_sync():
               help='Only report these categories. Repeatable.')
 @click.option('--index', 'index_path', default=None,
               help='Index file to audit. Defaults to the configured path.')
-@click.option('--min-publishers', default=None, type=int,
-              help='Override processor.evidence.min_publishers.')
-def audit(reference, top, examples, categories, index_path, min_publishers):
+@click.option('--min-publishers', default=None,
+              help='Override processor.evidence.min_publishers: a number, or '
+                   'taxonomy branches with numbers such as default=2,threat=1.')
+@click.option('--resolvers', 'use_resolvers', is_flag=True, default=False,
+              help='Ask Quad9 and Cloudflare to corroborate candidates, as workers do '
+                   'when processor.evidence.resolvers is enabled. Sends domain names to '
+                   'both, at most 20 queries a second.')
+@click.option('--adult-vote', is_flag=True, default=False,
+              help="With --resolvers, also ask Cloudflare's family resolver about porn "
+                   'candidates, as processor.evidence.resolvers.adult does.')
+@click.option('--disable', 'disabled', multiple=True,
+              help='Taxonomy branch or path to switch off, as '
+                   'processor.evidence.disabled_categories. Repeatable, and replaces '
+                   'the configured list. --disable "" switches nothing off.')
+def audit(reference, top, examples, categories, index_path, min_publishers, disabled,
+          use_resolvers, adult_vote):
     """Report the categories the index asserts on known-good domains.
 
     REFERENCE is a Tranco 'rank,domain' CSV or one domain per line. Fetch the
@@ -150,26 +280,78 @@ def audit(reference, top, examples, categories, index_path, min_publishers):
         curl -L -o top-1m.csv.zip https://tranco-list.eu/top-1m.csv.zip
         unzip -o top-1m.csv.zip -d lists
     """
-    from libtb.audit import audit as run_audit, format_report, read_reference
-    from libtb.evidence import DEFAULT_MIN_PUBLISHERS
+    from libtb.audit import audit as run_audit, audit_settings, format_report, read_reference
+    from libtb.evidence.resolvers import AUDIT_RATE, Checker
+    from libtb.evidence.resolvers import settings as resolver_settings
     from libtb.index import DomainIndex
     from libtb.util import index_config
 
-    if index_path is None or min_publishers is None:
+    # The configured settings are read whenever anything is left to them, so
+    # an override replaces only the setting it names and the audit otherwise
+    # reports exactly what the workers do
+    configured = {}
+    if index_path is None or min_publishers is None or not disabled:
         config = read_config()
         index_path = index_path or index_config(config)['path']
-        if min_publishers is None:
-            evidence = (config.get('processor') or {}).get('evidence') or {}
-            min_publishers = int(evidence.get('min_publishers', DEFAULT_MIN_PUBLISHERS))
+        configured = (config.get('processor') or {}).get('evidence') or {}
+    try:
+        min_publishers, disabled = audit_settings(
+            configured, min_publishers, disabled if disabled else None)
+    except ValueError as e:
+        raise click.BadParameter(str(e))
+    checker = None
+    if use_resolvers:
+        # The configured addresses and timeout when config.yaml was read,
+        # the defaults otherwise, switched on for this run and throttled
+        try:
+            conf = resolver_settings(configured.get('resolvers'))._replace(enable=True)
+        except ValueError as e:
+            raise click.BadParameter(str(e), param_hint='--resolvers')
+        if adult_vote:
+            conf = conf._replace(adult=True)
+        checker = Checker(conf, rate=AUDIT_RATE)
 
     domains = read_reference(reference, top)
     index = DomainIndex(index_path)
     try:
-        report = run_audit(index, domains, min_publishers)
+        report = run_audit(index, domains, min_publishers, disabled=disabled, checker=checker)
     finally:
         index.close()
     for line in format_report(report, len(domains), examples, set(categories)):
         print(line)
+    if checker is not None:
+        print(f'\nAsked the resolvers {checker.queries} times.')
+
+
+@cli.command('overlap')
+@click.option('--index', 'index_path', default=None,
+              help='Index file to measure. Defaults to the configured path.')
+@click.option('--threshold', default=0.5, show_default=True,
+              help='Report pairs where one source holds at least this share of the other.')
+@click.option('--min-entries', default=50, show_default=True,
+              help='Leave out sources with fewer names than this.')
+def overlap(index_path, threshold, min_entries):
+    """Report how much of each list another list repeats.
+
+    Corroboration only counts between independent sources, and derived_from in
+    host_files.json is the only record of which lists copy which. This compares
+    what the lists contain, so a pair that overlaps heavily without a declared
+    relationship, or a declaration the contents do not bear out, stands out.
+    """
+    from libtb.audit.independence import format_report, report
+    from libtb.index import DomainIndex
+    from libtb.util import index_config
+
+    if index_path is None:
+        index_path = index_config(read_config())['path']
+    index = DomainIndex(index_path)
+    try:
+        found = report(index, threshold, min_entries)
+    finally:
+        index.close()
+    for line in format_report(found, threshold):
+        print(line)
+
 
 if __name__ == '__main__':
     cli()

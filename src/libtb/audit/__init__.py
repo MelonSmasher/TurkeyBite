@@ -19,7 +19,8 @@ workers call, so the report is what live events will say.
 import csv
 from collections import Counter, defaultdict
 
-from libtb.evidence import DEFAULT_MIN_PUBLISHERS, categorise
+from libtb.evidence import DEFAULT_MIN_PUBLISHERS, categorise, evidence_settings
+from libtb.evidence.resolvers import SETTLED
 from libtb.psl import DEFAULT_PATH as PSL_PATH
 from libtb.taxonomy import classify
 
@@ -40,11 +41,41 @@ def read_reference(path, limit=None):
     return domains
 
 
+def parse_bar(text):
+    """A --min-publishers value: '2', or 'default=2,threat=1' for a mapping."""
+    text = str(text).strip()
+    if '=' not in text:
+        return text
+    bar = {}
+    for part in text.split(','):
+        key, _, value = part.partition('=')
+        bar[key.strip()] = value.strip()
+    return bar
+
+
+def audit_settings(configured, min_publishers=None, disabled=None):
+    """(bar, disabled) for an audit: the configured evidence settings, overridden.
+
+    `configured` is processor.evidence from config.yaml. Each override replaces
+    its setting only when given, so an audit with --index and --min-publishers
+    still switches off what the workers switch off. An empty `disabled`
+    switches nothing off. Read through libtb.evidence.evidence_settings, the
+    function the workers use. Raises ValueError for a bad value.
+    """
+    settings = dict(configured or {})
+    if min_publishers is not None:
+        settings['min_publishers'] = parse_bar(min_publishers)
+    if disabled is not None:
+        settings['disabled_categories'] = [entry for entry in disabled if entry.strip()]
+    return evidence_settings(settings)
+
+
 def is_threat(category):
     return any(path.startswith('threat.') for path in classify([category]).get('risk', []))
 
 
-def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH):
+def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PATH,
+          disabled=frozenset(), checker=None):
     """Runs the reference domains through the index.
 
     Returns a dict:
@@ -55,16 +86,27 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
                     threat category, the closest thing to a false positive
                     count this can produce. Low trust sources are left out,
                     since they cannot have contributed.
+
+    With a libtb.evidence.resolvers.Checker, resolver votes are added exactly
+    as a worker adds them, and show up in the sources and the blame. Then
+
+        resolvers   (provider, status) -> how often each resolver said what
+
+    so an audit run behind a firewall, where every question times out, cannot
+    be read as the resolvers clearing every candidate.
     """
     asserted = defaultdict(list)
     candidate = defaultdict(list)
     blamed = Counter()
+    answers = Counter()
     for rank, domain in enumerate(domains, 1):
         verdict = {'asserted': set(), 'candidate': set()}
         backers = defaultdict(set)
         counted = defaultdict(set)
         for host in (domain, 'www.' + domain):
-            claims, result = categorise(index, host, min_publishers, psl_path)
+            claims, result = categorise(index, host, min_publishers, psl_path, disabled,
+                                        checker=checker)
+            answers.update((result.get('resolvers') or {}).items())
             verdict['asserted'].update(result['asserted'])
             verdict['candidate'].update(result['candidate'])
             for _, source, category in claims:
@@ -78,7 +120,8 @@ def audit(index, domains, min_publishers=DEFAULT_MIN_PUBLISHERS, psl_path=PSL_PA
                 blamed.update(counted[category])
         for category in verdict['candidate']:
             candidate[category].append((rank, domain, sorted(backers[category])))
-    return {'asserted': asserted, 'candidate': candidate, 'blamed': blamed}
+    return {'asserted': asserted, 'candidate': candidate, 'blamed': blamed,
+            'resolvers': answers}
 
 
 def format_report(report, total, examples=5, categories=None):
@@ -109,4 +152,18 @@ def format_report(report, total, examples=5, categories=None):
         lines.append('  (none)')
     for source, count in report['blamed'].most_common():
         lines.append(f'  {source:44} {count:6}')
+
+    answers = report.get('resolvers')
+    if answers:
+        lines.append('')
+        lines.append('What the resolvers said:')
+        for (provider, status), count in sorted(answers.items()):
+            lines.append(f'  {provider:24} {status:12} {count:6}')
+        failed = sum(count for (_, status), count in answers.items() if status not in SETTLED)
+        if failed:
+            # Said plainly: a failure casts no vote, so a run where most
+            # questions fail reads like resolvers that disagree with the lists
+            lines.append(f'  {failed} of {sum(answers.values())} questions got no answer, '
+                         f'so cast no vote. Check that outbound DNS to the resolvers is '
+                         f'allowed before reading anything into the votes.')
     return lines

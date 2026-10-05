@@ -250,7 +250,7 @@ class DomainFieldsTest(unittest.TestCase):
                               'domain_index': {'mode': 'index'}}, {})
         shipped = []
         processor.ship_bite = shipped.append
-        processor.resolve_contexts = lambda s: ([], {})
+        processor.resolve_contexts = lambda s, **kwargs: ([], {})
         processor.resolve_chain = lambda c: ([], [], [])
         original = Processor.process_dns_packet
         # The processor calls domain_fields with its default path; point that at

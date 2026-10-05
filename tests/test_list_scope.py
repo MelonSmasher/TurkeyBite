@@ -12,14 +12,16 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 
 from libtb import psl
-from libtb.evidence import ownership_boundary
+from libtb.evidence import categorise, ownership_boundary
 from libtb.index import DomainIndex, Source
-from libtb.index.builder import build, collect_entries, load_sources, source_table
+from libtb.index.builder import (build, collect_entries, load_sources, source_table,
+                                 unconfigured_files)
 from libtb.util import clean_list_file, valkey_host
 
 FIXTURE = os.path.join(HERE, 'fixture_public_suffix_list.dat')
@@ -174,6 +176,43 @@ class CollectorScopeTest(Workspace):
         # the operator's own rule, and is honoured
         self.assertEqual(self.stale_list_verdict('custom'), ['malicious'])
 
+    def leftover_verdict(self, host_files):
+        """What two download files say together about a host both name."""
+        self.write('porn', 'blp-porn', ['example.com'])
+        self.write('porn', 'blp-adult', ['example.com'])
+        entries, _, _ = collect_entries(self.lists, host_files=host_files)
+        index = self.index(entries, source_table(load_sources(self.lists, host_files)))
+        return categorise(index, 'example.com', psl_path=FIXTURE)[1]
+
+    def test_two_leftover_files_cannot_assert_together(self):
+        # Each would be its own publisher, since nobody can say otherwise, so
+        # at medium trust the leftovers of one publisher corroborate each other
+        verdict = self.leftover_verdict(host_files=[])
+        self.assertEqual(verdict['asserted'], [])
+        self.assertEqual(verdict['candidate'], ['porn'])
+
+    def test_the_same_two_files_at_medium_trust_would(self):
+        # The control for the test above: configured, and so medium by
+        # default, the same files do agree
+        configured = [{'file': f'lists/porn/{name}', 'categories': ['porn']}
+                      for name in ('blp-porn', 'blp-adult')]
+        self.assertEqual(self.leftover_verdict(host_files=configured)['asserted'], ['porn'])
+
+    def test_the_low_trust_rule_is_what_stops_them(self):
+        # Proves the guard is load-bearing: the same leftovers read at the old
+        # default would assert together
+        from libtb.index import builder
+        with unittest.mock.patch.object(builder, 'UNCONFIGURED_TRUST', 'medium'):
+            self.assertEqual(self.leftover_verdict(host_files=[])['asserted'], ['porn'])
+
+    def test_leftover_files_are_named_for_the_operator(self):
+        self.write('porn', 'oldlist', ['example.com'])
+        self.write('porn', 'dl', ['example.com'])
+        self.write('porn', 'turkeybite', ['example.com'])
+        self.write('news', 'custom', ['example.com'])
+        self.assertEqual(unconfigured_files(self.lists, host_files=self.configured('dl')),
+                         [os.path.join('porn', 'oldlist')])
+
     def test_an_unknown_match_is_refused(self):
         with self.assertRaises(ValueError):
             load_sources(host_files=self.configured('dl', match='everything'))
@@ -306,9 +345,9 @@ class FormatTest(Workspace):
         index = self.index({'example.com': {'ignorelist': {'!news'}}})
         self.assertEqual(index.sources['ignorelist'], Source('ignorelist', 'local', 'high', True, ()))
 
-    def test_any_other_unlisted_source_is_written_cautiously(self):
+    def test_any_other_unlisted_source_is_written_at_low_trust(self):
         index = self.index({'example.com': {'oldlist': {'porn'}}})
-        self.assertEqual(index.sources['oldlist'], Source('oldlist', 'oldlist', 'medium', False, ()))
+        self.assertEqual(index.sources['oldlist'], Source('oldlist', 'oldlist', 'low', False, ()))
 
     def test_claims_keep_who_said_what(self):
         index = self.index({'example.com': {'a': {'porn'}, 'b': {'malware'}}})

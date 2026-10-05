@@ -2,16 +2,28 @@ import json
 import sys
 from rq import Queue
 from redis import Redis
+from libtb.privacy import TRIMMED, redact_packet, trim_url
 from libtb.util import dig
 
+# How long RQ keeps a job that failed, with the event it was given. RQ's own
+# default is a year, which would make the failed job registry a year-long store
+# of whatever events failed. A day is long enough to see a failure and requeue
+# it the next morning, and the event in it is already trimmed, see open().
+FAILURE_TTL = 24 * 60 * 60
 
-def describe(data, verdict):
+
+def describe(data, verdict, urls=TRIMMED):
     """Builds the log line for an observed packet.
 
     Every field is read through dig() or checked for its type first. This code
     used to reach straight into nested keys, and since the caller only catches
     JSONDecodeError, one packet with a null where a dict was expected escaped
     the listen loop and exited the process.
+
+    `urls` is processor.privacy.urls. The log keeps no more of a URL than the
+    event does: a container log is a store too, and a trimmed event beside a
+    log holding the full URL would protect nothing. It defaults to trimmed, so
+    a caller that forgets to pass it fails closed.
 
     Returns None for a packet we have nothing to say about.
     """
@@ -31,7 +43,7 @@ def describe(data, verdict):
         line = '[Browserbeat][History] ' + verdict
         url = dig(data, 'data', 'event', 'data', 'entry', 'url')
         if isinstance(url, str):
-            line = line + ' : ' + url
+            line = line + ' : ' + trim_url(url, urls)
         user = dig(data, 'data', 'event', 'data', 'client', 'user')
         if isinstance(user, str):
             line = line + ' - ' + user
@@ -89,7 +101,12 @@ class Inlet(object):
             # restarted rather than drop traffic in silence.
             try:
                 keep = self.filters.should_process(data)
-                line = describe(data, 'Queued' if keep else 'Dropped')
+                urls = self.processor.privacy().urls
+                line = describe(data, 'Queued' if keep else 'Dropped', urls)
+                # Trimmed before it is queued, since a job holds its event in
+                # Valkey until it expires, and its description repeats it. The
+                # worker reads only the host, so nothing is lost by it.
+                data = redact_packet(data, urls)
             except Exception as e:
                 print('Skipped an unreadable packet: ' + str(e), file=sys.stderr)
                 continue
@@ -99,4 +116,5 @@ class Inlet(object):
 
             if keep:
                 # Send job to worker queue
-                worker_queue.enqueue(self.processor.process_packet, data, result_ttl=600)
+                worker_queue.enqueue(self.processor.process_packet, data, result_ttl=600,
+                                     failure_ttl=FAILURE_TTL)
