@@ -15,10 +15,33 @@ RETRY_INTERVAL=5
 
 echo "OpenSearch URL: $OPENSEARCH_URL"
 
-# Function to check if OpenSearch is available
+# The bundled OpenSearch serves its demo certificates, which curl cannot
+# verify, so verification needs the cluster's CA. Without one this falls back
+# to not verifying, as it always has, and says so rather than doing it quietly.
+if [ -n "${OPENSEARCH_CA_CERT:-}" ]; then
+    if [ ! -f "$OPENSEARCH_CA_CERT" ]; then
+        echo "Error: OPENSEARCH_CA_CERT is $OPENSEARCH_CA_CERT, which is not a file in this container. Mount the CA certificate into the librarian." >&2
+        exit 1
+    fi
+    echo "Verifying OpenSearch's certificate against $OPENSEARCH_CA_CERT"
+else
+    echo "WARNING: OPENSEARCH_CA_CERT is not set, so the librarian talks to OpenSearch without verifying its certificate (curl --insecure). See \"Verifying OpenSearch's certificate\" in the README." >&2
+fi
+
+# curl with the TLS choice above, so no call can forget it
+opensearch_curl() {
+    if [ -n "${OPENSEARCH_CA_CERT:-}" ]; then
+        curl --cacert "$OPENSEARCH_CA_CERT" "$@"
+    else
+        curl --insecure "$@"
+    fi
+}
+
+# Function to check if OpenSearch is available. -S so a certificate that does
+# not verify says why, instead of looking like a cluster still starting.
 check_opensearch() {
-    local status_code=$(curl -s -o /dev/null -w "%{http_code}" --insecure -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
-    if [[ "$status_code" -ge 200 && "$status_code" -lt 300 ]]; then
+    local status_code=$(opensearch_curl -sS -o /dev/null -w "%{http_code}" -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" "${OPENSEARCH_URL}")
+    if [ "$status_code" -ge 200 ] && [ "$status_code" -lt 300 ]; then
         return 0  # Success
     else
         return 1  # Failure
@@ -41,10 +64,9 @@ done
 echo "OpenSearch is available! Creating/updating index template..."
 
 # Create or update the index template
-    curl -XPUT "$OPENSEARCH_URL/_index_template/turkeybite-template" \
+    opensearch_curl -XPUT "$OPENSEARCH_URL/_index_template/turkeybite-template" \
         -H "Content-Type: application/json" \
         -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" \
-        --insecure \
         -d '{
         "index_patterns": ["tb-index-*"],
         "template": {

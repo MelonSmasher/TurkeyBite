@@ -33,5 +33,6 @@ services:
       - OPENSEARCH_HOST
       - OPENSEARCH_USERNAME
       - OPENSEARCH_PASSWORD
+      - OPENSEARCH_CA_CERT
     networks:
       - tb-net

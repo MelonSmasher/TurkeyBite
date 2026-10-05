@@ -17,6 +17,7 @@ from libtb.evidence import (cancels, categorise, claims_for, demote_incidental,
 from libtb.evidence import second_opinion
 from libtb.evidence.resolvers import checker_for
 from libtb.evidence.resolvers import settings as resolver_settings
+from libtb.opensearch import check_hosts, client_kwargs
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -24,7 +25,6 @@ from redis import Redis
 from opensearchpy import OpenSearch
 from opensearchpy import helpers as opensearch_helpers
 from dns import reversename, resolver, exception
-from urllib.parse import urlparse
 
 
 # The key resolve_contexts uses to hand the ignorelist's corrections on the asked
@@ -171,19 +171,7 @@ def opensearch_client(host):
     if client is not None:
         return client
 
-    parsed = urlparse(host['uri'])
-    use_ssl = parsed.scheme == 'https'
-    kwargs = {
-        'hosts': [{'host': parsed.hostname, 'port': parsed.port or (443 if use_ssl else 80)}],
-        'use_ssl': use_ssl,
-        'verify_certs': False,
-        'ssl_show_warn': False,
-        'request_timeout': 30,
-        'retry_on_timeout': True,
-    }
-    if host.get('username') and host.get('password'):
-        kwargs['http_auth'] = (host['username'], host['password'])
-    client = OpenSearch(**kwargs)
+    client = OpenSearch(**client_kwargs(host))
     _opensearch_clients[key] = client
     return client
 
@@ -451,6 +439,10 @@ class Processor(object):
         # at start, and so no event pays to parse them again
         self._evidence = evidence_settings(config.get('evidence'))
         self._resolvers = resolver_settings((config.get('evidence') or {}).get('resolvers'))
+        # The same for the OpenSearch hosts, which also says once, here, when a
+        # host will be used without verifying its certificate. Under the rq
+        # pipeline that is the core, whose processor travels with every job.
+        check_hosts(config.get('elastic'))
 
     def process_packet(self, data):
         if data['type'] == 'dns':

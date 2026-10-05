@@ -153,10 +153,17 @@ processor:
       enable: false
       size: 500
       interval_sec: 2
+    # verify_certs checks the host's certificate against ca_certs, a CA file
+    # inside the container. Off by default only because the bundled OpenSearch
+    # serves its demo certificates, which nothing trusts out of the box; a
+    # worker using an https host unverified says so once when it starts. See
+    # "Verifying OpenSearch's certificate" in the README.
     hosts:
       - uri: https://opensearch:9200
         username: admin
         password: Changeit12345!
+        verify_certs: false
+        # ca_certs: /turkey-bite/opensearch-root-ca.pem
   syslog:
     # Syslog UDP
     enable: false
