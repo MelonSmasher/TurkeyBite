@@ -7,13 +7,23 @@ refused, since either loses the batch for good. A batch that cannot be indexed
 goes back to the head of the queue in its original order, and a consumer
 killed part way through leaves its batch where its successor recovers it.
 
+That has to hold whatever the bulk settings say. With buffering off, the
+shipped default, the processor sends each event as it goes; with it on, it
+flushes by itself when the buffer reaches bulk.size or interval_sec passes.
+Either way a refusal has to reach the consumer, which used to acknowledge the
+batch and lose it, so every delivery test here runs under each of those
+settings, and none of them under settings that would never flush early.
+OpenSearch asking for a document to be retried, as it does with a 429, also
+requeues the batch; a document refused for good is logged and acknowledged.
+
 One bad packet must cost that packet and no more: undecodable JSON, a sieve
 that raises, or an enrichment failure is counted and skipped, and the rest of
 the batch is indexed and acknowledged.
 
 The queue, the sieve and the processor are the real ones. Redis is
-tests/fakes.py, and OpenSearch is a fake bulk call that each host can accept
-or refuse. No test touches the network.
+tests/fakes.py, and OpenSearch is a fake that answers both the per-event index
+call and the bulk call, each host accepting, refusing, rejecting a document
+for good or asking for it to be retried. No test touches the network.
 """
 
 import io
@@ -28,6 +38,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
+from opensearchpy.exceptions import TransportError
+
 from fakes import FakeRedis
 from libtb import processor as P
 from libtb.consumer import Consumer
@@ -38,6 +50,15 @@ from libtb.sieve import Filters
 KEY = 'turkeybite'
 HOSTS = [{'uri': 'http://search-1:9200', 'username': 'admin', 'password': 'Not-the-default.1'},
          {'uri': 'http://search-2:9200', 'username': 'admin', 'password': 'Not-the-default.1'}]
+BOTH_DOWN = {'http://search-1:9200': 'refuse', 'http://search-2:9200': 'refuse'}
+
+# The bulk settings delivery is tested under. None is the shipped default.
+BULK_OFF = None
+BULK_FULL = {'enable': True, 'size': 2, 'interval_sec': 3600}    # flushes at 2
+BULK_DUE = {'enable': True, 'size': 500, 'interval_sec': 0}      # flushes every event
+BULK_AT_END = {'enable': True, 'size': 500, 'interval_sec': 3600}  # flushes at batch end
+EVERY_SETTING = {'bulk off': BULK_OFF, 'bulk.size reached': BULK_FULL,
+                 'interval_sec passed': BULK_DUE, 'flushed at batch end': BULK_AT_END}
 
 
 def packet(name, client='10.0.0.5', status='OK'):
@@ -47,24 +68,49 @@ def packet(name, client='10.0.0.5', status='OK'):
             '@timestamp': '2026-10-04T12:00:00Z'}
 
 
+class Host(object):
+    """Stands in for one host's OpenSearch client."""
+
+    def __init__(self, cluster, uri):
+        self.cluster = cluster
+        self.uri = uri
+
+    def index(self, index, body):
+        self.cluster.answer(self.uri, [{'_index': index, '_source': body}], bulk=False)
+
+
 class Cluster(object):
-    """Stands in for helpers.bulk. Each host accepts, refuses, or rejects documents."""
+    """OpenSearch as the processor sees it, through index calls and helpers.bulk.
+
+    Each host accepts, refuses the connection, rejects documents for good
+    (a 400), or asks for them to be retried (a 429).
+    """
 
     def __init__(self, test, **answers):
         self.test = test
         self.answers = answers
         self.requests = []
+        self.accepted = []
 
     def bulk(self, client, docs, raise_on_error=False, stats_only=False):
-        host = client
+        return self.answer(client.uri, list(docs), bulk=True)
+
+    def answer(self, host, docs, bulk):
         # What the queue held when the documents went out: nothing may have
         # been acknowledged yet
-        self.requests.append((host, list(docs), self.test.in_flight()))
+        self.requests.append((host, docs, self.test.in_flight()))
         answer = self.answers.get(host, 'accept')
         if answer == 'refuse':
             raise ConnectionError(f'{host} refused the connection')
-        if answer == 'reject':
-            return 0, [{'index': {'error': {'type': 'mapper_parsing_exception'}}}] * len(docs)
+        if answer in ('reject', 'retry'):
+            status, kind = ((400, 'mapper_parsing_exception') if answer == 'reject'
+                            else (429, 'es_rejected_execution_exception'))
+            if not bulk:
+                raise TransportError(status, kind, {'error': {'type': kind}})
+            # The first document refused, the rest taken
+            self.accepted += docs[1:]
+            return len(docs) - 1, [{'index': {'status': status, 'error': {'type': kind}}}]
+        self.accepted += docs
         return len(docs), []
 
 
@@ -78,14 +124,17 @@ class ConsumerTest(unittest.TestCase):
         patcher = mock.patch.object(P, '_install_flush_hooks')
         patcher.start()
         self.addCleanup(patcher.stop)
-        # One stand-in client per host, so the fake bulk knows which was asked
-        patcher = mock.patch.object(P, 'opensearch_client', side_effect=lambda host: host['uri'])
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
         self.redis = FakeRedis()
         self.queue = ListQueue(self.redis, KEY, 'worker1-01')
         self.cluster = Cluster(self)
+        # One stand-in client per host, so the fake knows which was asked
+        patcher = mock.patch.object(P, 'opensearch_client',
+                                    side_effect=lambda host: Host(self.cluster, host['uri']))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(P.opensearch_helpers, 'bulk', self.cluster.bulk)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def in_flight(self):
         return self.redis.lrange(f'{KEY}:processing:worker1-01', 0, -1)
@@ -108,26 +157,25 @@ class ConsumerTest(unittest.TestCase):
         return Consumer(self.queue, filters, processor, batch_size=kwargs.pop('batch_size', 500),
                         block_seconds=0.01, name='worker1-01', **kwargs)
 
-    def processor(self):
+    def processor(self, bulk=BULK_AT_END):
+        elastic = {'enable': True, 'index_prefix': 'tb-index', 'hosts': HOSTS}
+        if bulk is not None:
+            elastic['bulk'] = bulk
         processor = Processor({
             'dns': {'lookup_ips': False}, 'domain_index': {'mode': 'index'},
-            'elastic': {'enable': True, 'index_prefix': 'tb-index', 'hosts': HOSTS,
-                        'bulk': {'enable': True, 'size': 500, 'interval_sec': 3600}},
-            'syslog': {'enable': False}}, {})
+            'elastic': elastic, 'syslog': {'enable': False}}, {})
         processor.resolve_contexts = lambda searches, **kwargs: (['news'], {})
         processor.resolve_chain = lambda chain: ([], [], [])
         return processor
 
     def run_once(self, consumer):
         out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err), \
-                mock.patch.object(P.opensearch_helpers, 'bulk', self.cluster.bulk):
+        with redirect_stdout(out), redirect_stderr(err):
             claimed = consumer.run_once()
         return claimed, out.getvalue(), err.getvalue()
 
     def indexed(self):
-        return [doc['_source']['bite']['requested'][0]
-                for _, docs, _ in self.cluster.requests for doc in docs]
+        return [doc['_source']['bite']['requested'][0] for doc in self.cluster.accepted]
 
     # -- the ordinary batch ------------------------------------------------
 
@@ -167,47 +215,101 @@ class ConsumerTest(unittest.TestCase):
         self.assertEqual(len(self.indexed()), 2)
         self.assertEqual(len(self.waiting()), 3)
 
-    # -- when OpenSearch refuses -------------------------------------------
+    # -- when OpenSearch does not take the batch, under every bulk setting --
+
+    def deliver(self, answers, events=4, bulk=BULK_OFF, strict=True):
+        """Pushes events, sets the hosts' answers and runs one cycle."""
+        self.cluster.answers = dict(answers)
+        payloads = [json.dumps(packet(f'{n}.example.com')).encode() for n in range(events)]
+        self.push(*payloads)
+        consumer = self.consumer(self.processor(bulk), batch_size=events)
+        if not strict:
+            # Only the control overrides it; otherwise the consumer's own setting holds
+            consumer.processor.strict_delivery = False
+        _, _, err = self.run_once(consumer)
+        return consumer, payloads, err
 
     def test_when_every_host_refuses_the_batch_is_requeued_in_order(self):
-        self.cluster.answers = {'http://search-1:9200': 'refuse', 'http://search-2:9200': 'refuse'}
-        payloads = [json.dumps(packet(f'{n}.example.com')).encode() for n in range(3)]
-        self.push(*payloads)
-        self.push(packet('later.example.com'))
-        consumer = self.consumer(batch_size=3)
-        _, _, err = self.run_once(consumer)
-        self.assertEqual(self.waiting()[:3], payloads)
-        self.assertEqual(len(self.waiting()), 4)
-        self.assertEqual(self.in_flight(), [])
-        self.assertEqual(consumer.stats['requeued'], 3)
-        self.assertEqual(consumer.stats['indexed'], 0)
-        self.assertIn('batch not indexed, requeueing 3 items', err)
+        for name, bulk in EVERY_SETTING.items():
+            with self.subTest(name):
+                self.setUp()
+                consumer, payloads, err = self.deliver(BOTH_DOWN, bulk=bulk)
+                self.assertEqual(self.waiting(), payloads)
+                self.assertEqual(self.in_flight(), [])
+                self.assertEqual(consumer.stats['requeued'], 4)
+                self.assertEqual(consumer.stats['indexed'], 0)
+                self.assertIn('batch not indexed, requeueing 4 items', err)
+
+    def test_without_strict_delivery_the_batch_would_be_lost(self):
+        # The control: the processor surfacing the failure is what saves it
+        for name, bulk in EVERY_SETTING.items():
+            if bulk is BULK_AT_END:
+                continue   # the consumer's own flush at batch end always raised
+            with self.subTest(name):
+                self.setUp()
+                self.deliver(BOTH_DOWN, bulk=bulk, strict=False)
+                self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_second_host_that_accepts_is_enough(self):
+        # The control for the requeue
+        for name, bulk in EVERY_SETTING.items():
+            with self.subTest(name):
+                self.setUp()
+                consumer, _, _ = self.deliver({'http://search-1:9200': 'refuse'}, bulk=bulk)
+                self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+                self.assertEqual(len(self.indexed()), 4)
+
+    def test_a_document_opensearch_asks_to_retry_requeues_the_batch(self):
+        for name, bulk in EVERY_SETTING.items():
+            with self.subTest(name):
+                self.setUp()
+                # With buffering off a 429 sends the event to the next host,
+                # so both have to ask; a bulk response answers for the cluster
+                consumer, payloads, err = self.deliver(
+                    {'http://search-1:9200': 'retry', 'http://search-2:9200': 'retry'}, bulk=bulk)
+                self.assertEqual(self.waiting(), payloads)
+                self.assertEqual(self.in_flight(), [])
+
+    def test_a_document_refused_for_good_is_logged_and_acknowledged(self):
+        # Retrying a mapping error would requeue the same document forever
+        for name, bulk in EVERY_SETTING.items():
+            with self.subTest(name):
+                self.setUp()
+                _, _, err = self.deliver({'http://search-1:9200': 'reject'}, bulk=bulk)
+                self.assertIn('OpenSearch rejected a document', err)
+                self.assertEqual((self.waiting(), self.in_flight()), ([], []))
 
     def test_each_host_is_tried_before_giving_up(self):
-        self.cluster.answers = {'http://search-1:9200': 'refuse', 'http://search-2:9200': 'refuse'}
-        self.push(packet('a.example.com'))
-        self.run_once(self.consumer())
+        self.deliver(BOTH_DOWN, events=1)
         self.assertEqual([host for host, _, _ in self.cluster.requests],
                          ['http://search-1:9200', 'http://search-2:9200'])
 
-    def test_a_second_host_that_accepts_is_enough(self):
-        # The control for the requeue: one host answering means the batch is
-        # indexed and acknowledged
-        self.cluster.answers = {'http://search-1:9200': 'refuse'}
-        self.push(packet('a.example.com'), packet('b.example.com'))
-        consumer = self.consumer()
+    def test_a_failed_flush_stops_the_batch_and_leaves_nothing_buffered(self):
+        # Two of the batch are sent and refused, so the rest are not tried,
+        # and nothing buffered is sent with the next batch to be indexed twice
+        consumer, _, _ = self.deliver(BOTH_DOWN, events=3, bulk=BULK_FULL)
+        self.assertEqual(consumer.stats['requeued'], 3)
+        self.assertNotIn(os.getpid(), P._bulk_buffers)
+        self.cluster.answers = {}
         self.run_once(consumer)
-        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
-        self.assertEqual(consumer.stats['indexed'], 2)
+        self.assertEqual(sorted(self.indexed()), ['0.example.com', '1.example.com',
+                                                  '2.example.com'])
 
-    def test_documents_a_host_rejects_are_logged_not_retried(self):
-        # A document OpenSearch will never accept, such as one that conflicts
-        # with the mapping, would otherwise come back round forever
-        self.cluster.answers = {'http://search-1:9200': 'reject'}
-        self.push(packet('a.example.com'))
-        _, _, err = self.run_once(self.consumer())
-        self.assertIn('OpenSearch rejected a document', err)
-        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+    def test_the_rq_path_still_logs_and_drops(self):
+        # A job has nothing to requeue to, so its processor raises nothing
+        self.cluster.answers = dict(BOTH_DOWN)
+        for bulk in EVERY_SETTING.values():
+            processor = self.processor(bulk)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                processor.process_packet(packet('a.example.com'))
+                processor.flush_bulk()
+            self.assertIn('OpenSearch', err.getvalue())
+
+    def test_the_consumer_installs_no_flush_hooks_of_its_own_making(self):
+        # They would replace its SIGTERM handler, which finishes the batch first
+        self.deliver({}, bulk=BULK_AT_END)
+        P._install_flush_hooks.assert_not_called()
 
     # -- one bad packet ----------------------------------------------------
 
@@ -258,19 +360,17 @@ class ConsumerTest(unittest.TestCase):
 
         successor = self.consumer()
         successor.stop()
-        with redirect_stdout(io.StringIO()), \
-                mock.patch.object(P.opensearch_helpers, 'bulk', self.cluster.bulk):
+        with redirect_stdout(io.StringIO()):
             successor.run()
         self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com'])
         self.assertEqual((self.waiting(), self.in_flight()), ([], []))
 
     def test_recovered_work_that_cannot_be_indexed_is_requeued(self):
-        self.cluster.answers = {'http://search-1:9200': 'refuse', 'http://search-2:9200': 'refuse'}
+        self.cluster.answers = dict(BOTH_DOWN)
         self.redis.rpush(f'{KEY}:processing:worker1-01', json.dumps(packet('a.example.com')))
         consumer = self.consumer()
         consumer.stop()
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
-                mock.patch.object(P.opensearch_helpers, 'bulk', self.cluster.bulk):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             consumer.run()
         self.assertEqual(len(self.waiting()), 1)
         self.assertEqual(self.in_flight(), [])
@@ -286,8 +386,7 @@ class ConsumerTest(unittest.TestCase):
             return real(data)
         processor.process_packet = then_stop
         out = io.StringIO()
-        with redirect_stdout(out), mock.patch.object(P.opensearch_helpers, 'bulk',
-                                                     self.cluster.bulk):
+        with redirect_stdout(out):
             consumer.run()
         self.assertEqual(len(self.indexed()), 2)
         self.assertEqual(len(self.waiting()), 2)

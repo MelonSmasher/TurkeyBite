@@ -214,8 +214,16 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    Valkey list. Workers claim a batch, sieve and enrich it, index it, and only
    then acknowledge. The list persists, so a restart resumes instead of losing
    what was in flight, `LLEN` gives you a real backlog metric, and a burst makes
-   the list grow visibly rather than disappearing. Delivery is at-least-once, so
-   a crash between indexing and acknowledging can duplicate a batch.
+   the list grow visibly rather than disappearing. A batch OpenSearch does not
+   take goes back on the list instead of being acknowledged, whether
+   `processor.elastic.bulk` is on or off: when every host refuses it, and when
+   OpenSearch asks for any document in it to be retried later, as it does with
+   a 429 when its queues are full. A document OpenSearch refuses for good, such
+   as one that conflicts with the index mapping, is logged and acknowledged,
+   since retrying it would never succeed. Delivery is at-least-once: a crash
+   between indexing and acknowledging, or a batch requeued after part of it was
+   indexed, indexes those documents again, and sends their syslog copies again.
+   A duplicate is the price of never dropping a batch.
 
    **`channel`, with `TURKEYBITE_PIPELINE=rq`.** Packetbeat PUBLISHes and the
    core subscribes. This is the original path and it is lossy by construction:

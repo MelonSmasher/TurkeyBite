@@ -197,6 +197,34 @@ def _report_host_error(host, error, action):
               file=sys.stderr)
 
 
+class DeliveryError(RuntimeError):
+    """OpenSearch did not take an event, and it is worth trying again later."""
+
+
+# Per-document statuses in a bulk response that mean try again later rather
+# than never: rejected because a queue was full, or a shard was unavailable
+RETRYABLE_STATUSES = frozenset((429, 502, 503, 504))
+
+
+def retryable_rejection(error):
+    """True when one per-document bulk error says to try again later.
+
+    opensearch-py reports each as {operation: {status, error}}. A mapping
+    error and the like is a 400, permanent, and retrying it would only
+    requeue the same document forever.
+    """
+    if not isinstance(error, dict):
+        return False
+    return any(isinstance(item, dict) and item.get('status') in RETRYABLE_STATUSES
+               for item in error.values())
+
+
+def permanent_refusal(error):
+    """True when OpenSearch refused one document for good: a 4xx other than 408 or 429."""
+    status = getattr(error, 'status_code', None)
+    return isinstance(status, int) and 400 <= status < 500 and status not in (408, 429)
+
+
 # Documents waiting to be flushed as one bulk request, keyed by pid for the same
 # reason. Only useful when the worker process outlives a single job.
 _bulk_buffers = {}
@@ -451,6 +479,14 @@ def client_identity(event_data):
 
 
 class Processor(object):
+
+    # Set by the consumer, which acknowledges a batch only after it is indexed
+    # and so can requeue one that is not. When OpenSearch does not take an
+    # event, process_packet then raises DeliveryError rather than dropping it.
+    # The RQ path leaves it off: a job has nothing to requeue to, and is lossy
+    # by design. A class attribute, so a processor pickled before it existed
+    # still has it.
+    strict_delivery = False
 
     def __init__(self, config, redis_conf):
         """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
@@ -959,14 +995,22 @@ class Processor(object):
         return ''.join([self.config['elastic']['index_prefix'], '-',
                         datetime.now().strftime("%Y-%m-%d")])
 
-    def flush_bulk(self, force=True, raise_on_total_failure=False):
+    def flush_bulk(self, force=True, raise_on_total_failure=None):
         """Sends buffered documents as one bulk request.
 
-        Returns the number accepted. With raise_on_total_failure the caller is
-        told when every host refused, so a consumer that acknowledges after the
-        flush can requeue instead of losing the batch. The RQ path leaves it off
-        because it has nothing to requeue to.
+        Returns the number accepted. With raise_on_total_failure, which
+        defaults to strict_delivery, the caller is told with DeliveryError
+        when every host refused, or when OpenSearch asked for any document to
+        be retried later, so a consumer that acknowledges after the flush can
+        requeue the batch instead of losing it. The batch is requeued whole,
+        so documents that were indexed in it are indexed again: at-least-once
+        delivery already allows that, and losing the rest does not. A
+        document refused for good, by a mapping error say, is logged and not
+        retried. The RQ path passes nothing and keeps its behaviour, which is
+        to log and drop.
         """
+        if raise_on_total_failure is None:
+            raise_on_total_failure = self.strict_delivery
         buffer = _bulk_buffers.get(os.getpid())
         if not buffer or not buffer['docs']:
             return 0
@@ -980,16 +1024,27 @@ class Processor(object):
             try:
                 ok, errors = opensearch_helpers.bulk(
                     opensearch_client(host), docs, raise_on_error=False, stats_only=False)
-                for error in errors or []:
-                    print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
-                return ok
             except Exception as e:
                 _report_host_error(host, e, 'bulk sending')
                 continue
+            retry = [error for error in errors or [] if retryable_rejection(error)]
+            for error in errors or []:
+                if error not in retry:
+                    print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
+            if retry and raise_on_total_failure:
+                raise DeliveryError(f'OpenSearch asked for {len(retry)} of {len(docs)} '
+                                    f'documents to be retried: {retry[0]}')
+            for error in retry:
+                print(f"Dropped a document OpenSearch asked to retry: {error}", file=sys.stderr)
+            return ok
         if raise_on_total_failure:
-            raise RuntimeError(f'every OpenSearch host refused {len(docs)} documents')
+            raise DeliveryError(f'every OpenSearch host refused {len(docs)} documents')
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
         return 0
+
+    def discard_bulk(self):
+        """Forgets anything buffered, for a caller about to requeue the events it came from."""
+        _bulk_buffers.pop(os.getpid(), None)
 
     def ship_bite(self, bite):
         """Sends one event to every enabled output.
@@ -1004,19 +1059,30 @@ class Processor(object):
             if bulk_enabled:
                 buffer = _bulk_buffers.setdefault(
                     os.getpid(), {'docs': [], 'since': time.monotonic()})
-                if not buffer['docs']:
+                if not buffer['docs'] and not self.strict_delivery:
+                    # The consumer flushes, and handles signals, itself
                     _install_flush_hooks(self.flush_bulk)
                 buffer['docs'].append({'_index': self.index_name(), '_source': bite})
+                # Raises DeliveryError for the consumer when this flush fails
                 self.flush_bulk(force=False)
             else:
                 index = self.index_name()
+                delivered = refused = False
                 for host in self.config['elastic']['hosts']:
                     try:
                         opensearch_client(host).index(index=index, body=bite)
+                        delivered = True
                         break
                     except Exception as e:
+                        if permanent_refusal(e):
+                            # Another host of the same cluster would refuse it too
+                            print(f"OpenSearch rejected a document: {e}", file=sys.stderr)
+                            refused = True
+                            break
                         _report_host_error(host, e, 'sending')
                         continue
+                if not (delivered or refused) and self.strict_delivery:
+                    raise DeliveryError('every OpenSearch host failed to take an event')
 
         if self.config['syslog']['enable']:
             try:

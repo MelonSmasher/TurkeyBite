@@ -15,6 +15,14 @@ Because the acknowledgement happens after the flush, bulk buffering stops being
 a loss window and becomes free. That is the trade O2 could not make under RQ,
 which marked a job finished the moment the processor returned.
 
+A batch OpenSearch does not take is requeued whole rather than acknowledged,
+whether bulk buffering is on or off: when every host refuses, or when it asks
+for any document to be retried later, as it does with a 429 when its queues
+are full. Documents that were indexed before the failure are indexed again
+when the batch is replayed, and its syslog copies are sent again. A document
+refused for good, by a mapping error say, is logged and acknowledged, since
+retrying it would requeue it forever.
+
 Delivery is at-least-once. A crash between flush and ack replays that batch, so
 a small number of documents can be indexed twice. Documents are given
 auto-generated ids rather than a content hash, deliberately: two identical DNS
@@ -30,6 +38,7 @@ import sys
 import time
 
 from libtb.inlet import describe
+from libtb.processor import DeliveryError
 
 
 class Consumer(object):
@@ -44,6 +53,9 @@ class Consumer(object):
         self.processor = processor
         self.batch_size = batch_size
         self.block_seconds = block_seconds
+        # A batch is acknowledged only once indexed, so the processor must say
+        # when an event was not, rather than log and drop it as the RQ path does
+        processor.strict_delivery = True
         # The Inlet logged every packet it saw, queued or dropped. This path
         # replaces the Inlet, so it keeps that behaviour rather than silently
         # removing the only per-event visibility there was. Turn it off with
@@ -95,6 +107,14 @@ class Consumer(object):
             try:
                 self.processor.process_packet(data)
                 kept += 1
+            except DeliveryError as e:
+                # OpenSearch is down or asked for a retry, so the rest would
+                # fare no better: requeue the whole batch now. What is still
+                # buffered goes too, or the replay would index it twice more.
+                self.processor.discard_bulk()
+                print(f'[{self.name}] batch not indexed, requeueing {len(items)} items: {e}',
+                      file=sys.stderr)
+                return None
             except Exception as e:
                 # An enrichment failure is this event's problem, not the batch's
                 print(f'[{self.name}] failed to process a packet: {e}', file=sys.stderr)

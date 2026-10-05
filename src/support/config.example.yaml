@@ -159,12 +159,15 @@ processor:
   elastic:
     enable: true
     index_prefix: tb-index
-    # Batching only helps when a worker handles more than one job, so it needs
-    # TURKEYBITE_WORKER_CLASS=rq.SimpleWorker. It also opens a loss window: RQ
-    # marks a job finished when the processor returns, so buffered documents are
-    # gone if a worker dies uncleanly. Flush hooks cover a clean stop and a
-    # SIGTERM, not a SIGKILL. Leave this off until the queue can acknowledge
-    # after the flush.
+    # With TURKEYBITE_PIPELINE=consume, batching is safe and worth turning on:
+    # a batch is acknowledged only once OpenSearch has taken it, and requeued
+    # if not, on or off.
+    #
+    # With the rq pipeline it only helps when a worker handles more than one
+    # job, so it needs TURKEYBITE_WORKER_CLASS=rq.SimpleWorker, and it opens a
+    # loss window: RQ marks a job finished when the processor returns, so
+    # buffered documents are gone if a worker dies uncleanly. Flush hooks cover
+    # a clean stop and a SIGTERM, not a SIGKILL.
     bulk:
       enable: false
       size: 500
