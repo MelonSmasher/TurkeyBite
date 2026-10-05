@@ -33,10 +33,11 @@ def check():
     Loads it and validates everything a worker needs: the sieve, the evidence,
     resolver and privacy settings, and each OpenSearch host, including that a
     ca_certs file is there and that the password is not the shipped default.
-    The worker and core containers run this before they start anything, and
-    exit if it fails: under the rq pipeline a worker process never reads the
-    settings itself, so a CA file missing from its container would otherwise
-    only show as events failing to ship.
+    The core container runs this before it starts anything, as does a worker
+    container on the consume pipeline, and each exits if it fails rather than
+    showing a mistake only as events failing to ship. Under the rq pipeline a
+    worker runs the processor each job carries, which the core built from its
+    own config.yaml, so the core's check is the one that covers it.
     """
     try:
         config = read_config()
