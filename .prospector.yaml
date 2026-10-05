@@ -1,0 +1,19 @@
+# Read by Codacy's Prospector engine, which is what runs pydocstyle there.
+# Codacy only uses it once "Use configuration file" is switched on for
+# Prospector on the repository's Code patterns page; until then the patterns
+# chosen in Codacy apply and this file is ignored. Once it is on, this file is
+# all of Prospector's configuration, for its other tools too.
+#
+# These are Prospector's defaults, with docstring checks on, as Codacy runs
+# them, and two of pydocstyle's checks off. pydocstyle runs every check, and
+# two pairs of them contradict each other, so every docstring breaks one rule
+# of each pair whichever way it is written. This codebase puts the summary on
+# the first line, as D212 asks, and no blank line before a class docstring,
+# as D211 asks, so the opposite of each is switched off.
+strictness: medium
+doc-warnings: true
+
+pydocstyle:
+  disable:
+    - D213  # summary on the second line, the opposite of D212
+    - D203  # a blank line before a class docstring, the opposite of D211
