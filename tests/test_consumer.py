@@ -41,10 +41,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from opensearchpy.exceptions import TransportError
+from redis.exceptions import ConnectionError as ValkeyConnectionError
 
 from fakes import FakeRedis
 from libtb import processor as P
-from libtb.consumer import Consumer
+from libtb.consumer import BACKOFF_START, Consumer
 from libtb.processor import Processor
 from libtb.queue import ListQueue
 from libtb.sieve import Filters
@@ -476,6 +477,113 @@ class ConsumerTest(unittest.TestCase):
         consumer = self.consumer()
         self.run_once(consumer)
         self.assertEqual(self.rested, [])
+
+    def test_a_long_outage_rests_a_minute_rather_than_overflowing(self):
+        # Uncapped, the 1025th failure in a row would raise
+        with self.assertRaises(OverflowError):
+            BACKOFF_START * 2 ** 1024
+        consumer = self.consumer()
+        consumer.failures = 5000
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(consumer.rest(), 60)
+
+    # -- Valkey not answering ----------------------------------------------
+
+    def drain(self, consumer):
+        """Runs the consumer until the queue is empty, then stops it. Returns stderr."""
+        real = self.redis.blmove
+
+        def stop_when_empty(*args):
+            item = real(*args)
+            if item is None:
+                consumer.stop()
+            return item
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.redis, 'blmove', stop_when_empty), \
+                redirect_stdout(out), redirect_stderr(err):
+            consumer.run()
+        return err.getvalue()
+
+    def fail(self, command, times, when=lambda *args: True):
+        """Makes the fake's `command` raise as Valkey going away does, `times` times."""
+        real, failures = getattr(self.redis, command), []
+
+        def flaky(*args):
+            if len(failures) < times and when(*args):
+                failures.append(args)
+                raise ValkeyConnectionError('Error 111 connecting to valkey:6379')
+            return real(*args)
+        patcher = mock.patch.object(self.redis, command, flaky)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_valkey_going_away_is_waited_out_rather_than_fatal(self):
+        self.push(packet('a.example.com'), packet('b.example.com'))
+        self.fail('blmove', 2)
+        consumer = self.consumer()
+        err = self.drain(consumer)
+        self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com'])
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+        # A second's rest, then two, served in slices; the batch ended them
+        self.assertEqual(sum(self.rested), 3)
+        self.assertEqual(consumer.failures, 0)
+        self.assertIn('Valkey did not answer', err)
+
+    def test_a_requeue_valkey_did_not_take_is_handled_before_the_next_claim(self):
+        # OpenSearch refuses a and b, and Valkey goes away as they are put
+        # back, so they are still in flight when it returns. They are handled
+        # again before c is claimed; c's acknowledgement trims from the head
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
+        self.fail('lmove', 1, when=lambda src, dst, *_: dst == KEY)
+        consumer = self.consumer(self.processor(BULK_OFF), batch_size=2,
+                                 sleep=lambda seconds: self.cluster.answers.clear())
+        self.drain(consumer)
+        self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com', 'c.example.com'])
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_without_handling_it_again_the_next_acknowledgement_loses_it(self):
+        # The control: going straight on to claim c, whose acknowledgement
+        # trims a from the head of the processing list though a was never indexed
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
+        self.fail('lmove', 1, when=lambda src, dst, *_: dst == KEY)
+        consumer = self.consumer(self.processor(BULK_OFF), batch_size=2,
+                                 sleep=lambda seconds: self.cluster.answers.clear())
+        real = consumer.settle_stranded
+        consumer.settle_stranded = lambda why: real(why) if 'previous run' in why else None
+        self.drain(consumer)
+        self.assertNotIn('a.example.com', self.indexed())
+        left = [json.loads(raw)['resource'] for raw in self.waiting() + self.in_flight()]
+        self.assertNotIn('a.example.com', left)
+
+    def test_a_lookup_valkey_did_not_answer_costs_no_event(self):
+        # The valkey lookup mode reads the host lists from Valkey as it
+        # enriches, so its going away is not a bad packet to count and drop
+        self.push(packet('a.example.com'))
+        processor = self.processor()
+        lookups = []
+
+        def flaky(searches, **kwargs):
+            lookups.append(searches)
+            if len(lookups) == 1:
+                raise ValkeyConnectionError('Connection reset by peer')
+            return ['news'], {}
+        processor.resolve_contexts = flaky
+        consumer = self.consumer(processor)
+        self.drain(consumer)
+        self.assertEqual(self.indexed(), ['a.example.com'])
+        self.assertEqual(consumer.stats['unreadable'], 0)
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_stop_while_valkey_is_away_exits(self):
+        self.fail('lrange', 1000)
+        consumer = self.consumer(sleep=lambda seconds: consumer.stop())
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(err):
+            consumer.run()
+        self.assertIn('[worker1-01] stopped.', out.getvalue())
+        self.assertIn('Valkey did not answer', err.getvalue())
 
     def test_stop_finishes_the_batch_in_hand_then_exits(self):
         self.push(*[packet(f'{n}.example.com') for n in range(4)])

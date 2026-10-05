@@ -232,7 +232,11 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    the worker rests before claiming the next, one second and doubling with
    each failure in a row up to a minute, so an OpenSearch outage costs a log
    line a minute rather than a loop that claims and fails as fast as Valkey
-   answers. The first batch OpenSearch takes ends the rests.
+   answers. The first batch OpenSearch takes ends the rests. When Valkey
+   stops answering the worker rests the same way rather than exiting, so a
+   Valkey restart does not leave it stopped for good once supervisor runs out
+   of retries, and when Valkey is back it handles again whatever it had in
+   flight before claiming more.
 
    A batch a worker had claimed when it died stays in that consumer's
    processing list. Each worker container, as it starts, requeues what is
