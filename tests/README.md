@@ -11,9 +11,12 @@ tests/run.sh test_ptr_cache.PtrCacheTest.test_the_ttl_expires  # one test
 TB_VENV=~/.cache/tb-venv tests/run.sh
 ```
 
-Several names can be given at once. `run.sh` builds `.venv` on first use from
-`src/requirements.txt`, and puts `tests/` on the import path so a module can be
-named on its own, as above. To run without it, from the repository root:
+Several names can be given at once. `run.sh` builds `.venv` from
+`src/requirements.txt` on first use, and again whenever that file changes; an
+install that fails is tried again next time rather than leaving a broken
+`.venv` in use. `tests/run.sh --prepare` does only that. It also puts `tests/`
+on the import path, so a module can be named on its own, as above. To run
+without it, from the repository root:
 
 ```sh
 python -m unittest discover -s tests -p 'test_*.py'
