@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    # The librarian's script waits up to ten minutes for OpenSearch, so a test
+    # that let it reach a real cluster would hang rather than fail
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Python the suite is checked against, and the newest
+        # release, which is what the containers' python:3-alpine runs
+        python: ['3.12', '3.x']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: src/requirements.txt
+
+      - name: Install the runtime requirements
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check -r src/requirements.txt
+
+      - name: Run the tests without network access
+        # In a network namespace holding only loopback, so a test that reaches
+        # the network fails here instead of passing while the network is up.
+        # Making the namespace needs root; the tests run as the runner again.
+        run: >-
+          sudo unshare --net sh -c
+          "ip link set lo up && exec sudo -u $(id -un) env TB_VENV=$PWD/.venv tests/run.sh"

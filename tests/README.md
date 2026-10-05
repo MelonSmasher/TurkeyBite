@@ -20,6 +20,12 @@ python -m unittest discover -s tests -p 'test_*.py'
 PYTHONPATH=tests python -m unittest test_ptr_cache
 ```
 
+GitHub Actions runs the suite on every push and pull request, on Python 3.12
+and the newest 3.x, from `.github/workflows/tests.yml`. It runs inside a
+network namespace that holds only loopback, so a test that reaches the network
+fails there instead of passing while the network happens to be up. No test
+needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
+
 ## What is covered, and why it is covered that way
 
 | Suite | Subject |
