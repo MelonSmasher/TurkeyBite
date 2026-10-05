@@ -4,12 +4,21 @@ Plain `unittest`, no test-runner dependency. The suites import `libtb` from
 `../src`, so they need the runtime requirements installed.
 
 ```sh
-tests/run.sh                  # everything
-tests/run.sh test_ptr_cache   # one module
+tests/run.sh                                                   # everything
+tests/run.sh test_ptr_cache                                    # one module
+tests/run.sh test_ptr_cache.PtrCacheTest                       # one class
+tests/run.sh test_ptr_cache.PtrCacheTest.test_the_ttl_expires  # one test
 TB_VENV=~/.cache/tb-venv tests/run.sh
 ```
 
-`run.sh` builds `.venv` on first use from `src/requirements.txt`.
+Several names can be given at once. `run.sh` builds `.venv` on first use from
+`src/requirements.txt`, and puts `tests/` on the import path so a module can be
+named on its own, as above. To run without it, from the repository root:
+
+```sh
+python -m unittest discover -s tests -p 'test_*.py'
+PYTHONPATH=tests python -m unittest test_ptr_cache
+```
 
 ## What is covered, and why it is covered that way
 
