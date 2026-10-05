@@ -26,6 +26,7 @@ TB_VENV=~/.cache/tb-venv tests/run.sh
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
 | `test_privacy.py` | What events keep of their URLs and of the raw packet: trimming in `bite`, the packet and Browserbeat's `url_data`, failing closed on whitespace of every kind, strings that are not URLs left alone, `ship_bite` as the one way out, and the outputs, the log line and the jobs the inlet queues all trimmed, with `urls: full` as the control |
 | `test_retention.py` | The ISM policy that deletes old indices: nothing done while unset, a shorter period refused until confirmed, an upgrade never attaching it to existing indices, managed indices moved onto its current version, 0 deleting it only once nothing is left under it, and an operator's overlapping policy left to win, against an in-memory fake of the ISM API |
+| `test_setup.py` | Running setup.py again: settings an operator set by hand survive, the OpenSearch password reaches both files that hold it or neither, and the retention prompt offers the period already set |
 | `test_opensearch_access.py` | How workers and the librarian reach OpenSearch: certificate verification only when asked for and a warning when not, and the shipped default password refused by workers, the librarian's script and setup.py, with the escape hatch opened only by `yes`. The librarian's script runs against a fake curl |
 
 Three habits are worth keeping when adding to these.

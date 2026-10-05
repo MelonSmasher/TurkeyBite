@@ -89,6 +89,8 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    
    For distributed deployments, you'll run this script on each node with the appropriate configuration.
 
+   Running it again on an existing install edits `config.yaml` and `.env` rather than replacing them, if you let it update them: it changes only what it asks about, adds settings that are missing, and keeps everything else you set, such as `processor.privacy`, a host's `verify_certs` and `ca_certs`, or `OPENSEARCH_CA_CERT`. Comments in `config.yaml` are not kept. It offers the retention period and OpenSearch password already in `.env`, so pressing Enter keeps them. A new OpenSearch password is written to both files or, if you decline to update either, to neither.
+
 3. **Review configuration (optional)**
 
    The setup script automatically generates the following configuration files:
@@ -316,7 +318,7 @@ These settings apply from the next event. **Indices already written keep the ful
 
 ### Changing the OpenSearch admin password
 
-`Changeit12345!` was the OpenSearch admin password in `setup.py`, `example.env` and `config.example.yaml`, so anyone who has read this repository knows it, and the admin account can read and delete every event. The core and the workers refuse to start when a host in `processor.elastic.hosts` uses it, and the librarian refuses to set up OpenSearch when `OPENSEARCH_PASSWORD` is it. `setup.sh` no longer offers it: it generates a password when you press Enter, and refuses the old one if you type it.
+`Changeit12345!` was the OpenSearch admin password in `setup.py`, `example.env` and `config.example.yaml`, so anyone who has read this repository knows it, and the admin account can read and delete every event. The core and the workers refuse to start when a host in `processor.elastic.hosts` uses it, and the librarian refuses to set up OpenSearch when `OPENSEARCH_PASSWORD` is it. `setup.sh` no longer offers it: it generates a password when you press Enter, and refuses the old one if you type it. When it sets a new password it writes it to `.env` and `config.yaml` together, and abandons the change if you decline to update either; it does not change the password inside a running OpenSearch, so it reminds you to do that as below.
 
 OpenSearch reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` only when its data volume is new, so on a cluster that already holds data, changing `.env` is not enough: change the password in OpenSearch itself, then everywhere TurkeyBite reads it. These steps were checked against `opensearchproject/opensearch:3` (3.9.0) with its demo security configuration:
 
