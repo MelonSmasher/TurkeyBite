@@ -1,0 +1,211 @@
+"""Tests for the durable queue the consume pipeline reads.
+
+The queue exists because pub/sub lost whatever was in flight on every
+restart, so what must not happen is an event leaving the processing list
+before it is indexed: an acknowledgement that removes too much, a requeue
+that loses or reorders items, or a recovery sweep that takes another host's
+in-flight work. Each of those is tested from the Redis lists themselves, not
+from what the queue object reports.
+
+No test touches the network. Redis is tests/fakes.py, which is checked here
+against the Redis behaviour the queue relies on.
+"""
+
+import os
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
+sys.path.insert(0, HERE)
+
+from fakes import FakeRedis
+from libtb.queue import ListQueue, recover_orphans
+
+KEY = 'turkeybite'
+
+
+def items(*names):
+    return [name.encode('utf-8') for name in names]
+
+
+class FakeRedisTest(unittest.TestCase):
+    """The fake has to be right where the queue depends on it, or it hides bugs."""
+
+    def test_an_emptied_list_no_longer_exists(self):
+        redis = FakeRedis()
+        redis.rpush('l', 'a')
+        redis.lmove('l', 'm', 'LEFT', 'RIGHT')
+        self.assertNotIn('l', redis.data)
+        redis.ltrim('m', 1, -1)
+        self.assertNotIn('m', redis.data)
+
+    def test_ranges_are_inclusive_and_count_back_from_the_end(self):
+        redis = FakeRedis()
+        redis.rpush('l', 'a', 'b', 'c', 'd')
+        self.assertEqual(redis.lrange('l', 0, -1), items('a', 'b', 'c', 'd'))
+        self.assertEqual(redis.lrange('l', 1, 2), items('b', 'c'))
+        self.assertEqual(redis.lrange('l', -2, -1), items('c', 'd'))
+        self.assertEqual(redis.lrange('l', 3, 1), [])
+        self.assertEqual(redis.lrange('missing', 0, -1), [])
+
+    def test_lpush_of_several_values_reverses_them(self):
+        # Which is why the queue pushes in reverse to restore order
+        redis = FakeRedis()
+        redis.lpush('l', 'a', 'b', 'c')
+        self.assertEqual(redis.lrange('l', 0, -1), items('c', 'b', 'a'))
+
+    def test_values_come_back_as_bytes(self):
+        redis = FakeRedis()
+        redis.set('k', 'v')
+        redis.rpush('l', 'x')
+        self.assertEqual((redis.get('k'), redis.lrange('l', 0, 0)), (b'v', [b'x']))
+        self.assertEqual(list(redis.scan_iter(match='*')), [b'k', b'l'])
+
+
+class ListQueueTest(unittest.TestCase):
+
+    def setUp(self):
+        self.redis = FakeRedis()
+        self.queue = ListQueue(self.redis, KEY, 'worker1-01')
+        self.processing = f'{KEY}:processing:worker1-01'
+
+    def waiting(self):
+        return self.redis.lrange(KEY, 0, -1)
+
+    def in_flight(self):
+        return self.redis.lrange(self.processing, 0, -1)
+
+    def push(self, *names):
+        for name in names:
+            self.queue.push(name)
+
+    # -- claiming ---------------------------------------------------------
+
+    def test_a_claim_moves_items_into_this_consumers_processing_list(self):
+        self.push('a', 'b', 'c')
+        self.assertEqual(self.queue.claim(2), items('a', 'b'))
+        self.assertEqual(self.waiting(), items('c'))
+        self.assertEqual(self.in_flight(), items('a', 'b'))
+        self.assertEqual((self.queue.depth(), self.queue.in_flight()), (1, 2))
+
+    def test_items_are_claimed_in_the_order_the_beat_pushed_them(self):
+        self.push('a', 'b', 'c')
+        self.assertEqual(self.queue.claim(10), items('a', 'b', 'c'))
+
+    def test_only_the_first_item_is_waited_for(self):
+        # A quiet queue must not hold back a partial batch
+        self.push('a', 'b')
+        self.assertEqual(self.queue.claim(500, block_seconds=3), items('a', 'b'))
+        self.assertEqual(self.redis.blocked_for, [3])
+
+    def test_an_empty_queue_claims_nothing(self):
+        self.assertEqual(self.queue.claim(10), [])
+        self.assertEqual(self.in_flight(), [])
+
+    def test_the_batch_size_is_respected(self):
+        self.push(*'abcdef')
+        self.assertEqual(len(self.queue.claim(4)), 4)
+        self.assertEqual(self.queue.depth(), 2)
+
+    # -- acknowledging ----------------------------------------------------
+
+    def test_an_ack_removes_only_the_acknowledged_items(self):
+        # Anything claimed after this batch has not been indexed yet
+        self.push(*'abcde')
+        self.queue.claim(3)
+        self.queue.claim(2)
+        self.queue.ack(3)
+        self.assertEqual(self.in_flight(), items('d', 'e'))
+
+    def test_an_ack_of_nothing_removes_nothing(self):
+        self.push('a', 'b')
+        self.queue.claim(2)
+        for count in (0, -1, -2):
+            self.queue.ack(count)
+            # LTRIM -1 -1 would keep only the last item; the guard prevents it
+            self.assertEqual(self.in_flight(), items('a', 'b'), count)
+
+    def test_until_it_is_acknowledged_a_claimed_item_can_be_recovered(self):
+        self.push('a', 'b')
+        self.queue.claim(2)
+        restarted = ListQueue(self.redis, KEY, 'worker1-01')
+        self.assertEqual(restarted.recover(), items('a', 'b'))
+
+    def test_another_consumer_does_not_recover_it(self):
+        self.push('a')
+        self.queue.claim(1)
+        self.assertEqual(ListQueue(self.redis, KEY, 'worker1-02').recover(), [])
+
+    # -- requeueing -------------------------------------------------------
+
+    def test_a_requeued_batch_goes_back_to_the_head_in_order(self):
+        self.push('a', 'b', 'c', 'd')
+        claimed = self.queue.claim(2)
+        self.push('e')
+        self.queue.requeue(claimed)
+        self.assertEqual(self.waiting(), items('a', 'b', 'c', 'd', 'e'))
+        self.assertEqual(self.in_flight(), [])
+
+    def test_requeueing_nothing_changes_nothing(self):
+        self.push('a')
+        self.queue.claim(1)
+        self.queue.requeue([])
+        self.assertEqual(self.in_flight(), items('a'))
+
+
+class RecoverOrphansTest(unittest.TestCase):
+    """Work stranded by a consumer whose name has changed."""
+
+    def setUp(self):
+        self.redis = FakeRedis()
+
+    def strand(self, consumer, *names, key=KEY):
+        self.redis.rpush(f'{key}:processing:{consumer}', *names)
+
+    def test_stranded_work_is_requeued_in_order_and_the_list_removed(self):
+        self.strand('old-01', 'a', 'b', 'c')
+        self.redis.rpush(KEY, 'z')
+        self.assertEqual(recover_orphans(self.redis, KEY), (1, 3))
+        self.assertEqual(self.redis.lrange(KEY, 0, -1), items('a', 'b', 'c', 'z'))
+        self.assertNotIn(f'{KEY}:processing:old-01', self.redis.data)
+
+    def test_named_consumers_are_left_alone(self):
+        self.strand('old-01', 'a')
+        self.strand('live-01', 'b')
+        self.assertEqual(recover_orphans(self.redis, KEY, keep_consumers=['live-01']), (1, 1))
+        self.assertEqual(self.redis.lrange(f'{KEY}:processing:live-01', 0, -1), items('b'))
+
+    def test_a_prefix_leaves_another_hosts_work_alone(self):
+        self.strand('host-a-01', 'a')
+        self.strand('host-b-01', 'b')
+        self.assertEqual(recover_orphans(self.redis, KEY, match='host-a-'), (1, 1))
+        self.assertEqual(self.redis.lrange(f'{KEY}:processing:host-b-01', 0, -1), items('b'))
+
+    def test_a_prefix_ending_at_the_dash_does_not_take_a_longer_name(self):
+        # worker1 is a prefix of worker10, so only the dash that ends the
+        # prefix in a consumer's name keeps one host off the other's work
+        self.strand('worker1-01', 'a')
+        self.strand('worker10-01', 'b')
+        recover_orphans(self.redis, KEY, match='worker1-')
+        self.assertEqual(self.redis.lrange(f'{KEY}:processing:worker10-01', 0, -1), items('b'))
+
+    def test_without_the_dash_a_longer_name_is_taken(self):
+        # The control for the test above
+        self.strand('worker10-01', 'b')
+        recover_orphans(self.redis, KEY, match='worker1')
+        self.assertNotIn(f'{KEY}:processing:worker10-01', self.redis.data)
+
+    def test_another_queues_lists_are_left_alone(self):
+        self.strand('old-01', 'a', key='other')
+        self.assertEqual(recover_orphans(self.redis, KEY), (0, 0))
+        self.assertIn('other:processing:old-01', self.redis.data)
+
+    def test_the_queue_itself_is_never_swept(self):
+        self.redis.rpush(KEY, 'waiting')
+        recover_orphans(self.redis, KEY)
+        self.assertEqual(self.redis.lrange(KEY, 0, -1), items('waiting'))
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

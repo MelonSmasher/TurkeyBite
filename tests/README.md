@@ -39,11 +39,18 @@ needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
 | `test_independence.py` | The report on how much one list repeats another, and which overlaps it flags |
 | `test_resolvers.py` | Public filtering resolvers as a second opinion: when they are asked, what their answers mean, what is remembered, and that they never assert alone |
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
+| `test_queue.py` | The durable queue: claiming, acknowledging only what was indexed, requeueing in order, and the recovery sweep taking only its own host's stranded work |
+| `test_consumer.py` | The consumer's claim, sieve, enrich, flush, acknowledge cycle: nothing acknowledged before the flush, a batch requeued when every OpenSearch host refuses, and one bad packet costing only itself |
 | `test_privacy.py` | What events keep of their URLs and of the raw packet: trimming in `bite`, the packet and Browserbeat's `url_data`, failing closed on whitespace of every kind, strings that are not URLs left alone, `ship_bite` as the one way out, and the outputs, the log line and the jobs the inlet queues all trimmed, with `urls: full` as the control |
 | `test_retention.py` | The ISM policy that deletes old indices: nothing done while unset, a shorter period refused until confirmed, an upgrade never attaching it to existing indices, managed indices moved onto its current version, 0 deleting it only once nothing is left under it, and an operator's overlapping policy left to win, against an in-memory fake of the ISM API |
 | `test_preflight.py` | `turkeybite check`, which the worker and core containers run before starting anything, and a configuration fault reaching ship time reported once per container rather than once per event |
 | `test_setup.py` | Running setup.py again: settings an operator set by hand survive, the OpenSearch password reaches both files that hold it or neither, and the retention prompt offers the period already set |
 | `test_opensearch_access.py` | How workers and the librarian reach OpenSearch: certificate verification only when asked for and a warning when not, and the shipped default password refused by workers, the librarian's script and setup.py, with the escape hatch opened only by `yes`. The librarian's script runs against a fake curl |
+
+`fakes.py` holds an in-memory Redis for the suites that need one. It
+implements only the commands the code under test uses, behaves as Redis does
+where that code relies on it, and `test_queue.py` checks it does. Add a command
+there, with a check, rather than writing another fake.
 
 Three habits are worth keeping when adding to these.
 
