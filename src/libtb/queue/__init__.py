@@ -171,11 +171,16 @@ class ListQueue(object):
         """Puts items back at the head of the queue, preserving order.
 
         Used when a batch cannot be indexed and should be retried rather than
-        dropped. The processing list is cleared for exactly those items.
+        dropped. One atomic LMOVE per item, from the processing list's tail to
+        the queue's head, so an item is never in both places or in neither:
+        pushing copies and then trimming the originals left the whole batch in
+        both if the connection dropped in between, and a restart replayed it.
+        A consumer claims its next batch only once this one is settled, so the
+        batch is all its processing list holds, and the tail is its end.
+        Returns how many were moved.
         """
-        if not items:
-            return
-        # LPUSH reverses, so push in reverse to restore the original order
-        for payload in reversed(items):
-            self.redis.lpush(self.key, payload)
-        self.ack(len(items))
+        moved = 0
+        while moved < len(items) and self.redis.lmove(
+                self.processing_key, self.key, 'RIGHT', 'LEFT') is not None:
+            moved += 1
+        return moved

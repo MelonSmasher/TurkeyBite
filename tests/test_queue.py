@@ -175,6 +175,26 @@ class ListQueueTest(unittest.TestCase):
         self.assertEqual(self.waiting(), items('a', 'b', 'c', 'd', 'e'))
         self.assertEqual(self.in_flight(), [])
 
+    def test_a_requeue_cut_short_leaves_each_item_in_one_place(self):
+        # The connection drops after the first move: what was moved is
+        # waiting, the rest is still in flight for recovery, and nothing is
+        # in both, which pushing copies before trimming could not promise
+        self.push('a', 'b', 'c')
+        claimed = self.queue.claim(3)
+
+        def drops_after_one_write(command, key):
+            if command in ('lpush', 'lmove', 'ltrim'):
+                self.redis.on_command = None
+                raise ConnectionError('Valkey went away')
+        self.redis.on_command = drops_after_one_write
+        with self.assertRaises(ConnectionError):
+            self.queue.requeue(claimed)
+        self.assertEqual(self.waiting(), items('c'))
+        self.assertEqual(self.in_flight(), items('a', 'b'))
+        self.assertEqual(self.queue.requeue(self.queue.recover()), 2)
+        self.assertEqual(self.waiting(), items('a', 'b', 'c'))
+        self.assertEqual(self.in_flight(), [])
+
     def test_requeueing_nothing_changes_nothing(self):
         self.push('a')
         self.queue.claim(1)
