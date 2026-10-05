@@ -134,9 +134,9 @@ class CheckCommandTest(Workdir):
 
 
 class StartScriptTest(unittest.TestCase):
-    """The worker and core containers check before they start anything."""
+    """The core, and a consume worker, check before they start anything."""
 
-    def run_script(self, script, check_exit):
+    def run_script(self, script, check_exit, pipeline=None):
         root = tempfile.mkdtemp(prefix='tb-start-')
         self.addCleanup(shutil.rmtree, root, True)
         bin_dir = os.path.join(root, 'bin')
@@ -149,18 +149,24 @@ class StartScriptTest(unittest.TestCase):
             with open(path, 'w') as fh:
                 fh.write('#!/bin/sh\n' + body)
             os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
-        result = subprocess.run(['sh', os.path.join(ROOT, script)], cwd=root,
-                                env={'PATH': bin_dir + os.pathsep + '/usr/bin' + os.pathsep + '/bin',
-                                     'TMPDIR': root},
+        env = {'PATH': bin_dir + os.pathsep + '/usr/bin' + os.pathsep + '/bin', 'TMPDIR': root}
+        if pipeline:
+            env['TURKEYBITE_PIPELINE'] = pipeline
+        result = subprocess.run(['sh', os.path.join(ROOT, script)], cwd=root, env=env,
                                 capture_output=True, text=True, timeout=60)
         calls = open(log).read().splitlines() if os.path.exists(log) else []
         return result, calls
 
-    def test_a_failed_check_stops_the_worker_before_anything_starts(self):
-        result, calls = self.run_script('docker/worker/run-worker.sh', 1)
+    def test_a_failed_check_stops_a_consume_worker_before_anything_starts(self):
+        result, calls = self.run_script('docker/worker/run-worker.sh', 1, 'consume')
         self.assertEqual(result.returncode, 1)
         self.assertEqual(calls, ['python turkeybite check'])
         self.assertIn('Refusing to start the worker', result.stderr)
+
+    def test_an_rq_worker_leaves_the_check_to_the_core(self):
+        # Its jobs carry the core's settings, so its own copy decides nothing
+        _, calls = self.run_script('docker/worker/run-worker.sh', 1, 'rq')
+        self.assertNotIn('python turkeybite check', calls)
 
     def test_a_failed_check_stops_the_core(self):
         result, calls = self.run_script('docker/core/run-core.sh', 1)
@@ -169,7 +175,7 @@ class StartScriptTest(unittest.TestCase):
 
     def test_a_passing_check_lets_the_start_go_on(self):
         # The control: the same scripts carry on past a passing check
-        _, calls = self.run_script('docker/worker/run-worker.sh', 0)
+        _, calls = self.run_script('docker/worker/run-worker.sh', 0, 'consume')
         self.assertEqual(calls[0], 'python turkeybite check')
         self.assertIn('envsubst', calls)
         _, calls = self.run_script('docker/core/run-core.sh', 0)

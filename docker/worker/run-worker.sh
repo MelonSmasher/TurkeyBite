@@ -56,16 +56,9 @@ EOF
 
 export VALKEY_PASSWORD=$(cat /run/secrets/valkey_password)
 
-# Check config.yaml before anything starts, and stop the container if it is
-# wrong. Under the rq pipeline a worker process never reads the settings
-# itself, so a CA file missing from this container would otherwise only show
-# as events failing to ship. Configuration errors found while shipping are
-# reported once per container; clearing the record lets this start say so again.
+# Configuration errors found while shipping are reported once per container;
+# clearing the record lets this start say so again.
 rm -rf "${TMPDIR:-/tmp}/turkeybite-config-errors"
-if ! python turkeybite check; then
-    echo "Refusing to start the worker: fix config.yaml as above, then restart the container." >&2
-    exit 1
-fi
 export VALKEY_HOST=${VALKEY_HOST:-valkey}
 export VALKEY_PORT=${VALKEY_PORT:-6379}
 export VALKEY_DB=${VALKEY_DB:-0}
@@ -93,6 +86,17 @@ export TURKEYBITE_PIPELINE=${TURKEYBITE_PIPELINE:-rq}
 export TURKEYBITE_CONSUMER_PREFIX=${TURKEYBITE_CONSUMER_PREFIX:-$(hostname)}
 
 if [ "${TURKEYBITE_PIPELINE}" = "consume" ]; then
+    # Check config.yaml before anything starts, and stop the container if it
+    # is wrong. Only here: a consumer runs on this container's config.yaml,
+    # whereas under the rq pipeline each job carries the processor the core
+    # built from its own, which the core checks when it starts. Checking this
+    # container's file there would stop a worker that works over a stale copy,
+    # and pass one whose real settings are wrong.
+    if ! python turkeybite check; then
+        echo "Refusing to start the worker: fix config.yaml as above, then restart the container." >&2
+        exit 1
+    fi
+
     # No consumer in this container is running yet, so anything left in a
     # processing list of a consumer named as tb-consume.template names them,
     # <prefix>-NN, belongs to a previous incarnation. Only exactly that shape
