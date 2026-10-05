@@ -53,6 +53,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 * **The default OpenSearch password is refused.** If your OpenSearch admin password is still `Changeit12345!`, the password TurkeyBite used to ship with, the core and the workers refuse to start and the librarian refuses to set up OpenSearch. Change it first, as [Changing the OpenSearch admin password](#changing-the-opensearch-admin-password) describes.
 * **The librarian needs `OPENSEARCH_PASSWORD`.** It used to fall back to the default password when the variable was missing, which a `.env` written from `example.env` rather than by `setup.sh` relied on. Set `OPENSEARCH_PASSWORD` in `.env` to the admin password.
 * **TurkeyBite indices are now deleted after 90 days.** At start the librarian creates an OpenSearch retention policy, and every daily index created from then on is deleted 90 days after it is created. Set `TURKEYBITE_RETENTION_DAYS` to choose another period, or `0` to keep indices forever. Indices from before the upgrade are kept until you decide otherwise; see [Data retention](#data-retention).
+* **URLs are trimmed by default.** Events now drop the query string, the fragment and any `user:password@` from every URL they store, in `bite.url` and in the raw packet, and the per-event log lines do the same. Set `processor.privacy.urls: full` in `config.yaml` to keep them whole as before. Indices already written are unchanged; see [URLs and the raw packet](#urls-and-the-raw-packet).
 * **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
 
 `docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build`.
@@ -270,6 +271,31 @@ GET _plugins/_ism/explain/tb-index-*
 ```
 
 The first shows the period as `min_index_age`. In the second, each index the policy manages shows `"policy_id": "turkeybite-retention"`, and each no policy manages shows `"index.plugins.index_state_management.policy_id": null`. An index just attached takes a few minutes to show its state.
+
+### URLs and the raw packet
+
+A browser history event used to store the page's full URL twice, in `bite.url` and in the raw Browserbeat packet under `packet`, which also breaks it into parts in `url_data`. A full URL says far more than where someone went: the search terms in a query string, session tokens, password reset links, email addresses, and now and then a user name and password. Categorising a visit needs only its host. `processor.privacy` in `config.yaml` decides how much is kept:
+
+```yaml
+processor:
+  privacy:
+    urls: trimmed   # full, trimmed or host
+    packet: keep    # keep or none
+```
+
+| `urls` | What every URL the event stores keeps, in `bite` and in `packet` alike |
+|---|---|
+| `full` | All of it, as the browser recorded it, which is what events held before this setting existed. |
+| `trimmed` | The default. Scheme, host, port and path; the query string, the fragment and any `user:password@` are dropped, so `https://alice:pw@www.google.com/search?q=flu#top` is stored as `https://www.google.com/search`. |
+| `host` | Scheme, host and port only, `https://www.google.com`. |
+
+In `url_data` the same parts are blanked, as Go writes a URL without them: `RawQuery`, `Fragment` and `RawFragment` empty, `ForceQuery` false and `User` null, and with `host` also `Path`, `RawPath` and `Opaque`. A string anywhere in the event counts as a URL when the whole of it is one, a scheme and `://` with no spaces. Every other string, a hostname, a DNS record, a sentence that mentions a URL, is left exactly as it arrived.
+
+`packet: none` leaves the raw packet off the event altogether, which is the only way to drop what it holds that is not a URL. The page title is the one to know about: `trimmed` keeps it whole, and for a search results page it is usually the search, as in `flu symptoms - Google Search`. What TurkeyBite derives from the packet is already in `bite`, but a dashboard or saved search of your own that reads `packet` fields will find them gone. DNS events carry no URLs, so for them only `packet: none` changes anything.
+
+OpenSearch and syslog are sent the same trimmed event, and the per-event `Queued` and `Dropped` log lines trim URLs the same way. Unknown keys or values stop the worker at start.
+
+These settings apply from the next event. **Indices already written keep the full URLs and packets they hold** until they are deleted, by the retention policy or by hand.
 
 ### Changing the OpenSearch admin password
 

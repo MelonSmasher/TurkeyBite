@@ -129,6 +129,22 @@ processor:
       - editorial
     resolvers:
       enable: false
+  # What events keep of the URLs they carry, and of the raw beat packet.
+  #   urls     governs every URL an event stores, in bite and in the packet:
+  #              full     as the browser recorded it
+  #              trimmed  without the query string, the fragment or any
+  #                       user:password@, which is where search terms, session
+  #                       tokens and email addresses live
+  #              host     scheme, host and port only
+  #   packet   keep stores the raw packet under `packet`; none leaves it off.
+  #            The packet also holds the page title, which is not a URL and is
+  #            kept whole: for a search results page it is usually the search.
+  # Indices already written keep what they hold; this applies from the next
+  # event. Unknown keys or values stop the worker at start. Quote "none" if
+  # you like, but not no or off, which YAML reads as false.
+  privacy:
+    urls: trimmed
+    packet: keep
   dns:
     lookup_ips: true
     resolvers:

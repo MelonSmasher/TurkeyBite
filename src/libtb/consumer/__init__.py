@@ -85,7 +85,8 @@ class Consumer(object):
                 self.stats['unreadable'] += 1
                 continue
             if self.log_events:
-                line = describe(data, 'Queued' if keep else 'Dropped')
+                line = describe(data, 'Queued' if keep else 'Dropped',
+                                self.processor.privacy().urls)
                 if line:
                     print(line)
             if not keep:

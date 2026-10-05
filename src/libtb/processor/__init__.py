@@ -18,6 +18,8 @@ from libtb.evidence import second_opinion
 from libtb.evidence.resolvers import checker_for
 from libtb.evidence.resolvers import settings as resolver_settings
 from libtb.opensearch import check_hosts, client_kwargs
+from libtb.privacy import redact
+from libtb.privacy import settings as privacy_settings
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -444,6 +446,7 @@ class Processor(object):
         # verifying its certificate is reported. Under the rq pipeline that is
         # the core, whose processor travels with every job.
         check_hosts(config.get('elastic'))
+        self._privacy = privacy_settings(config.get('privacy'))
 
     def process_packet(self, data):
         if data['type'] == 'dns':
@@ -475,6 +478,21 @@ class Processor(object):
         with the other evidence settings, when the processor starts.
         """
         return self._resolvers
+
+    def privacy(self):
+        """What events keep of their URLs and the raw packet, see libtb.privacy.
+
+        Trimmed URLs and the packet kept, unless processor.privacy says
+        otherwise. Parsed once, when the processor starts.
+        """
+        try:
+            return self._privacy
+        except AttributeError:
+            # Under the rq pipeline a job carries the processor the core
+            # pickled, and one queued by a core older than these settings has
+            # none. Its configuration is read now rather than failing the job.
+            self._privacy = privacy_settings(self.config.get('privacy'))
+            return self._privacy
 
     def disabled_categories(self):
         """Taxonomy branches or paths switched off, see libtb.evidence.
@@ -784,8 +802,9 @@ class Processor(object):
             'packet': data
         }
 
-        # Ship the turkey bite to elastic
-        self.ship_bite(bite)
+        # Ship the turkey bite to elastic, with only as much of every URL and
+        # of the packet as processor.privacy keeps
+        self.ship_bite(redact(bite, self.privacy()))
 
     def process_browser_history(self, data):
         # Related context from lists
@@ -893,7 +912,9 @@ class Processor(object):
             },
             'packet': data
         }
-        self.ship_bite(bite)
+        # bite.url and the packet's copies of it are trimmed here, before any
+        # output sees them, so OpenSearch and syslog store the same thing
+        self.ship_bite(redact(bite, self.privacy()))
 
     def bulk_settings(self):
         """Bulk buffering settings. Off by default, deliberately.

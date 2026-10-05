@@ -2,16 +2,21 @@ import json
 import sys
 from rq import Queue
 from redis import Redis
+from libtb.privacy import FULL, trim_url
 from libtb.util import dig
 
 
-def describe(data, verdict):
+def describe(data, verdict, urls=FULL):
     """Builds the log line for an observed packet.
 
     Every field is read through dig() or checked for its type first. This code
     used to reach straight into nested keys, and since the caller only catches
     JSONDecodeError, one packet with a null where a dict was expected escaped
     the listen loop and exited the process.
+
+    `urls` is processor.privacy.urls. The log keeps no more of a URL than the
+    event does: a container log is a store too, and a trimmed event beside a
+    log holding the full URL would protect nothing.
 
     Returns None for a packet we have nothing to say about.
     """
@@ -31,7 +36,7 @@ def describe(data, verdict):
         line = '[Browserbeat][History] ' + verdict
         url = dig(data, 'data', 'event', 'data', 'entry', 'url')
         if isinstance(url, str):
-            line = line + ' : ' + url
+            line = line + ' : ' + trim_url(url, urls)
         user = dig(data, 'data', 'event', 'data', 'client', 'user')
         if isinstance(user, str):
             line = line + ' - ' + user
@@ -89,7 +94,8 @@ class Inlet(object):
             # restarted rather than drop traffic in silence.
             try:
                 keep = self.filters.should_process(data)
-                line = describe(data, 'Queued' if keep else 'Dropped')
+                line = describe(data, 'Queued' if keep else 'Dropped',
+                                self.processor.privacy().urls)
             except Exception as e:
                 print('Skipped an unreadable packet: ' + str(e), file=sys.stderr)
                 continue
