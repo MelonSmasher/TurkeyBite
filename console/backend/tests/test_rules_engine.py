@@ -810,8 +810,10 @@ async def test_a_new_value_exact_page_is_not_called_truncated(search, monkeypatc
 # -- round four ------------------------------------------------------------------------
 
 def _paged(pairs_by_field, reject_after=False):
-    """Answers composite aggregations a page at a time, from fixed pairs per
-    group field, as OpenSearch would."""
+    """Answer composite aggregations a page at a time, as OpenSearch would.
+
+    The answers come from fixed pairs per group field.
+    """
     def answer(body, index=None):
         composite = body['aggs']['c']['composite']
         field = composite['sources'][0]['g']['terms']['field']
@@ -837,7 +839,7 @@ async def test_a_cut_short_reading_reaches_every_group_field_in_turn(search):
     evaluator = Evaluator(search)
     seen: set = set()
     for _ in range(6):
-        out, truncated = await evaluator._each_group({'match_all': {}},
+        out, _ = await evaluator._each_group({'match_all': {}},
                                                      ['bite.client_user', 'bite.client_hostname_short'],
                                                      [('v', 'bite.purpose')], None, 6, cursor='first_seen')
         assert len(out) <= 6

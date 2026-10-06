@@ -128,7 +128,6 @@ async def test_a_key_needs_no_csrf_token_and_narrows_when_its_owner_is_demoted(c
                               json={'ids': [str(uuid.uuid4())], 'status': 'resolved'})).status_code == 200
     from sqlalchemy import update
 
-    from tbconsole.models import User
     async with db.sessionmaker()() as session:
         await session.execute(update(User).where(User.username == 'ana').values(role='viewer'))
         await session.commit()

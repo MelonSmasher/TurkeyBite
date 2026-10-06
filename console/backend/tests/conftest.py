@@ -79,6 +79,7 @@ class FakeSearch:
     """OpenSearch as the console sees it. Hand it answers; it records requests."""
 
     def __init__(self, answer=None):
+        """Answers with `answer(body, index)`, by default nothing found."""
         self.answer = answer or (lambda body, index=None: {'hits': {'total': {'value': 0}, 'hits': []},
                                                             'aggregations': {}})
         self.bodies = []

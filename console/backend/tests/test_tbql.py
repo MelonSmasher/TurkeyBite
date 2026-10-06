@@ -64,7 +64,7 @@ def test_has_tests_for_a_value():
 def test_precedence_is_not_then_and_then_or():
     dsl = compile_('a OR b c')
     assert dsl['bool']['minimum_should_match'] == 1
-    left, right = dsl['bool']['should']
+    _, right = dsl['bool']['should']
     assert 'filter' in right['bool']  # b AND c, ORed with a
 
 

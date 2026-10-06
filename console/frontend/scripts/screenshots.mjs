@@ -98,8 +98,8 @@ async function pageFor(theme, opts) {
   if (!sessions.has(key)) {
     const ctx = await context(theme, opts);
     const page = await ctx.newPage();
-    page.on("pageerror", (e) => console.error("pageerror:", String(e)));
-    if (!opts.anonymous) await signIn(page);
+    page.on("pageerror", (e) => process.stderr.write(`pageerror: ${String(e)}\n`));
+    if (!opts.anonymous) { await signIn(page); }
     sessions.set(key, page);
   }
   return sessions.get(key);
@@ -115,11 +115,11 @@ async function setPreferences(page, theme, opts) {
     return response.status;
   }, { theme, accent: opts.accent ?? "iris", "privacy_mode": !!opts.privacy, density: "comfortable",
        "sidebar_collapsed": false });
-  if (result !== 200) throw new Error(`could not set preferences: HTTP ${result}`);
+  if (result !== 200) { throw new Error(`could not set preferences: HTTP ${result}`); }
 }
 
 for (const [name, path, theme, opts] of shots) {
-  if (only && !only.includes(name)) continue;
+  if (only && !only.includes(name)) { continue; }
   const page = await pageFor(theme, opts);
   let target = path;
   if (opts.findingFor) {
@@ -135,11 +135,11 @@ for (const [name, path, theme, opts] of shots) {
     target = `/dashboards/${boards.find((d) => d.name === opts.dashboard).id}`;
   }
   await page.setViewportSize({ width: 1600, height: 1000 });
-  if (!opts.anonymous) await setPreferences(page, theme, opts);
+  if (!opts.anonymous) { await setPreferences(page, theme, opts); }
   await page.goto(`${base}${target}`);
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(1200);
-  if (opts.act) await opts.act(page);
+  if (opts.act) { await opts.act(page); }
   if (opts.full) {
     // Grow the window to the page rather than stitching a full-page capture,
     // so the sidebar, which is the height of the window, runs the full length
@@ -148,7 +148,7 @@ for (const [name, path, theme, opts] of shots) {
     await page.waitForTimeout(500);
   }
   await page.screenshot({ path: `${out}/${name}.png` });
-  console.log("captured", name);
+  process.stdout.write(`captured ${name}\n`);
 }
 
 await browser.close();

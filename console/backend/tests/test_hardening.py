@@ -296,7 +296,7 @@ class _Loop:
     def __init__(self, *addresses):
         self.addresses = addresses
 
-    async def getaddrinfo(self, host, port, type=0):
+    async def getaddrinfo(self, host, port, **_options):
         return [(socket.AF_INET6 if ':' in a else socket.AF_INET, socket.SOCK_STREAM, 6, '', (a, port))
                 for a in self.addresses]
 
@@ -870,10 +870,12 @@ async def test_reencrypt_moves_every_secret_to_the_current_key(monkeypatch, caps
     hook = await _hook('https://example.org/hook')
     monkeypatch.setattr(settings, 'secret_key', 'a-brand-new-secret-key-that-is-long-enough-01')
     monkeypatch.setattr(settings, 'secret_key_previous', [old])
-    crypto._fernet.cache_clear() if hasattr(crypto._fernet, 'cache_clear') else None
+    if hasattr(crypto._fernet, 'cache_clear'):
+        crypto._fernet.cache_clear()
     assert await cli.reencrypt(argparse.Namespace()) == 0
     monkeypatch.setattr(settings, 'secret_key_previous', [])
-    crypto._fernet.cache_clear() if hasattr(crypto._fernet, 'cache_clear') else None
+    if hasattr(crypto._fernet, 'cache_clear'):
+        crypto._fernet.cache_clear()
     async with db.sessionmaker()() as session:
         user = (await session.execute(select(User))).scalar_one()
         assert crypto.decrypt(user.totp_secret_enc) == 'TOTPSECRET'
@@ -1052,7 +1054,7 @@ async def test_a_name_that_takes_forever_to_look_up_is_cut_off_too(monkeypatch):
     from tbconsole.config import get_settings
 
     class Hangs(_Loop):
-        async def getaddrinfo(self, host, port, type=0):
+        async def getaddrinfo(self, host, port, **_options):
             await aio.sleep(5)
     lookup = _Asyncio()
     lookup.loop = Hangs()
@@ -1179,7 +1181,7 @@ async def test_a_webhooks_read_key_sees_deliveries_but_not_who_they_were_about(c
 
 
 def test_google_chat_and_teams_cannot_be_made_to_mention_or_link():
-    from tbconsole.webhooks import formats, signing
+    from tbconsole.webhooks import signing
     event = {'event': 'finding.created', 'finding': {
         'title': 'Seen: <users/all>', 'summary': '[click](https://evil.example) <https://evil|x>', 'severity': 'high',
         'entity': 'ava', 'status': 'new', 'rule_name': 'r', 'event_count': 1}}
@@ -1399,10 +1401,9 @@ async def test_two_directory_people_with_one_name_never_share_an_account(client,
 
 
 def test_an_entrys_lasting_id_is_read_in_whichever_form_it_comes():
-    import uuid as uuid_mod
 
     from tbconsole.security import ldap
-    value = uuid_mod.uuid4()
+    value = uuid.uuid4()
     assert ldap._guid({'objectGUID': [value.bytes_le]}) == str(value)
     assert ldap._guid({'entryUUID': [str(value).upper()]}) == str(value)
     assert ldap._guid({'objectGUID': '{' + str(value) + '}'}) == str(value)
@@ -1556,7 +1557,6 @@ async def test_guesses_on_the_account_page_sent_together_lock_it_too(client, mon
 
 
 async def test_no_database_connection_is_held_while_a_password_is_checked(client, monkeypatch):
-    from tbconsole import db as database
     from tbconsole.security import passwords
     await make_user('ana')
     await make_user('locked', locked_until=datetime.now(timezone.utc) + timedelta(minutes=5))
@@ -1564,7 +1564,7 @@ async def test_no_database_connection_is_held_while_a_password_is_checked(client
     held = []
 
     def watched(stored, password):
-        held.append(database.engine().pool.checkedout())
+        held.append(db.engine().pool.checkedout())
         return real(stored, password)
     monkeypatch.setattr(passwords, 'verify_password', watched)
     for name, password in (('ana', 'correct horse battery'), ('ana', 'wrong'), ('nobody', 'x'), ('locked', 'x')):
@@ -1644,7 +1644,7 @@ async def test_through_a_proxy_a_name_only_the_proxy_can_resolve_is_sent_there(m
     from tbconsole.config import get_settings
 
     class NoDns(_Loop):
-        async def getaddrinfo(self, host, port, type=0):
+        async def getaddrinfo(self, host, port, **_options):
             raise socket.gaierror('no name servers here')
     lookup = _Asyncio()
     lookup.loop = NoDns()
