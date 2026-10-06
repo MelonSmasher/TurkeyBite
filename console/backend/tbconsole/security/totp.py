@@ -15,10 +15,12 @@ STEP = 30
 
 
 def new_secret() -> str:
+    """A new random secret, in the base32 authenticator apps take."""
     return pyotp.random_base32()
 
 
 def provisioning_uri(secret: str, username: str) -> str:
+    """The otpauth:// URI that sets up an authenticator app, for the app to show as a QR code."""
     return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=ISSUER)
 
 

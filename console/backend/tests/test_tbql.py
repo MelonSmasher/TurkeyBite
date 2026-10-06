@@ -7,7 +7,7 @@ from tbconsole.search.tbql import TbqlError
 
 
 def compile_(text):
-    return tbql.compile(text)
+    return tbql.compile_query(text)
 
 
 def test_empty_matches_everything():

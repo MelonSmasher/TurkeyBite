@@ -10,6 +10,7 @@ what the console does.
 This empties the console's database first. Never point it at a real console.
 """
 
+import asyncio
 import hashlib
 import json
 import random
@@ -17,8 +18,10 @@ import string
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 from sqlalchemy import select, text, update
+from sqlalchemy.dialects.postgresql import insert
 
 from . import db, rollups, settings_store
 from .analysis import engine
@@ -32,7 +35,7 @@ from .webhooks.service import set_url
 
 ORG = 'Harbor Point Academy'
 DOMAIN = 'harborpoint.local'
-DEMO_PASSWORD = 'TurkeyBite-demo-2026!'
+DEMO_PASSWORD = 'TurkeyBite-demo-2026!'  # nosec B105  # noqa: password  # the demo's published password, for made-up accounts
 INDEX_PREFIX = 'tb-index'
 
 # -- the taxonomy, as much of TurkeyBite's as the demo uses ---------------------------
@@ -78,6 +81,7 @@ LISTS = ('StevenBlack', 'oisd', 'hagezi', 'blocklistproject', 'urlhaus', 'local'
 
 
 def facets(contexts: list[str]) -> dict:
+    """The purpose, service and risk fields TurkeyBite would give an event in these categories."""
     out = {'purpose': set(), 'service': set(), 'risk': set()}
     for c in contexts:
         for facet, path in TAXONOMY.get(c, ()):
@@ -94,47 +98,48 @@ def facets(contexts: list[str]) -> dict:
 # -- domains: (registrable, hosts, contexts, weight by persona) ----------------------
 # persona weights: s = student, t = staff, l = lab machine, d = device (printer, camera)
 D = [
-    ('google.com', ['www.google.com', 'accounts.google.com', 'clients4.google.com'], ['search'], dict(s=30, t=30, l=30, d=2)),
-    ('googleapis.com', ['fonts.googleapis.com', 'www.googleapis.com', 'storage.googleapis.com'], [], dict(s=20, t=20, l=20, d=4)),
-    ('gstatic.com', ['www.gstatic.com', 'ssl.gstatic.com', 'fonts.gstatic.com'], [], dict(s=18, t=18, l=18)),
-    ('instructure.com', ['harborpoint.instructure.com', 'du11hjcvx0uqb.cloudfront.net'], ['education'], dict(s=22, t=14, l=20)),
-    ('khanacademy.org', ['www.khanacademy.org', 'cdn.kastatic.org'], ['education'], dict(s=9, t=2, l=12)),
-    ('quizlet.com', ['quizlet.com', 'assets.quizlet.com'], ['education'], dict(s=8, t=1, l=6)),
-    ('desmos.com', ['www.desmos.com'], ['education'], dict(s=5, l=7)),
-    ('wikipedia.org', ['en.wikipedia.org', 'upload.wikimedia.org'], ['education'], dict(s=9, t=6, l=9)),
-    ('microsoft.com', ['login.microsoftonline.com', 'www.microsoft.com', 'settings-win.data.microsoft.com'], ['professional', 'it'], dict(s=6, t=22, l=14, d=3)),
-    ('office.com', ['www.office.com', 'outlook.office.com'], ['professional', 'mail'], dict(s=4, t=24, l=4)),
-    ('zoom.us', ['zoom.us', 'us06web.zoom.us'], ['zoom'], dict(s=1, t=7)),
-    ('apple.com', ['www.apple.com', 'gsp-ssl.ls.apple.com', 'mesu.apple.com'], ['it'], dict(s=6, t=6, d=2)),
-    ('youtube.com', ['www.youtube.com', 'i.ytimg.com', 'rr3---sn-ab5l6nr6.googlevideo.com'], ['youtube', 'streaming'], dict(s=24, t=5, l=4)),
-    ('tiktok.com', ['www.tiktok.com', 'v16-webapp.tiktok.com', 'mon.tiktokv.com'], ['tiktok', 'social'], dict(s=18, t=1)),
-    ('instagram.com', ['www.instagram.com', 'scontent.cdninstagram.com'], ['instagram', 'social'], dict(s=12, t=2)),
-    ('snapchat.com', ['web.snapchat.com', 'app.snapchat.com'], ['snapchat', 'social'], dict(s=8)),
-    ('reddit.com', ['www.reddit.com', 'i.redd.it'], ['reddit', 'social'], dict(s=7, t=3)),
-    ('discord.com', ['discord.com', 'gateway.discord.gg', 'cdn.discordapp.com'], ['discord'], dict(s=9, t=1)),
-    ('x.com', ['x.com', 'pbs.twimg.com'], ['twitter', 'social'], dict(s=3, t=3)),
-    ('spotify.com', ['open.spotify.com', 'audio-ak-spotify-com.akamaized.net'], ['spotify', 'streaming'], dict(s=9, t=4)),
-    ('netflix.com', ['www.netflix.com', 'occ-0-1-2.1.nflxso.net'], ['netflix', 'streaming'], dict(s=3, t=1)),
-    ('twitch.tv', ['www.twitch.tv', 'static.twitchcdn.net'], ['twitch'], dict(s=4)),
-    ('roblox.com', ['www.roblox.com', 'apis.roblox.com', 'tr.rbxcdn.com'], ['roblox', 'games'], dict(s=9)),
-    ('minecraft.net', ['www.minecraft.net', 'session.minecraft.net'], ['minecraft', 'games'], dict(s=4)),
-    ('coolmathgames.com', ['www.coolmathgames.com'], ['games'], dict(s=6, l=3)),
-    ('steampowered.com', ['store.steampowered.com', 'steamcdn-a.akamaihd.net'], ['steam'], dict(s=2)),
-    ('epicgames.com', ['www.epicgames.com', 'launcher-public-service-prod06.ol.epicgames.com'], ['epicgames'], dict(s=2)),
-    ('bbc.co.uk', ['www.bbc.co.uk', 'ichef.bbci.co.uk'], ['news'], dict(s=2, t=6)),
-    ('nytimes.com', ['www.nytimes.com', 'static01.nyt.com'], ['news'], dict(s=1, t=5)),
-    ('amazon.com', ['www.amazon.com', 'm.media-amazon.com'], ['shopping'], dict(s=4, t=6)),
-    ('chatgpt.com', ['chatgpt.com', 'cdn.oaistatic.com'], ['ai'], dict(s=6, t=4)),
-    ('claude.ai', ['claude.ai'], ['ai'], dict(s=2, t=3)),
-    ('github.com', ['github.com', 'avatars.githubusercontent.com'], ['development'], dict(s=2, t=3, l=2)),
-    ('doubleclick.net', ['securepubads.g.doubleclick.net', 'stats.g.doubleclick.net'], ['advertising'], dict(s=14, t=10, l=6)),
-    ('google-analytics.com', ['www.google-analytics.com', 'region1.google-analytics.com'], ['tracking'], dict(s=12, t=10, l=8)),
-    ('scorecardresearch.com', ['sb.scorecardresearch.com'], ['tracking'], dict(s=5, t=4)),
-    ('facebook.net', ['connect.facebook.net'], ['facebook', 'tracking'], dict(s=5, t=3)),
-    ('bit.ly', ['bit.ly'], ['url-shorteners'], dict(s=1, t=1)),
-    ('pool.ntp.org', ['0.pool.ntp.org', '1.pool.ntp.org'], ['it'], dict(l=2, d=10)),
-    ('hp.com', ['h10141.www1.hp.com', 'hpeprint.com'], ['it'], dict(d=10)),
-    ('axis.com', ['firmware.axis.com'], ['it'], dict(d=6)),
+    ('google.com', ['www.google.com', 'accounts.google.com', 'clients4.google.com'], ['search'], {'s': 30, 't': 30, 'l': 30, 'd': 2}),
+    ('googleapis.com', ['fonts.googleapis.com', 'www.googleapis.com', 'storage.googleapis.com'], [], {'s': 20, 't': 20, 'l': 20, 'd': 4}),
+    ('gstatic.com', ['www.gstatic.com', 'ssl.gstatic.com', 'fonts.gstatic.com'], [], {'s': 18, 't': 18, 'l': 18}),
+    ('instructure.com', ['harborpoint.instructure.com', 'du11hjcvx0uqb.cloudfront.net'], ['education'], {'s': 22, 't': 14, 'l': 20}),
+    ('khanacademy.org', ['www.khanacademy.org', 'cdn.kastatic.org'], ['education'], {'s': 9, 't': 2, 'l': 12}),
+    ('quizlet.com', ['quizlet.com', 'assets.quizlet.com'], ['education'], {'s': 8, 't': 1, 'l': 6}),
+    ('desmos.com', ['www.desmos.com'], ['education'], {'s': 5, 'l': 7}),
+    ('wikipedia.org', ['en.wikipedia.org', 'upload.wikimedia.org'], ['education'], {'s': 9, 't': 6, 'l': 9}),
+    ('microsoft.com', ['login.microsoftonline.com', 'www.microsoft.com', 'settings-win.data.microsoft.com'],
+     ['professional', 'it'], {'s': 6, 't': 22, 'l': 14, 'd': 3}),
+    ('office.com', ['www.office.com', 'outlook.office.com'], ['professional', 'mail'], {'s': 4, 't': 24, 'l': 4}),
+    ('zoom.us', ['zoom.us', 'us06web.zoom.us'], ['zoom'], {'s': 1, 't': 7}),
+    ('apple.com', ['www.apple.com', 'gsp-ssl.ls.apple.com', 'mesu.apple.com'], ['it'], {'s': 6, 't': 6, 'd': 2}),
+    ('youtube.com', ['www.youtube.com', 'i.ytimg.com', 'rr3---sn-ab5l6nr6.googlevideo.com'], ['youtube', 'streaming'], {'s': 24, 't': 5, 'l': 4}),
+    ('tiktok.com', ['www.tiktok.com', 'v16-webapp.tiktok.com', 'mon.tiktokv.com'], ['tiktok', 'social'], {'s': 18, 't': 1}),
+    ('instagram.com', ['www.instagram.com', 'scontent.cdninstagram.com'], ['instagram', 'social'], {'s': 12, 't': 2}),
+    ('snapchat.com', ['web.snapchat.com', 'app.snapchat.com'], ['snapchat', 'social'], {'s': 8}),
+    ('reddit.com', ['www.reddit.com', 'i.redd.it'], ['reddit', 'social'], {'s': 7, 't': 3}),
+    ('discord.com', ['discord.com', 'gateway.discord.gg', 'cdn.discordapp.com'], ['discord'], {'s': 9, 't': 1}),
+    ('x.com', ['x.com', 'pbs.twimg.com'], ['twitter', 'social'], {'s': 3, 't': 3}),
+    ('spotify.com', ['open.spotify.com', 'audio-ak-spotify-com.akamaized.net'], ['spotify', 'streaming'], {'s': 9, 't': 4}),
+    ('netflix.com', ['www.netflix.com', 'occ-0-1-2.1.nflxso.net'], ['netflix', 'streaming'], {'s': 3, 't': 1}),
+    ('twitch.tv', ['www.twitch.tv', 'static.twitchcdn.net'], ['twitch'], {'s': 4}),
+    ('roblox.com', ['www.roblox.com', 'apis.roblox.com', 'tr.rbxcdn.com'], ['roblox', 'games'], {'s': 9}),
+    ('minecraft.net', ['www.minecraft.net', 'session.minecraft.net'], ['minecraft', 'games'], {'s': 4}),
+    ('coolmathgames.com', ['www.coolmathgames.com'], ['games'], {'s': 6, 'l': 3}),
+    ('steampowered.com', ['store.steampowered.com', 'steamcdn-a.akamaihd.net'], ['steam'], {'s': 2}),
+    ('epicgames.com', ['www.epicgames.com', 'launcher-public-service-prod06.ol.epicgames.com'], ['epicgames'], {'s': 2}),
+    ('bbc.co.uk', ['www.bbc.co.uk', 'ichef.bbci.co.uk'], ['news'], {'s': 2, 't': 6}),
+    ('nytimes.com', ['www.nytimes.com', 'static01.nyt.com'], ['news'], {'s': 1, 't': 5}),
+    ('amazon.com', ['www.amazon.com', 'm.media-amazon.com'], ['shopping'], {'s': 4, 't': 6}),
+    ('chatgpt.com', ['chatgpt.com', 'cdn.oaistatic.com'], ['ai'], {'s': 6, 't': 4}),
+    ('claude.ai', ['claude.ai'], ['ai'], {'s': 2, 't': 3}),
+    ('github.com', ['github.com', 'avatars.githubusercontent.com'], ['development'], {'s': 2, 't': 3, 'l': 2}),
+    ('doubleclick.net', ['securepubads.g.doubleclick.net', 'stats.g.doubleclick.net'], ['advertising'], {'s': 14, 't': 10, 'l': 6}),
+    ('google-analytics.com', ['www.google-analytics.com', 'region1.google-analytics.com'], ['tracking'], {'s': 12, 't': 10, 'l': 8}),
+    ('scorecardresearch.com', ['sb.scorecardresearch.com'], ['tracking'], {'s': 5, 't': 4}),
+    ('facebook.net', ['connect.facebook.net'], ['facebook', 'tracking'], {'s': 5, 't': 3}),
+    ('bit.ly', ['bit.ly'], ['url-shorteners'], {'s': 1, 't': 1}),
+    ('pool.ntp.org', ['0.pool.ntp.org', '1.pool.ntp.org'], ['it'], {'l': 2, 'd': 10}),
+    ('hp.com', ['h10141.www1.hp.com', 'hpeprint.com'], ['it'], {'d': 10}),
+    ('axis.com', ['firmware.axis.com'], ['it'], {'d': 6}),
 ]
 
 # Rare and risky, used by background noise and by the incidents
@@ -172,8 +177,12 @@ STAFF = [('m.rodriguez', 'Maria Rodriguez'), ('j.morrison', 'James Morrison'),
 
 
 class Entity:
+    """A made-up person or machine: what kind it is, its address and names, and how busy it is."""
+
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments  # one per attribute
     def __init__(self, persona, ip, host=None, user=None, platform=None, browser=None, weight=1.0,
                  ptr=True):
+        """`persona` is s for a student, t for staff, l for a lab machine or d for a device."""
         self.persona = persona
         self.ip = ip
         self.host = host
@@ -185,6 +194,7 @@ class Entity:
 
 
 def build_entities(rng: random.Random) -> list[Entity]:
+    """The school's made-up students, staff, lab machines and devices."""
     entities = []
     platforms = [('chromeos', 'chrome'), ('darwin', 'safari'), ('windows', 'chrome'),
                  ('windows', 'firefox'), ('darwin', 'chrome')]
@@ -211,6 +221,7 @@ def _ip_for(domain: str) -> str:
     return f'{h[0] % 200 + 20}.{h[1]}.{h[2]}.{h[3] % 250 + 2}'
 
 
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments,too-many-locals  # one event, part by part
 def _doc(ts: datetime, entity: Entity, host: str, registrable: str, contexts: list[str],
          sources: list[str], kind: str, rcode: str = 'NOERROR', incidental: bool = False,
          candidates: list[str] | None = None, suppressed: list[str] | None = None,
@@ -257,7 +268,7 @@ def _doc(ts: datetime, entity: Entity, host: str, registrable: str, contexts: li
                           'response_code': rcode},
                   '@timestamp': stamp}
     else:
-        path = '/' + ''.join(random.choice(string.ascii_lowercase) for _ in range(6))
+        path = '/' + ''.join(random.choice(string.ascii_lowercase) for _ in range(6))  # nosec B311  # made-up demo data
         bite.update({'client_user': entity.user, 'client_hostname': entity.host,
                      'client_hostname_short': entity.host, 'client_platform': entity.platform,
                      'client_browser': entity.browser, 'client_ips': [entity.ip],
@@ -265,7 +276,7 @@ def _doc(ts: datetime, entity: Entity, host: str, registrable: str, contexts: li
                      'event_time_utc': stamp, 'event_time_local': stamp})
         packet = {'data': {'@timestamp': stamp, 'event': {'data': {
             'entry': {'url': f'https://{host}{path}', 'title': host.split('.')[-2].title(),
-                      'visit_count': random.randint(1, 9)},
+                      'visit_count': random.randint(1, 9)},  # nosec B311  # made-up demo data
             'client': {'Hostname': entity.host, 'user': entity.user, 'platform': entity.platform,
                        'browser': entity.browser, 'ip_addresses': [entity.ip]}}}}}
     return {'@timestamp': stamp, '@metadata': {'beat': 'turkeybite', 'type': '_doc',
@@ -286,8 +297,9 @@ def _hour_weight(hour: int, weekday: int) -> float:
     return 0.35
 
 
-def background(rng: random.Random, entities: list[Entity], day: datetime, per_day: int,
+def background(rng: random.Random, entities: list[Entity], day: datetime, per_day: int,  # pylint: disable=too-many-locals  # one day's traffic in one pass
                gap: tuple[datetime, datetime] | None) -> list[dict]:
+    """A day of everyday traffic: each entity's usual sites, busier in school hours, none in `gap`."""
     docs = []
     weights = [_hour_weight(h, day.weekday()) for h in range(24)]
     persona_domains = {persona: [(d, w_get(d, persona)) for d in D if w_get(d, persona)]
@@ -337,9 +349,11 @@ def background(rng: random.Random, entities: list[Entity], day: datetime, per_da
 
 
 def w_get(domain, persona) -> float:
+    """How often a persona visits a domain from the table D; 0 for never."""
     return domain[3].get(persona, 0)
 
 
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments  # one burst, part by part
 def _burst(rng, entity, start, minutes, count, registrable, kind='dns', rcode='NOERROR',
            incidental=False):
     hosts, contexts, source = RISKY[registrable]
@@ -354,7 +368,8 @@ def _burst(rng, entity, start, minutes, count, registrable, kind='dns', rcode='N
     return docs
 
 
-def incidents(rng: random.Random, entities: list[Entity], now: datetime) -> list[dict]:
+def incidents(rng: random.Random, entities: list[Entity], now: datetime) -> list[dict]:  # pylint: disable=too-many-locals  # one block per incident
+    """The incidents the demo's rules are there to find, from phishing to data leaving through DNS."""
     by_host = {e.host: e for e in entities}
     by_user = {e.user: e for e in entities if e.user}
     docs = []
@@ -464,6 +479,7 @@ TEMPLATE = {
 
 
 async def write_events(search: SearchClient, docs: list[dict]) -> int:
+    """Writes events to daily indices under TurkeyBite's index template, and returns how many."""
     await search.request('PUT', '/_index_template/turkeybite', TEMPLATE)
     written = 0
     for i in range(0, len(docs), 4000):
@@ -486,6 +502,7 @@ async def write_events(search: SearchClient, docs: list[dict]) -> int:
 
 class _Sink(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
+        """Answers as the receiver at the path would: most accept, the pager bridge is down."""
         length = int(self.headers.get('content-length') or 0)
         self.rfile.read(length)
         code = {'/slack': 200, '/siem': 202, '/teams': 200, '/pager': 503}.get(self.path, 404)
@@ -499,7 +516,7 @@ class _Sink(BaseHTTPRequestHandler):
 
 
 def start_sink(url: str) -> ThreadingHTTPServer | None:
-    from urllib.parse import urlsplit
+    """Starts the demo's webhook receiver at `url`, in a thread; None if something already listens there."""
     parts = urlsplit(url)
     try:
         server = ThreadingHTTPServer((parts.hostname, parts.port), _Sink)
@@ -512,6 +529,7 @@ def start_sink(url: str) -> ThreadingHTTPServer | None:
 # -- the console's own records -----------------------------------------------------------
 
 async def reset_database() -> None:
+    """Empties every table in the console's database."""
     async with db.sessionmaker()() as session:
         await session.execute(text(
             'TRUNCATE audit_events, daily_stats, leases, webhook_deliveries, finding_activity, '
@@ -520,10 +538,20 @@ async def reset_database() -> None:
         await session.commit()
 
 
+def _timeline(session, finding: Finding, who: User, now: datetime):
+    """A way to add entries to a finding's timeline as `who`, some hours after it was first seen."""
+    def act(kind, body='', data=None, hours_after=1.0):
+        session.add(FindingActivity(finding_id=finding.id, actor_id=who.id, actor_name=who.display_name,
+                                    kind=kind, body=body, data=data or {},
+                                    created_at=min(now, finding.first_seen + timedelta(hours=hours_after))))
+    return act
+
+
 async def seed_people(session) -> dict:
+    """The console's made-up accounts, local, directory and service, by username."""
     people = {}
 
-    def add(username, display, role, source, password=None, email=None, mfa=False, **extra):
+    def add(username, display, role, source, password=None, *, email=None, mfa=False, **extra):  # pylint: disable=too-many-arguments  # an account's parts
         user = User(username=username, display_name=display, role=role, source=source,
                     email=email or (f'{username}@harborpoint.edu' if source != 'service' else None),
                     preferences={}, **extra)
@@ -553,15 +581,22 @@ async def seed_people(session) -> dict:
     return people
 
 
+# pylint: disable-next=too-many-locals,too-many-branches,too-many-statements  # the whole demo, step by step
 async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0.1:8799') -> int:
-    rng = random.Random(20261005)
+    """Replaces the events and the console's database with the demo's, and returns the exit status.
+
+    It writes `days` days of made-up events, about `per_day` a day, then sets
+    up the console and runs its rules over them; the demo webhooks point at
+    `sink`.
+    """
+    rng = random.Random(20261005)  # nosec B311  # made-up demo data
     random.seed(20261005)
     now = datetime.now(timezone.utc)
     search = SearchClient()
     print(f'Writing {days} days of made-up events to OpenSearch...')
     try:
         await search.request('DELETE', f'/{INDEX_PREFIX}-*', params={'ignore_unavailable': 'true'})
-    except Exception:
+    except Exception:  # nosec B110  # a fresh cluster has no demo indices to delete
         pass
     entities = build_entities(rng)
     docs = []
@@ -659,11 +694,16 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
 
         # API keys
         key_rows = [
-            ('SIEM pull', people['svc-siem'], ['events:read', 'findings:read'], now - timedelta(days=60), now + timedelta(days=120), now - timedelta(minutes=3), None),
-            ('Ticket sync', people['svc-ticketing'], ['findings:read', 'findings:write'], now - timedelta(days=30), now + timedelta(days=60), now - timedelta(minutes=41), None),
-            ('Jupyter notebook', people['admin'], ['events:read', 'events:export'], now - timedelta(days=12), now + timedelta(days=78), now - timedelta(days=1, hours=2), None),
-            ('Old SIEM key', people['svc-siem'], ['events:read'], now - timedelta(days=200), now + timedelta(days=10), now - timedelta(days=61), now - timedelta(days=60)),
-            ('Dashboard kiosk', people['dean.gray'], ['events:read', 'findings:read', 'dashboards:read'], now - timedelta(days=100), now - timedelta(days=10), now - timedelta(days=11), None),
+            ('SIEM pull', people['svc-siem'], ['events:read', 'findings:read'],
+             now - timedelta(days=60), now + timedelta(days=120), now - timedelta(minutes=3), None),
+            ('Ticket sync', people['svc-ticketing'], ['findings:read', 'findings:write'],
+             now - timedelta(days=30), now + timedelta(days=60), now - timedelta(minutes=41), None),
+            ('Jupyter notebook', people['admin'], ['events:read', 'events:export'],
+             now - timedelta(days=12), now + timedelta(days=78), now - timedelta(days=1, hours=2), None),
+            ('Old SIEM key', people['svc-siem'], ['events:read'],
+             now - timedelta(days=200), now + timedelta(days=10), now - timedelta(days=61), now - timedelta(days=60)),
+            ('Dashboard kiosk', people['dean.gray'], ['events:read', 'findings:read', 'dashboards:read'],
+             now - timedelta(days=100), now - timedelta(days=10), now - timedelta(days=11), None),
         ]
         for name, owner, scopes, created, expires, used, revoked in key_rows:
             _, prefix, digest = apikeys.generate()
@@ -684,18 +724,21 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
                               icon='monitor', description='The 18 lab machines, what they reach and when.',
                               time_range={'from': 'now-24h', 'to': 'now'}, widgets=[
                                   {'id': 'labs-time', 'title': 'Lab traffic by purpose', 'type': 'pivot', 'span': 8, 'height': 'md', 'viz': 'stacked',
-                                   'pivot': {'query': 'host:lab-* AND has:purpose', 'metric': 'count', 'over_time': True, 'split': 'bite.purpose', 'split_size': 5}},
+                                   'pivot': {'query': 'host:lab-* AND has:purpose', 'metric': 'count', 'over_time': True,
+                                             'split': 'bite.purpose', 'split_size': 5}},
                                   {'id': 'labs-top', 'title': 'Busiest labs', 'type': 'pivot', 'span': 4, 'height': 'md', 'viz': 'hbar',
                                    'pivot': {'query': 'host:lab-*', 'metric': 'count', 'rows': 'entity', 'rows_size': 8}},
                                   {'id': 'labs-risk', 'title': 'Risky domains from labs', 'type': 'pivot', 'span': 12, 'height': 'md', 'viz': 'table',
-                                   'pivot': {'query': 'host:lab-* AND has:risk AND NOT risk:(privacy.tracking OR privacy.advertising)', 'metric': 'count', 'rows': 'bite.registrable_domain', 'rows_size': 10, 'split': 'bite.risk', 'split_size': 3}}]))
+                                   'pivot': {'query': 'host:lab-* AND has:risk AND NOT risk:(privacy.tracking OR privacy.advertising)',
+                                             'metric': 'count', 'rows': 'bite.registrable_domain', 'rows_size': 10,
+                                             'split': 'bite.risk', 'split_size': 3}}]))
         await session.commit()
 
     print('Running the rule engine over the last three days...')
     start = now - timedelta(days=3)
     step = timedelta(minutes=15)
     async with db.sessionmaker()() as session:
-        rules = [r for r in (await session.execute(select(Rule).where(Rule.enabled.is_(True)))).scalars()]
+        rules = list((await session.execute(select(Rule).where(Rule.enabled.is_(True)))).scalars())
         moment = start
         last_run: dict = {}
         while moment <= now:
@@ -744,11 +787,7 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
             age = (now - f.first_seen).total_seconds() / 3600
             who = analysts[i % len(analysts)]
             name = who.display_name
-
-            def act(kind, body='', data=None, hours_after=1.0):
-                session.add(FindingActivity(finding_id=f.id, actor_id=who.id, actor_name=name,
-                                            kind=kind, body=body, data=data or {},
-                                            created_at=min(now, f.first_seen + timedelta(hours=hours_after))))
+            act = _timeline(session, f, who, now)
             if f.rule_name.startswith('Unusual burst') and age > 20:
                 f.status, f.resolved_at, f.resolved_by_id = 'false_positive', f.first_seen + timedelta(hours=3), who.id
                 act('status', 'Exam revision site preloading assets. Expected.', {'from': 'new', 'to': 'false_positive'}, 3)
@@ -823,8 +862,10 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
                 {'day': day, 'dimension': 'severity', 'key': 'low', 'count': low},
                 {'day': day, 'dimension': 'type', 'key': 'dns', 'count': int(total_events * 0.74)},
                 {'day': day, 'dimension': 'type', 'key': 'browser.history', 'count': int(total_events * 0.26)},
-                {'day': day, 'dimension': 'unique', 'key': 'clients', 'count': int(rng.uniform(55, 58) * (0.6 if day.month in (7, 8) else 1)) if weekday else int(rng.uniform(31, 36))},
-                {'day': day, 'dimension': 'unique', 'key': 'users', 'count': int(rng.uniform(32, 34) * (0.6 if day.month in (7, 8) else 1)) if weekday else int(rng.uniform(25, 29))},
+                {'day': day, 'dimension': 'unique', 'key': 'clients',
+                 'count': int(rng.uniform(55, 58) * (0.6 if day.month in (7, 8) else 1)) if weekday else int(rng.uniform(31, 36))},
+                {'day': day, 'dimension': 'unique', 'key': 'users',
+                 'count': int(rng.uniform(32, 34) * (0.6 if day.month in (7, 8) else 1)) if weekday else int(rng.uniform(25, 29))},
                 {'day': day, 'dimension': 'response_code', 'key': 'NXDOMAIN', 'count': int(total_events * 0.012)},
                 {'day': day, 'dimension': 'risk', 'key': 'threat.malicious', 'count': int(high * 0.5)},
                 {'day': day, 'dimension': 'risk', 'key': 'threat.phishing', 'count': int(high * 0.3)},
@@ -840,7 +881,6 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
                                    ('communication.messaging', 0.04)):
                 rows.append({'day': day, 'dimension': 'purpose', 'key': purpose,
                              'count': int(total_events * share * rng.uniform(0.9, 1.1))})
-        from sqlalchemy.dialects.postgresql import insert
         for i in range(0, len(rows), 2000):
             await session.execute(insert(DailyStat).values(rows[i:i + 2000]))
         await session.commit()
@@ -852,15 +892,14 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
 
 
 
-async def feed(per_day: int = 12000, every: float = 5.0) -> int:
+async def feed(per_day: int = 12000, every: float = 5.0) -> int:  # pylint: disable=too-many-locals  # one loop, writing as it goes
     """Keeps writing made-up events as they would arrive, until interrupted.
 
     For a demo that should look alive: the pipeline indicator, the live tail
     and the rules all have something new to see.
     """
-    import asyncio
-    rng = random.Random()
-    entities = build_entities(random.Random(20261005))
+    rng = random.Random()  # nosec B311  # made-up demo data
+    entities = build_entities(random.Random(20261005))  # nosec B311  # made-up demo data
     search = SearchClient()
     print(f'Writing about {per_day:,} made-up events a day to OpenSearch. Ctrl-C to stop.')
     try:

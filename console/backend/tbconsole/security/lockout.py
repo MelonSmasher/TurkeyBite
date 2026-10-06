@@ -1,5 +1,8 @@
-"""The per-account lockout: wrong passwords for a local account counted in
-the database, so the count holds across replicas and restarts."""
+"""The per-account lockout for local accounts.
+
+Wrong passwords are counted in the database, so the count holds across
+replicas and restarts.
+"""
 
 import uuid
 from datetime import timedelta
@@ -13,11 +16,12 @@ from ..models import User
 
 async def count_failure(db: AsyncSession, user_id: uuid.UUID) -> bool:
     """Counts one wrong password against an account, locking it at the limit.
-    True if this one locked it.
 
-    One statement, adding to what the database holds rather than writing back
-    a count read earlier, so wrong passwords that arrive together are each
-    counted, and the account locks at the limit however they arrive."""
+    True if this one locked it. One statement, adding to what the database
+    holds rather than writing back a count read earlier, so wrong passwords
+    that arrive together are each counted, and the account locks at the limit
+    however they arrive.
+    """
     settings = get_settings()
     reached = User.failed_logins + 1 >= settings.login_max_failures
     row = (await db.execute(

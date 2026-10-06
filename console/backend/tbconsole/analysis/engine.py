@@ -62,6 +62,7 @@ SYNC_LOCK = 0x7462_0001
 
 
 def spec_of(rule: Rule) -> RuleSpec:
+    """The parts of a stored rule that evaluating it takes."""
     return RuleSpec(name=rule.name, type=rule.type, query=rule.query, params=rule.params or {},
                     group_by=rule.group_by or [], window_seconds=rule.window_seconds,
                     interval_seconds=rule.interval_seconds, exceptions=rule.exceptions or [],
@@ -85,9 +86,12 @@ def _bounds(schedule: dict) -> tuple[int, int]:
 
 
 def _wall(day, minute: int, zone: ZoneInfo) -> datetime:
-    """The instant a local wall-clock time names, in UTC: the first, when the
-    clocks go back and it happens twice. A time the clocks skip, such as 02:30
-    on the night they spring forward, names the moment they jump past it."""
+    """The instant a local wall-clock time names, in UTC.
+
+    The first, when the clocks go back and it happens twice. A time the clocks
+    skip, such as 02:30 on the night they spring forward, names the moment they
+    jump past it.
+    """
     nominal = datetime.combine(day, clock(0, 0)) + timedelta(minutes=minute)
     candidates = [nominal.replace(tzinfo=zone, fold=fold).astimezone(timezone.utc) for fold in (0, 1)]
     for moment in sorted(candidates):
@@ -104,11 +108,13 @@ def _wall(day, minute: int, zone: ZoneInfo) -> datetime:
 
 
 def _periods(schedule: dict, around: datetime):
-    """The active periods that could hold `around`: each (start, end) in UTC,
-    from the one that began the day before to the one that begins the day
-    after. A period belongs to the day it starts on. 08:00 to 16:00 lasts
+    """The active periods that could hold `around`, each a (start, end) in UTC.
+
+    They run from the one that began the day before to the one that begins the
+    day after. A period belongs to the day it starts on. 08:00 to 16:00 lasts
     eight hours; 22:00 to 06:00 runs over midnight; a start equal to its end,
-    or 00:00 to 24:00, is a whole day."""
+    or 00:00 to 24:00, is a whole day.
+    """
     zone = _zone(schedule)
     lo, hi = _bounds(schedule)
     length = (hi - lo) % (24 * 60) or 24 * 60
@@ -136,19 +142,23 @@ def in_schedule(schedule: dict | None, now: datetime) -> bool:
 
 
 def window_cut(schedule: dict | None, end: datetime) -> datetime | None:
-    """Where a window ending at `end` is cut, at the start of the active
-    hours it belongs to: those `end` is in, or, for the window that ends
-    them, those it closes."""
+    """Where a window ending at `end` is cut: at the start of the active hours it belongs to.
+
+    Those are the hours `end` is in, or, for the window that ends them, those
+    it closes.
+    """
     if not schedule:
         return None
     return active_since(schedule, end if in_schedule(schedule, end) else end - timedelta(seconds=1))
 
 
 def active_since(schedule: dict | None, now: datetime) -> datetime | None:
-    """When the active hours that `now` falls in began, so a window can be cut
-    there rather than reach into the hours before. Periods that run on into
-    one another, such as whole days back to back, count as one. None without
-    a schedule, or for one that never pauses."""
+    """When the active hours that `now` falls in began.
+
+    A window can be cut there rather than reach into the hours before. Periods
+    that run on into one another, such as whole days back to back, count as
+    one. None without a schedule, or for one that never pauses.
+    """
     if not schedule:
         return None
     current = _period(schedule, now)
@@ -164,8 +174,10 @@ def active_since(schedule: dict | None, now: datetime) -> datetime | None:
 
 
 def active_until(schedule: dict | None, now: datetime) -> datetime | None:
-    """When the active hours that `now` falls in end, joined periods counted
-    as one. None as for active_since."""
+    """When the active hours that `now` falls in end, joined periods counted as one.
+
+    None as for active_since.
+    """
     if not schedule:
         return None
     current = _period(schedule, now)
@@ -181,8 +193,11 @@ def active_until(schedule: dict | None, now: datetime) -> datetime | None:
 
 
 def _clean(value):
-    """Postgres stores no NUL character, in text or in JSON; a value from the
-    events that holds one would otherwise abort the whole run."""
+    """Replaces the NUL characters in a value, at any depth.
+
+    Postgres stores no NUL character, in text or in JSON; a value from the
+    events that holds one would otherwise abort the whole run.
+    """
     if isinstance(value, str):
         return value.replace('\x00', '\ufffd')
     if isinstance(value, dict):
@@ -193,6 +208,7 @@ def _clean(value):
 
 
 def dedup_key(rule_id: uuid.UUID, hit: Hit) -> str:
+    """The key of the one open finding a hit belongs to: per rule, entity and distinct value."""
     raw = f'{rule_id}|{hit.entity_field or ""}|{hit.entity_value or ""}|{hit.distinct}'
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:40]
 
@@ -211,8 +227,11 @@ def check_title(template: str) -> None:
 
 
 def render_title(template: str, rule: Rule, hit: Hit) -> str:
-    """A finding's title. Placeholders are replaced as plain text, never
-    formatted, so a template cannot reach into the values or pad them out."""
+    """A finding's title.
+
+    Placeholders are replaced as plain text, never formatted, so a template
+    cannot reach into the values or pad them out.
+    """
     entity = hit.entity_value or 'the network'
     values = {'rule': rule.name, 'entity': entity, 'count': f'{hit.count:,}',
               'value': hit.distinct or (f'{hit.value:g}' if isinstance(hit.value, float) else str(hit.value)),
@@ -228,6 +247,8 @@ def render_title(template: str, rule: Rule, hit: Hit) -> str:
 
 @dataclass
 class RunOutcome:
+    """What one run of a rule came to: its status, what it found and how long it took."""
+
     status: str
     hits: int = 0
     created: int = 0
@@ -242,7 +263,8 @@ async def _apply_hit(db: AsyncSession, rule: Rule, hit: Hit, now: datetime,
     """Creates or updates the open finding for a hit. Returns (created, finding).
 
     `touched` holds the findings this run has matched already: a run that
-    catches up on several windows counts one occurrence, not one per window."""
+    catches up on several windows counts one occurrence, not one per window.
+    """
     key = dedup_key(rule.id, hit)
     finding = (await db.execute(select(Finding).where(
         Finding.dedup_key == key, Finding.status.in_(OPEN))
@@ -305,9 +327,11 @@ async def _remind_due(finding: Finding, rule: Rule, now: datetime) -> bool:
 
 async def record_hits(db: AsyncSession, rule: Rule, hits: list[Hit], now: datetime,
                       touched: set | None = None) -> tuple[int, int, int]:
-    """Turns hits into findings and queues their webhooks. Returns (created,
-    updated, failed): a hit that cannot be stored is logged and skipped, so one
-    odd value does not cost the run every other finding."""
+    """Turns hits into findings and queues their webhooks.
+
+    Returns (created, updated, failed): a hit that cannot be stored is logged
+    and skipped, so one odd value does not cost the run every other finding.
+    """
     touched = set() if touched is None else touched
     created = updated = failed = 0
     for hit in hits:
@@ -341,15 +365,15 @@ async def record_hits(db: AsyncSession, rule: Rule, hits: list[Hit], now: dateti
 
 
 def plan(rule: Rule, end: datetime) -> tuple[list[datetime], str]:
-    """The window ends to evaluate this run, oldest first, and a note on any
-    that were given up.
+    """The window ends to evaluate this run, oldest first, and a note on any that were given up.
 
     Within a window's length of where the rule last got to, one window ending
     now, as usual. Further behind, whole windows tile forward from there, so
     none is skipped and none is evaluated twice; what is left over, less than
     a window, waits for the next run. Outside the rule's active hours nothing
     is evaluated, except the last stretch of hours that ended since it last
-    ran."""
+    ran.
+    """
     step = timedelta(seconds=rule.window_seconds)
     last = rule.evaluated_until
     note = ''
@@ -398,14 +422,17 @@ def _hours(span: timedelta) -> str:
 
 
 def _error_text(e: Exception) -> str:
-    """What went wrong, in words fit for the rule's page and its alerts: never
-    the SQL or the values a database error carries."""
+    """What went wrong, in words fit for the rule's page and its alerts.
+
+    Never the SQL or the values a database error carries.
+    """
     if isinstance(e, SQLAlchemyError):
         return f'the database refused it ({type(getattr(e, "orig", None) or e).__name__})'
     return f'{type(e).__name__}: {str(e)[:300]}'
 
 
-async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: datetime | None = None,
+# pylint: disable-next=too-many-arguments,too-many-locals,too-many-branches,too-many-statements  # evaluates every window, then records them
+async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, *, now: datetime | None = None,
                    persist: bool = True, lease: datetime | None = None) -> RunOutcome:
     """Evaluates one rule's due windows and records what they found.
 
@@ -416,7 +443,8 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
     With `lease`, the claim this run holds: before writing, the rule is read
     again under a lock, and if its lease is no longer this one, because the
     run outlived it and another took over, nothing is written. A run stops
-    evaluating well before its lease ends, and records what it got done."""
+    evaluating well before its lease ends, and records what it got done.
+    """
     now = now or datetime.now(timezone.utc)
     started = time.monotonic()
     end = now - timedelta(seconds=get_settings().rule_ingest_delay_sec)
@@ -525,6 +553,7 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
 
 
 async def prune_runs(db: AsyncSession, rule_id: uuid.UUID) -> None:
+    """Deletes a rule's oldest run records, keeping the latest RUNS_KEPT."""
     ids = (await db.execute(select(RuleRun.id).where(RuleRun.rule_id == rule_id)
                             .order_by(RuleRun.started_at.desc()).offset(RUNS_KEPT))).scalars().all()
     if ids:
@@ -539,7 +568,7 @@ MAX_BACKTEST_STEPS = 96
 BACKTEST_BUDGET = 600
 
 
-async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
+async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:  # pylint: disable=too-many-locals  # one pass builds the whole report
     """What a rule would have raised over `tr`, evaluated at its interval.
 
     Nothing is recorded. Long ranges are sampled at a coarser step so a test
@@ -548,8 +577,7 @@ async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
     step = max(spec.interval_seconds, int(tr.seconds / MAX_BACKTEST_STEPS) + 1)
     evaluator = Evaluator(search, budget=BACKTEST_BUDGET)
     moment = tr.start + timedelta(seconds=spec.window_seconds)
-    if moment > tr.end:
-        moment = tr.end
+    moment = min(moment, tr.end)
     series, samples, entities, statuses = [], [], {}, set()
     previous: datetime | None = None
     stopped: str | None = None
@@ -594,7 +622,8 @@ async def sync_builtin_rules(db: AsyncSession) -> dict:
     """Adds missing built-in rules and upgrades unmodified ones. Returns counts.
 
     Several console processes starting at once would each add the same
-    rules, so they take turns."""
+    rules, so they take turns.
+    """
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': SYNC_LOCK})
     existing = {r.builtin_key: r for r in (await db.execute(
         select(Rule).where(Rule.builtin_key.is_not(None)))).scalars()}
@@ -623,12 +652,15 @@ CURSOR_FIELDS = ('type', 'query', 'params', 'group_by', 'exceptions')
 
 
 def cursor_basis(rule: Rule) -> tuple:
+    """The values of a rule's CURSOR_FIELDS, to tell whether its saved position still holds."""
     return tuple(getattr(rule, name) for name in CURSOR_FIELDS)
 
 
 def forget_position_if_changed(rule: Rule, before: tuple) -> None:
-    """Clears where a first-seen or silence rule had got to, when what it
-    reads has changed since `before`, so it starts again from the beginning."""
+    """Clears where a first-seen or silence rule had got to, when what it reads has changed since `before`.
+
+    It then starts again from the beginning.
+    """
     if cursor_basis(rule) != before:
         rule.state = {}
 
@@ -644,6 +676,7 @@ def _copy_definition(rule: Rule, definition: dict) -> None:
 
 
 def reset_to_default(rule: Rule) -> None:
+    """Puts a built-in rule back as it ships, at the current version, undoing any edits."""
     definition = defaults.BY_KEY[rule.builtin_key]
     _copy_definition(rule, definition)
     if 'schedule' not in definition:
@@ -653,6 +686,7 @@ def reset_to_default(rule: Rule) -> None:
 
 
 def update_available(rule: Rule) -> bool:
+    """Whether an edited built-in rule has a newer shipped version, which edited rules do not take on their own."""
     definition = defaults.BY_KEY.get(rule.builtin_key or '')
     return bool(definition and rule.modified and (rule.builtin_version or 0) < definition['version'])
 
@@ -660,10 +694,12 @@ def update_available(rule: Rule) -> bool:
 # -- the scheduler ---------------------------------------------------------------------
 
 async def claim_run(db: AsyncSession, rule_id: uuid.UUID) -> tuple[datetime, datetime] | None:
-    """Takes the lease to run a rule, and commits it. Returns the database's
-    time, which the run uses as now, and the lease, which the run shows when
-    it writes; None when the rule is running elsewhere. Database time, so
-    replicas with different clocks agree."""
+    """Takes the lease to run a rule, and commits it.
+
+    Returns the database's time, which the run uses as now, and the lease,
+    which the run shows when it writes; None when the rule is running
+    elsewhere. Database time, so replicas with different clocks agree.
+    """
     row = (await db.execute(
         update(Rule).where(Rule.id == rule_id,
                            or_(Rule.running_until.is_(None), Rule.running_until < func.now()))
@@ -674,8 +710,11 @@ async def claim_run(db: AsyncSession, rule_id: uuid.UUID) -> tuple[datetime, dat
 
 
 async def release_run(rule_id: uuid.UUID, lease: datetime) -> None:
-    """Gives a lease back, if it is still this run's, after a run that ended
-    without recording, so the rule need not wait out the lease."""
+    """Gives a lease back, if it is still this run's.
+
+    For a run that ended without recording, so the rule need not wait out the
+    lease.
+    """
     async with database.sessionmaker()() as db:
         await db.execute(update(Rule).where(Rule.id == rule_id, Rule.running_until == lease)
                          .values(running_until=None))
@@ -683,6 +722,7 @@ async def release_run(rule_id: uuid.UUID, lease: datetime) -> None:
 
 
 async def claim_due(db: AsyncSession, now: datetime, limit: int = 10) -> list[Rule]:
+    """Locks up to `limit` due rules no other process holds, and moves each one's next run on."""
     rules = (await db.execute(
         select(Rule).where(Rule.enabled.is_(True), Rule.next_run_at <= now,
                            or_(Rule.running_until.is_(None), Rule.running_until < now))
@@ -697,10 +737,14 @@ async def claim_due(db: AsyncSession, now: datetime, limit: int = 10) -> list[Ru
 
 
 class Scheduler:
-    """Runs due rules, side by side: each in a task of its own, so one slow
-    rule holds up nothing but itself."""
+    """Runs due rules, side by side.
+
+    Each runs in a task of its own, so one slow rule holds up nothing but
+    itself.
+    """
 
     def __init__(self, search: SearchClient, poll_seconds: float = 5.0, concurrency: int = 4):
+        """Looks for due rules every `poll_seconds`, and runs up to `concurrency` at once."""
         self.search = search
         self.poll_seconds = poll_seconds
         self.concurrency = concurrency
@@ -745,7 +789,9 @@ class Scheduler:
 
     async def tick(self) -> int:
         """Starts the rules that are due, as many as there are free places.
-        Returns how many it started."""
+
+        Returns how many it started.
+        """
         free = self.concurrency - len(self.tasks)
         if free <= 0:
             return 0
@@ -768,21 +814,26 @@ class Scheduler:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
 
     async def loop(self) -> None:
+        """Ticks until cancelled, logging a tick that fails.
+
+        It waits `poll_seconds` between ticks, unless the last one started
+        rules and places are still free.
+        """
         while True:
             try:
                 started = await self.tick()
                 if started and len(self.tasks) < self.concurrency:
                     continue
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 log.exception('scheduler tick failed')
             await asyncio.sleep(self.poll_seconds)
 
     def start(self) -> None:
+        """Starts the loop in a task of its own."""
         self._task = asyncio.create_task(self.loop(), name='rule-scheduler')
 
     async def stop(self) -> None:
+        """Stops the loop, then cancels the runs under way and waits for them."""
         if self._task:
             self._task.cancel()
             try:

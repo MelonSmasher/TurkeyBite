@@ -11,11 +11,13 @@ from ..analysis import engine
 from ..models import ApiKey, Dashboard, Finding, Rule, SavedSearch, User, Webhook, WebhookDelivery
 from ..search import fields as F
 from ..search.timerange import RangeError, TimeRange, iso, parse_moment, parse_range
+from ..webhooks.service import url_of
 
 SEVERITY_WEIGHT = {'critical': 40, 'high': 20, 'medium': 8, 'low': 3, 'info': 1}
 
 
 def time_range(start: str | None, end: str | None, default: str = 'now-24h') -> TimeRange:
+    """The range a request asks for, or a 400 saying what is wrong with it."""
     try:
         return parse_range(start, end, default_start=default)
     except RangeError as e:
@@ -36,10 +38,12 @@ def like_escape(text: str) -> str:
 
 
 def not_found(what: str = 'That') -> HTTPException:
+    """A 404 for something that does not exist or that the caller may not see, without saying which."""
     return HTTPException(status.HTTP_404_NOT_FOUND, f'{what} does not exist, or you cannot see it')
 
 
 def parse_uuid(value: str, what: str = 'That') -> uuid.UUID:
+    """An id from a request; one that is not a UUID is a 404, like an id that matches nothing."""
     try:
         return uuid.UUID(str(value))
     except ValueError as e:
@@ -47,6 +51,7 @@ def parse_uuid(value: str, what: str = 'That') -> uuid.UUID:
 
 
 def ts(value: datetime | None) -> str | None:
+    """A time as ISO 8601 text for a response; no time stays None."""
     return iso(value) if value else None
 
 
@@ -77,6 +82,7 @@ async def risk_scores(db: AsyncSession, entities: list[str] | None = None) -> di
 # -- how records are shown ---------------------------------------------------------
 
 def user_out(user: User, full: bool = False) -> dict:
+    """An account as the API shows it; with `full`, its sign-in and directory details too."""
     out = {'id': str(user.id), 'username': user.username,
            'display_name': user.display_name or user.username, 'role': user.role,
            'source': user.source}
@@ -94,6 +100,7 @@ def user_out(user: User, full: bool = False) -> dict:
 
 
 def finding_out(f: Finding) -> dict:
+    """A finding as the API shows it."""
     return {
         'id': str(f.id), 'number': f.number, 'rule_id': str(f.rule_id) if f.rule_id else None,
         'rule_name': f.rule_name, 'rule_type': f.rule_type, 'category': f.category,
@@ -108,6 +115,7 @@ def finding_out(f: Finding) -> dict:
 
 
 def rule_out(r: Rule) -> dict:
+    """A rule as the API shows it, with whether a newer built-in version is available."""
     return {
         'id': str(r.id), 'builtin_key': r.builtin_key, 'builtin': r.builtin_key is not None,
         'builtin_version': r.builtin_version, 'modified': r.modified,
@@ -127,9 +135,11 @@ def rule_out(r: Rule) -> dict:
 
 
 def webhook_out(w: Webhook, reveal: bool = False) -> dict:
-    """A webhook. Its full URL, which for a chat service is its credential,
-    only for those who can change it."""
-    from ..webhooks.service import url_of
+    """A webhook as the API shows it.
+
+    Its full URL, which for a chat service is its credential, only with
+    `reveal`, for those who can change it.
+    """
     try:
         url = url_of(w) if reveal else w.url_display
     except Exception:
@@ -146,9 +156,12 @@ def webhook_out(w: Webhook, reveal: bool = False) -> dict:
 
 
 def _delivery_names(d: WebhookDelivery) -> list[str]:
-    """The people and machines a delivery names: who its finding is about,
-    when that is a person or machine and not, say, a domain, and a new value
-    that is one. Not what redaction already replaced."""
+    """The people and machines a delivery names.
+
+    That is who its finding is about, when that is a person or machine and
+    not, say, a domain, and a new value that is one. Not what redaction
+    already replaced.
+    """
     finding = (d.payload or {}).get('finding') or {}
     names = []
     field = F.BY_NAME.get(finding.get('entity_field') or '')
@@ -161,8 +174,11 @@ def _delivery_names(d: WebhookDelivery) -> list[str]:
 
 
 def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> dict:
-    """A delivery. What it says about a finding, its title and who it is
-    about, only with `about`, for those who may read findings."""
+    """A delivery as the API shows it.
+
+    What it says about a finding, its title and who it is about, only with
+    `about`, for those who may read findings.
+    """
     out = {
         'id': str(d.id), 'webhook_id': str(d.webhook_id), 'event': d.event,
         'finding_id': str(d.finding_id) if d.finding_id else None, 'status': d.status,
@@ -183,6 +199,7 @@ def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> 
 
 
 def apikey_out(k: ApiKey) -> dict:
+    """An API key as the API shows it, never the key itself, with whether it is active, revoked or expired."""
     now = datetime.now(timezone.utc)
     state = 'active'
     if k.revoked_at:
@@ -199,6 +216,7 @@ def apikey_out(k: ApiKey) -> dict:
 
 
 def dashboard_out(d: Dashboard, me: uuid.UUID | None = None) -> dict:
+    """A dashboard as the API shows it, marked as the caller's when its owner is `me`."""
     return {
         'id': str(d.id), 'name': d.name, 'description': d.description, 'icon': d.icon,
         'widgets': d.widgets or [], 'time_range': d.time_range or {}, 'shared': d.shared,
@@ -209,6 +227,7 @@ def dashboard_out(d: Dashboard, me: uuid.UUID | None = None) -> dict:
 
 
 def saved_search_out(s: SavedSearch, me: uuid.UUID | None = None) -> dict:
+    """A saved search as the API shows it, marked as the caller's when its owner is `me`."""
     return {
         'id': str(s.id), 'name': s.name, 'description': s.description, 'query': s.query,
         'time_range': s.time_range or {}, 'columns': s.columns or [], 'shared': s.shared,

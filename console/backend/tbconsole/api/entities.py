@@ -48,7 +48,8 @@ def _top(aggs: dict, name: str) -> list[dict]:
 
 
 @router.get('/entities')
-async def list_entities(request: Request, start: str | None = None, end: str | None = None,
+async def list_entities(request: Request, *,  # pylint: disable=too-many-arguments,too-many-locals  # the whole list in one response
+                        start: str | None = None, end: str | None = None,
                         query: str = '',
                         sort: str = 'notable', size: int = 50,
                         principal: Principal = Depends(require(rbac.EVENTS_READ)),
@@ -109,13 +110,18 @@ async def list_entities(request: Request, start: str | None = None, end: str | N
 
 
 @router.get('/entities/profile')
-async def profile(field: str, value: str, request: Request, start: str | None = None,
-                  end: str | None = None,
+async def profile(field: str, value: str, request: Request, *,  # pylint: disable=too-many-arguments,too-many-locals  # the whole profile in one response
+                  start: str | None = None, end: str | None = None,
                   principal: Principal = Depends(require(rbac.EVENTS_READ)),
                   search: SearchClient = Depends(search_client),
                   db: AsyncSession = Depends(get_session)) -> dict:
+    """Everything the events say about one person or machine over a range, with their findings and risk.
+
+    `field` is the identity field that names them and `value` its value.
+    Every view is written to the audit log.
+    """
     field = _identity_field(field)
-    if F.BY_NAME[field].type == 'ip' and not tbql._ip_or_net(value):
+    if F.BY_NAME[field].type == 'ip' and not tbql.ip_or_net(value):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'{value!r} is not an address')
     tr = time_range(start, end, 'now-7d')
     selector = {'term': {field: value}}
@@ -203,8 +209,8 @@ async def profile(field: str, value: str, request: Request, start: str | None = 
 
 
 @router.get('/domains/{domain}')
-async def domain_profile(domain: str, request: Request, start: str | None = None,
-                         end: str | None = None,
+async def domain_profile(domain: str, request: Request, *,  # pylint: disable=too-many-arguments,too-many-locals  # the whole profile in one response
+                         start: str | None = None, end: str | None = None,
                          principal: Principal = Depends(require(rbac.EVENTS_READ)),
                          search: SearchClient = Depends(search_client),
                          db: AsyncSession = Depends(get_session)) -> dict:
@@ -284,4 +290,3 @@ async def domain_profile(domain: str, request: Request, start: str | None = None
         'clients': int((a.get('entity_count_clients') or {}).get('value') or 0),
         'findings': [finding_out(f) for f in findings],
     }
-

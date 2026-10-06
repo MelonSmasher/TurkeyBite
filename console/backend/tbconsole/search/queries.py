@@ -19,11 +19,11 @@ def bool_query(tr: TimeRange | None, text: str = '', extra: list[dict] | None = 
     filters = []
     if tr is not None:
         filters.append(tr.filter())
-    compiled = tbql.compile(text or '')
+    compiled = tbql.compile_query(text or '')
     if compiled != {'match_all': {}}:
         filters.append(compiled)
     filters.extend(extra or [])
-    must_not = [tbql.compile(q) for q in exclude or [] if q and q.strip()]
+    must_not = [tbql.compile_query(q) for q in exclude or [] if q and q.strip()]
     query: dict = {'bool': {'filter': filters}}
     if must_not:
         query['bool']['must_not'] = must_not
@@ -32,6 +32,7 @@ def bool_query(tr: TimeRange | None, text: str = '', extra: list[dict] | None = 
 
 def terms_agg(field: str, size: int, sub: dict | None = None, order: dict | None = None,
               min_doc_count: int | None = None) -> dict:
+    """A terms aggregation on `field`, its size capped at MAX_TERMS_SIZE."""
     agg: dict = {'terms': {'field': field, 'size': max(1, min(size, MAX_TERMS_SIZE))}}
     if order:
         agg['terms']['order'] = order
@@ -87,6 +88,7 @@ def entity_term(field: str, value) -> str:
 
 def date_histogram(interval: str, tr: TimeRange, sub: dict | None = None,
                    tz: str | None = None) -> dict:
+    """Buckets of `interval` over the whole of `tr`, empty ones included, in the caller's time zone."""
     agg: dict = {'date_histogram': {
         'field': '@timestamp', 'fixed_interval': interval, 'min_doc_count': 0,
         # Day buckets start at the caller's midnight
@@ -100,5 +102,6 @@ def date_histogram(interval: str, tr: TimeRange, sub: dict | None = None,
 
 
 def histogram_series(buckets: list[dict]) -> list[dict]:
+    """A date histogram's buckets as points in time with their counts."""
     return [{'t': b.get('key_as_string') or b.get('key'), 'ts': b.get('key'),
              'count': b.get('doc_count', 0)} for b in buckets]

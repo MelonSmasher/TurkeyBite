@@ -34,27 +34,31 @@ TOO_MANY = 'Too many failed sign-ins. Wait a few minutes and try again.'
 
 
 def _same_origin(request: Request) -> None:
-    """A browser signing in from another site's page is refused, so no page
-    can sign a visitor in to an account of its choosing."""
+    """Refuses a browser signing in from another site's page.
+
+    That way no page can sign a visitor in to an account of its choosing.
+    """
     if not origin_ok(request):
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'Sign in from the console itself.')
 
 
 class LoginBody(BaseModel):
+    """A username and password, to sign in with."""
+
     username: str = Field(min_length=1, max_length=256)
     password: str = Field(min_length=1, max_length=1024)
 
 
 class MfaBody(BaseModel):
+    """The token the password step gave, and a code from the authenticator app."""
+
     token: str = Field(max_length=2000)
     code: str = Field(max_length=20)
 
 
 async def _ldap_config(db: AsyncSession) -> tuple[dict, str]:
     cfg = ldap.config_with_defaults(await settings_store.get(db, 'ldap'))
-    secret = ''
-    if cfg.get('bind_password_enc'):
-        secret = crypto.decrypt(cfg['bind_password_enc'])
+    secret = crypto.decrypt(cfg['bind_password_enc']) if cfg.get('bind_password_enc') else ''
     return cfg, secret
 
 
@@ -95,13 +99,19 @@ async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
 
 
 class _NotTheSamePerson(Exception):
-    """An account matched a directory entry by DN, but its lasting id says it
-    was made for an entry that has since been deleted and its DN reused."""
+    """An account matched a directory entry by DN, but not by its lasting id.
+
+    The id says it was made for an entry that has since been deleted and its DN
+    reused.
+    """
 
 
 async def _directory_account(db: AsyncSession, identity) -> User | None:
-    """The console account for a directory entry: by its lasting id when the
-    directory has one, else by its DN."""
+    """The console account for a directory entry.
+
+    It is found by the entry's lasting id when the directory has one, else by
+    its DN.
+    """
     if identity.guid:
         found = (await db.execute(select(User).where(
             User.source == 'ldap', User.ldap_guid == identity.guid))).scalar_one_or_none()
@@ -117,6 +127,11 @@ async def _directory_account(db: AsyncSession, identity) -> User | None:
 @router.post('/login')
 async def login(body: LoginBody, request: Request, response: Response,
                 db: AsyncSession = Depends(get_session)) -> dict:
+    """Signs in with a username and password.
+
+    A session starts at once, unless the account has two-factor sign-in on:
+    then the answer holds a token, to send to /auth/mfa with a code.
+    """
     _same_origin(request)
     # In the form directories compare names in, so ｂｏｂ and bob are one name
     # here as they are there, and one count against the brake
@@ -138,7 +153,7 @@ async def login(body: LoginBody, request: Request, response: Response,
                             'moment.') from e
 
 
-async def _sign_in(db: AsyncSession, body: LoginBody, request: Request, response: Response,
+async def _sign_in(db: AsyncSession, body: LoginBody, request: Request, response: Response,  # pylint: disable=too-many-statements  # each kind of account
                    username: str) -> dict:
     user = (await db.execute(select(User).where(
         func.lower(User.username) == username.lower()))).scalar_one_or_none()
@@ -261,10 +276,11 @@ async def login_mfa(body: MfaBody, request: Request, response: Response,
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
     fingerprint = (user.password_hash or '')[-16:] if user else ''
     now = datetime.now(timezone.utc)
+    expired = (user is None or not user.totp_enabled or user.disabled or parsed[1] != fingerprint
+               or not user.totp_secret_enc)
     # A lockout that began after the password step, from guessed codes, holds
     # here too, or the five-minute token would allow guessing past it
-    if (user is None or not user.totp_enabled or user.disabled or parsed[1] != fingerprint
-            or not user.totp_secret_enc or (user.locked_until and user.locked_until > now)):
+    if expired or (user.locked_until and user.locked_until > now):
         limits.failed(ip, user.username if user else '')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                             'That sign-in has expired. Start again.')
@@ -286,6 +302,7 @@ async def login_mfa(body: MfaBody, request: Request, response: Response,
 async def logout(request: Request, response: Response,
                  principal: Principal | None = Depends(optional_principal),
                  db: AsyncSession = Depends(get_session)) -> dict:
+    """Ends the caller's session, if it has one, and clears its cookies."""
     if principal is not None and principal.session_id is not None:
         session = await db.get(UserSession, principal.session_id)
         if session is not None:
@@ -299,6 +316,7 @@ async def logout(request: Request, response: Response,
 @router.get('/me')
 async def me(principal: Principal = Depends(current_principal),
              db: AsyncSession = Depends(get_session)) -> dict:
+    """Who the caller is, what they may do, and the settings the console starts with."""
     general = await settings_store.general(db)
     user = principal.user
     return {

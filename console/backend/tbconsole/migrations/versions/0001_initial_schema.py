@@ -1,4 +1,4 @@
-"""initial schema
+"""Initial schema.
 
 Revision ID: 0001
 Revises: 
@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    """Creates every table and index the console starts with."""
     op.create_table('audit_events',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=False), nullable=False),
     sa.Column('at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -247,7 +248,8 @@ def upgrade() -> None:
     op.create_index('ix_findings_last_seen', 'findings', ['last_seen'], unique=False)
     op.create_index(op.f('ix_findings_rule_id'), 'findings', ['rule_id'], unique=False)
     op.create_index('ix_findings_status_severity', 'findings', ['status', 'severity'], unique=False)
-    op.create_index('uq_findings_open_dedup', 'findings', ['dedup_key'], unique=True, postgresql_where=sa.text("status IN ('new', 'acknowledged', 'in_progress')"))
+    op.create_index('uq_findings_open_dedup', 'findings', ['dedup_key'], unique=True,
+                    postgresql_where=sa.text("status IN ('new', 'acknowledged', 'in_progress')"))
     op.create_table('rule_runs',
     sa.Column('id', sa.BigInteger(), sa.Identity(always=False), nullable=False),
     sa.Column('rule_id', sa.UUID(), nullable=False),
@@ -304,6 +306,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drops every table and index the upgrade created."""
     op.drop_index('ix_webhook_deliveries_finding_id', table_name='webhook_deliveries')
     op.drop_index('ix_webhook_deliveries_webhook_created', table_name='webhook_deliveries')
     op.drop_index('ix_webhook_deliveries_due', table_name='webhook_deliveries')

@@ -34,6 +34,8 @@ _HEADER_VALUE = re.compile(r'[\x21-\x7e](?:[\x20-\x7e\t]*[\x21-\x7e])?')
 
 
 class WebhookBody(BaseModel):
+    """Where a webhook sends, in what format, for which events and findings, and any headers of its own."""
+
     name: str = Field(min_length=1, max_length=200)
     url: str = Field(min_length=8, max_length=2000)
     format: str = 'json'
@@ -80,6 +82,7 @@ async def _get(db: AsyncSession, webhook_id: str) -> Webhook:
 
 @router.get('/webhooks/meta')
 async def meta(_: Principal = Depends(require(rbac.WEBHOOKS_READ))) -> dict:
+    """What the webhook form offers, and how deliveries are signed."""
     return {'formats': formats.FORMATS, 'events': formats.EVENTS, 'severities': list(SEVERITIES),
             'signature_header': signing.HEADER, 'tolerance_seconds': signing.TOLERANCE_SECONDS}
 
@@ -87,6 +90,7 @@ async def meta(_: Principal = Depends(require(rbac.WEBHOOKS_READ))) -> dict:
 @router.get('/webhooks')
 async def list_webhooks(principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                         db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Every webhook, with its deliveries in the last day counted by status."""
     hooks = (await db.execute(select(Webhook).order_by(Webhook.name))).scalars().all()
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     counts = (await db.execute(
@@ -109,6 +113,7 @@ async def list_webhooks(principal: Principal = Depends(require(rbac.WEBHOOKS_REA
 async def create_webhook(body: WebhookBody, request: Request,
                          principal: Principal = Depends(require(rbac.WEBHOOKS_WRITE)),
                          db: AsyncSession = Depends(get_session)) -> dict:
+    """Makes a webhook. Its signing secret is in this response alone; after that it can only be replaced."""
     await _validate(body)
     secret = signing.new_secret()
     hook = Webhook(name=body.name.strip(), format=body.format,
@@ -131,6 +136,7 @@ async def create_webhook(body: WebhookBody, request: Request,
 @router.get('/webhooks/{webhook_id}')
 async def get_webhook(webhook_id: str, principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """One webhook, with the names of its custom headers but not their values."""
     hook = await _get(db, webhook_id)
     out = webhook_out(hook, principal.can(rbac.WEBHOOKS_WRITE))
     if hook.headers_enc:
@@ -145,6 +151,7 @@ async def get_webhook(webhook_id: str, principal: Principal = Depends(require(rb
 async def update_webhook(webhook_id: str, body: WebhookBody, request: Request,
                          principal: Principal = Depends(require(rbac.WEBHOOKS_WRITE)),
                          db: AsyncSession = Depends(get_session)) -> dict:
+    """Replaces a webhook's settings; headers left out stay as they were."""
     hook = await _get(db, webhook_id)
     await _validate(body)
     hook.name = body.name.strip()
@@ -168,6 +175,7 @@ async def update_webhook(webhook_id: str, body: WebhookBody, request: Request,
 async def delete_webhook(webhook_id: str, request: Request,
                          principal: Principal = Depends(require(rbac.WEBHOOKS_WRITE)),
                          db: AsyncSession = Depends(get_session)) -> dict:
+    """Deletes a webhook."""
     hook = await _get(db, webhook_id)
     audit.record(db, 'webhook.delete', principal=principal, request=request,
                  target_type='webhook', target_id=hook.id, target_label=hook.name)
@@ -180,6 +188,7 @@ async def delete_webhook(webhook_id: str, request: Request,
 async def rotate_secret(webhook_id: str, request: Request,
                         principal: Principal = Depends(require(rbac.WEBHOOKS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
+    """Replaces a webhook's signing secret, and returns the new one this once."""
     hook = await _get(db, webhook_id)
     secret = signing.new_secret()
     hook.secret_enc = crypto.encrypt(secret)
@@ -224,6 +233,7 @@ async def test_webhook(webhook_id: str, request: Request,
 async def deliveries(webhook_id: str, state: str | None = None, limit: int = 50,
                      principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                      db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """One webhook's deliveries, newest first, in one state if asked."""
     hook = await _get(db, webhook_id)
     stmt = select(WebhookDelivery).where(WebhookDelivery.webhook_id == hook.id)
     if state:
@@ -237,6 +247,7 @@ async def deliveries(webhook_id: str, state: str | None = None, limit: int = 50,
 async def all_deliveries(state: str | None = None, limit: int = 50,
                          principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                          db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Every webhook's deliveries, newest first, in one state if asked."""
     stmt = select(WebhookDelivery)
     if state:
         stmt = stmt.where(WebhookDelivery.status == state)
@@ -248,6 +259,11 @@ async def all_deliveries(state: str | None = None, limit: int = 50,
 @router.get('/webhook-deliveries/{delivery_id}')
 async def get_delivery(delivery_id: str, principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                        db: AsyncSession = Depends(get_session)) -> dict:
+    """One delivery, with as much of it as the caller may see.
+
+    Its payload and how it renders are for those who may read findings; what
+    the receiver answered is for those who manage webhooks.
+    """
     delivery = await db.get(WebhookDelivery, parse_uuid(delivery_id, 'That delivery'))
     if delivery is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That delivery does not exist')
@@ -269,6 +285,7 @@ async def get_delivery(delivery_id: str, principal: Principal = Depends(require(
 async def redeliver(delivery_id: str, request: Request,
                     principal: Principal = Depends(require(rbac.WEBHOOKS_WRITE)),
                     db: AsyncSession = Depends(get_session)) -> dict:
+    """Queues a fresh copy of a delivery to send now; the original keeps its history."""
     delivery = await db.get(WebhookDelivery, parse_uuid(delivery_id, 'That delivery'))
     if delivery is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That delivery does not exist')

@@ -34,13 +34,17 @@ MFA_TOKEN_SECONDS = 300
 
 
 def now() -> datetime:
+    """The time now, in UTC."""
     return datetime.now(timezone.utc)
 
 
 def client_ip(request: Request) -> str | None:
-    """The caller's address, if it is one. Behind a trusted proxy the address
-    comes from a header that a client may have written, so anything that is
-    not an IP address is dropped rather than stored or counted as given."""
+    """The caller's address, if it is one.
+
+    Behind a trusted proxy the address comes from a header that a client may
+    have written, so anything that is not an IP address is dropped rather than
+    stored or counted as given.
+    """
     host = request.client.host if request.client else None
     if not host:
         return None
@@ -52,6 +56,7 @@ def client_ip(request: Request) -> str | None:
 
 async def create(db: AsyncSession, user: User, request: Request, response: Response,
                  method: str) -> UserSession:
+    """Starts a session for `user`, signed in by `method`, and sets its cookies; the caller commits."""
     settings = get_settings()
     token = secrets.token_urlsafe(32)
     moment = now()
@@ -66,6 +71,7 @@ async def create(db: AsyncSession, user: User, request: Request, response: Respo
 
 
 def set_cookies(response: Response, token: str) -> None:
+    """Sets the session cookie and a new CSRF cookie, each lasting as long as a session can."""
     settings = get_settings()
     max_age = settings.session_max_hours * 3600
     response.set_cookie(SESSION_COOKIE, token, max_age=max_age, httponly=True,
@@ -75,6 +81,7 @@ def set_cookies(response: Response, token: str) -> None:
 
 
 def clear_cookies(response: Response) -> None:
+    """Removes the session and CSRF cookies."""
     settings = get_settings()
     for name in (SESSION_COOKIE, CSRF_COOKIE):
         response.delete_cookie(name, path='/', secure=settings.cookie_secure, samesite='lax')
@@ -108,6 +115,7 @@ async def lookup(db: AsyncSession, token: str) -> UserSession | None:
 
 
 async def end_all(db: AsyncSession, user_id: uuid.UUID, keep: uuid.UUID | None = None) -> None:
+    """Ends every session a user has, except `keep`."""
     stmt = delete(UserSession).where(UserSession.user_id == user_id)
     if keep is not None:
         stmt = stmt.where(UserSession.id != keep)
@@ -115,6 +123,7 @@ async def end_all(db: AsyncSession, user_id: uuid.UUID, keep: uuid.UUID | None =
 
 
 def csrf_ok(request: Request) -> bool:
+    """Whether the request's CSRF header echoes its CSRF cookie."""
     cookie = request.cookies.get(CSRF_COOKIE) or ''
     header = request.headers.get(CSRF_HEADER) or ''
     return bool(cookie) and hmac.compare_digest(cookie, header)
@@ -140,8 +149,7 @@ def mfa_token(user: User) -> str:
 
 
 def read_mfa_token(token: str) -> tuple[uuid.UUID, str, float] | None:
-    """(user id, password fingerprint, when issued) from a valid, unexpired
-    token, else None."""
+    """(user id, password fingerprint, when issued) from a valid, unexpired token, else None."""
     try:
         body, signature = token.split('.', 1)
         payload = _unb64(body)

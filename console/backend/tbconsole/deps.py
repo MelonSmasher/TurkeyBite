@@ -22,6 +22,8 @@ _KEY_TOUCH_EVERY = timedelta(seconds=60)
 
 @dataclass
 class Principal:
+    """Who is calling, a person signed in or an API key, and what they may do."""
+
     user: User
     kind: str                         # session or apikey
     permissions: frozenset[str]
@@ -32,11 +34,13 @@ class Principal:
 
     @property
     def name(self) -> str:
+        """The caller's name for the audit log; a key's includes its prefix."""
         if self.api_key is not None:
             return f'{self.user.username} (key {self.api_key.prefix})'
         return self.user.username
 
     def can(self, permission: str) -> bool:
+        """Whether the caller holds `permission`."""
         return permission in self.permissions
 
 
@@ -48,8 +52,10 @@ def _bearer(request: Request) -> str | None:
 
 
 def _origin(url: str) -> tuple[str, str, int] | None:
-    """An origin as scheme, host and port, with the default port filled in, so
-    https://x and https://x:443 are the same."""
+    """An origin as scheme, host and port, with the default port filled in.
+
+    That way https://x and https://x:443 are the same.
+    """
     try:
         parts = urlsplit(url.strip().lower())
         port = parts.port
@@ -75,8 +81,9 @@ async def _from_api_key(db: AsyncSession, request: Request, key: str) -> Princip
     if prefix:
         row = (await db.execute(select(ApiKey).where(ApiKey.prefix == prefix))).scalar_one_or_none()
     moment = datetime.now(timezone.utc)
+    expired = row is not None and row.expires_at is not None and row.expires_at <= moment
     if (row is None or not apikeys.matches(key, row.key_hash) or row.revoked_at is not None
-            or (row.expires_at is not None and row.expires_at <= moment) or row.user.disabled):
+            or expired or row.user.disabled):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid or expired API key',
                             headers={'WWW-Authenticate': 'Bearer'})
     if row.last_used_at is None or moment - row.last_used_at >= _KEY_TOUCH_EVERY:
@@ -89,6 +96,7 @@ async def _from_api_key(db: AsyncSession, request: Request, key: str) -> Princip
 
 async def optional_principal(request: Request,
                              db: AsyncSession = Depends(get_session)) -> Principal | None:
+    """Who is calling, by API key or session cookie; None when no one has signed in."""
     principal = await _principal(request, db)
     # End the transaction the lookup opened, so the connection goes back to
     # the pool now rather than when the response ends: a live tail or an
@@ -126,6 +134,7 @@ async def _principal(request: Request, db: AsyncSession) -> Principal | None:
 
 
 async def current_principal(principal: Principal | None = Depends(optional_principal)) -> Principal:
+    """The caller, who has to have signed in or hold an API key."""
     if principal is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'sign in first',
                             headers={'WWW-Authenticate': 'Bearer'})
@@ -133,8 +142,11 @@ async def current_principal(principal: Principal | None = Depends(optional_princ
 
 
 async def session_principal(principal: Principal = Depends(current_principal)) -> Principal:
-    """Someone signed in through the browser. An API key acts for integrations
-    and has no business with its owner's password, second factor or sessions."""
+    """Someone signed in through the browser.
+
+    An API key acts for integrations and has no business with its owner's
+    password, second factor or sessions.
+    """
     if principal.kind != 'session':
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'API keys cannot manage accounts; sign in')
     return principal
@@ -157,4 +169,5 @@ def require(*permissions: str):
 
 
 def search_client(request: Request) -> SearchClient:
+    """The app's OpenSearch client, which every request shares."""
     return request.app.state.search

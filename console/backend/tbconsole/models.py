@@ -30,6 +30,8 @@ def _now() -> datetime:
 
 
 class TimestampMixin:
+    """When a row was created and last updated."""
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
                                                  server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
@@ -39,6 +41,8 @@ class TimestampMixin:
 # -- people and machines ------------------------------------------------------
 
 class User(TimestampMixin, Base):
+    """An account: a local one with its password here, a directory one, or a service account for API keys."""
+
     __tablename__ = 'users'
     __table_args__ = (
         Index('uq_users_username_lower', func.lower(text('username')), unique=True),
@@ -78,6 +82,8 @@ class User(TimestampMixin, Base):
 
 
 class UserSession(Base):
+    """A browser's signed-in session, found by the hash of its cookie."""
+
     __tablename__ = 'user_sessions'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -98,6 +104,8 @@ class UserSession(Base):
 
 
 class ApiKey(Base):
+    """An API key: its public prefix, the hash of its secret, and what it may do."""
+
     __tablename__ = 'api_keys'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -123,6 +131,7 @@ class ApiKey(Base):
 
 class Setting(Base):
     """Settings an admin changes at runtime, one JSON document per key."""
+
     __tablename__ = 'settings'
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
@@ -136,6 +145,8 @@ class Setting(Base):
 # -- analysis -----------------------------------------------------------------
 
 class Rule(TimestampMixin, Base):
+    """A detection rule: its definition, its schedule, and how its runs have gone."""
+
     __tablename__ = 'rules'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -184,6 +195,8 @@ class Rule(TimestampMixin, Base):
 
 
 class RuleRun(Base):
+    """One run of a rule: the window it looked at, what it found, and how long it took."""
+
     __tablename__ = 'rule_runs'
     __table_args__ = (Index('ix_rule_runs_rule_started', 'rule_id', 'started_at'),)
 
@@ -203,6 +216,8 @@ class RuleRun(Base):
 
 
 class Finding(TimestampMixin, Base):
+    """What a rule raised about one entity, and where the work on it stands."""
+
     __tablename__ = 'findings'
     __table_args__ = (
         Index('ix_findings_status_severity', 'status', 'severity'),
@@ -248,6 +263,8 @@ class Finding(TimestampMixin, Base):
 
 
 class FindingActivity(Base):
+    """An entry on a finding's timeline: a change, a comment, or another occurrence."""
+
     __tablename__ = 'finding_activity'
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -265,6 +282,8 @@ class FindingActivity(Base):
 # -- outbound -----------------------------------------------------------------
 
 class Webhook(TimestampMixin, Base):
+    """Where alerts are sent, in which format, for which events and findings."""
+
     __tablename__ = 'webhooks'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -292,6 +311,8 @@ class Webhook(TimestampMixin, Base):
 
 
 class WebhookDelivery(Base):
+    """One message for a webhook, with its attempts and what the receiver answered."""
+
     __tablename__ = 'webhook_deliveries'
     __table_args__ = (
         Index('ix_webhook_deliveries_due', 'status', 'next_attempt_at'),
@@ -322,6 +343,8 @@ class WebhookDelivery(Base):
 # -- what people keep ------------------------------------------------------------
 
 class SavedSearch(TimestampMixin, Base):
+    """A search someone kept, for themselves or shared."""
+
     __tablename__ = 'saved_searches'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -339,6 +362,8 @@ class SavedSearch(TimestampMixin, Base):
 
 
 class Dashboard(TimestampMixin, Base):
+    """A dashboard of widgets, built-in or someone's own."""
+
     __tablename__ = 'dashboards'
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
@@ -357,6 +382,7 @@ class Dashboard(TimestampMixin, Base):
 
 class DailyStat(Base):
     """Counts per day and dimension, kept after the events they count are gone."""
+
     __tablename__ = 'daily_stats'
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
@@ -368,6 +394,8 @@ class DailyStat(Base):
 
 
 class AuditEvent(Base):
+    """An entry in the audit log: who did what, to what, from where, and how it went."""
+
     __tablename__ = 'audit_events'
     __table_args__ = (Index('ix_audit_events_at', 'at'),
                       Index('ix_audit_events_action', 'action'))
@@ -389,6 +417,7 @@ class AuditEvent(Base):
 
 class Lease(Base):
     """A named lock with an expiry, for jobs only one replica should run at a time."""
+
     __tablename__ = 'leases'
 
     name: Mapped[str] = mapped_column(String(100), primary_key=True)

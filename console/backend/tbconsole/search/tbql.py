@@ -43,13 +43,17 @@ _FREE_WILDCARD_FIELDS = ('bite.requested', 'bite.client_user', 'bite.client_host
 
 
 class TbqlError(ValueError):
+    """A mistake in a query, with where it is, for the search bar to underline."""
+
     def __init__(self, message: str, position: int = 0, length: int = 1):
+        """`position` and `length` mark the part of the query the mistake is in."""
         super().__init__(message)
         self.message = message
         self.position = position
         self.length = max(1, length)
 
     def public(self) -> dict:
+        """The mistake as the API reports it."""
         return {'message': self.message, 'position': self.position, 'length': self.length}
 
 
@@ -57,6 +61,8 @@ class TbqlError(ValueError):
 
 @dataclass
 class Tok:
+    """One token of a query, and where it is in the text."""
+
     kind: str          # LP RP AND OR NOT TERM EOF
     pos: int
     length: int = 1
@@ -136,7 +142,8 @@ def _read_range(text: str, i: int) -> tuple[tuple, int]:
             text[i] == '[', close == ']'), end + 1
 
 
-def tokenize(text: str) -> list[Tok]:
+def tokenize(text: str) -> list[Tok]:  # pylint: disable=too-many-branches,too-many-statements  # one branch per kind of token
+    """Splits a query into tokens, the last of them EOF. Raises TbqlError."""
     tokens: list[Tok] = []
     i = 0
     n = len(text)
@@ -221,6 +228,8 @@ def tokenize(text: str) -> list[Tok]:
 
 @dataclass
 class Node:
+    """A node of the syntax tree: an and, or or not of its children, or a single term."""
+
     kind: str                      # and, or, not, term
     children: list = field(default_factory=list)
     tok: Tok | None = None
@@ -237,14 +246,17 @@ class _Parser:
         self.depth = 0
 
     def peek(self) -> Tok:
+        """The next token, left in place."""
         return self.tokens[self.i]
 
     def take(self) -> Tok:
+        """Takes the next token."""
         tok = self.tokens[self.i]
         self.i += 1
         return tok
 
     def parse(self) -> Node | None:
+        """The whole query's tree, or None for an empty query."""
         if self.peek().kind == 'EOF':
             return None
         node = self.or_(self.depth)
@@ -256,6 +268,7 @@ class _Parser:
         return node
 
     def or_(self, depth: int) -> Node:
+        """Terms joined by OR, which binds loosest."""
         children = [self.and_(depth)]
         while self.peek().kind == 'OR':
             op = self.take()
@@ -265,6 +278,7 @@ class _Parser:
         return children[0] if len(children) == 1 else Node('or', children)
 
     def and_(self, depth: int) -> Node:
+        """Terms joined by AND, or simply side by side."""
         children = [self.not_(depth)]
         while True:
             tok = self.peek()
@@ -280,6 +294,7 @@ class _Parser:
         return children[0] if len(children) == 1 else Node('and', children)
 
     def not_(self, depth: int) -> Node:
+        """A term, with any NOTs before it."""
         tok = self.peek()
         if tok.kind == 'NOT':
             if depth > MAX_DEPTH:
@@ -291,6 +306,7 @@ class _Parser:
         return self.primary(depth)
 
     def primary(self, depth: int) -> Node:
+        """A term, a field's group of values, or a query in parentheses."""
         if depth > MAX_DEPTH:
             raise TbqlError('This query nests too deeply.', self.peek().pos)
         tok = self.take()
@@ -343,6 +359,7 @@ class _Parser:
 
 
 def parse(text: str) -> Node | None:
+    """The syntax tree of a query, or None for an empty one. Raises TbqlError."""
     return _Parser(text or '').parse()
 
 
@@ -352,7 +369,8 @@ def _is_wild(value: str) -> bool:
     return '*' in value or '?' in value
 
 
-def _ip_or_net(value: str) -> bool:
+def ip_or_net(value: str) -> bool:
+    """Whether `value` is an IP address, or a network written with a /."""
     try:
         if '/' in value:
             ipaddress.ip_network(value, strict=False)
@@ -374,7 +392,7 @@ def _free_text(tok: Tok) -> dict:
         lowered = value.lower()
         should = [{'term': {f: {'value': lowered, 'case_insensitive': True}}}
                   for f in _FREE_TERM_FIELDS]
-        if _ip_or_net(value):
+        if ip_or_net(value):
             should.append({'term': {'bite.client': value}})
             should.append({'term': {'bite.resolved_ips': value}})
     return {'bool': {'should': should, 'minimum_should_match': 1}}
@@ -424,12 +442,14 @@ def _anchor(text: str) -> datetime | None:
 
 
 def _check_date(value: str, tok: Tok) -> None:
-    """Refuses a time OpenSearch would choke on, rather than let it fail
-    there: one that is not a time, or one that, with its date math, falls
+    """Refuses a time OpenSearch would choke on, rather than let it fail there.
+
+    That is one that is not a time, or one that, with its date math, falls
     before 1970 or far ahead. The forms OpenSearch's dates take are now, ISO
     8601 as far as it goes (2026, 2026-10, 2026-10-05T09:30Z) and milliseconds
     since 1970, each optionally followed by date math: now-24h, now/d+8h,
-    2026-10-05||-1d."""
+    2026-10-05||-1d.
+    """
     if value == '*':
         return
     if value.startswith('now') and '||' not in value:
@@ -457,7 +477,7 @@ def _range(field_name: str, op: str, value: str) -> dict:
     return {'range': {field_name: {key: value}}}
 
 
-def _term(tok: Tok) -> dict:
+def _term(tok: Tok) -> dict:  # pylint: disable=too-many-branches  # one branch per kind of field and term
     name = tok.field
     if name is None:
         return _free_text(tok)
@@ -480,7 +500,7 @@ def _term(tok: Tok) -> dict:
             bounds['lte' if inc_high else 'lt'] = high
         if f.type == 'ip':
             for bound in (low, high):
-                if bound is not None and not _ip_or_net(bound):
+                if bound is not None and not ip_or_net(bound):
                     raise TbqlError(f'{bound!r} is not an address.', tok.pos, tok.length)
         if f.type == 'date':
             for bound in (low, high):
@@ -492,7 +512,7 @@ def _term(tok: Tok) -> dict:
         if f.type == 'boolean':
             raise TbqlError(f'{f.label} is true or false; it cannot be compared.', tok.pos,
                             tok.length)
-        if f.type == 'ip' and not _ip_or_net(value):
+        if f.type == 'ip' and not ip_or_net(value):
             raise TbqlError(f'{value!r} is not an address.', tok.pos, tok.length)
         if f.type == 'date':
             _check_date(value, tok)
@@ -507,7 +527,7 @@ def _term(tok: Tok) -> dict:
     if f.type == 'ip':
         if value == '*':
             return {'exists': {'field': f.name}}
-        if not _ip_or_net(value):
+        if not ip_or_net(value):
             raise TbqlError(f'{value!r} is not an address or a network such as 10.0.0.0/8.',
                             tok.pos, tok.length)
         return {'term': {f.name: value}}
@@ -534,6 +554,7 @@ def _term(tok: Tok) -> dict:
 
 
 def to_dsl(node: Node | None) -> dict:
+    """The query DSL for a syntax tree; no tree matches everything."""
     if node is None:
         return {'match_all': {}}
     if node.kind == 'term':
@@ -545,7 +566,7 @@ def to_dsl(node: Node | None) -> dict:
     return {'bool': {'should': [to_dsl(c) for c in node.children], 'minimum_should_match': 1}}
 
 
-def compile(text: str) -> dict:
+def compile_query(text: str) -> dict:
     """The query DSL for a TBQL string. Raises TbqlError on a mistake."""
     return to_dsl(parse(text))
 
@@ -574,9 +595,12 @@ def free_text_used(node: Node | None) -> bool:
 
 
 def names_someone(text: str) -> bool:
-    """Whether a query could pick out a person or a machine: it names an
-    identity field, or has free text, which is matched against user and host
-    names too. Such searches are audited like a profile view."""
+    """Whether a query could pick out a person or a machine.
+
+    It can when it names an identity field, or has free text, which is matched
+    against user and host names too. Such searches are audited like a profile
+    view.
+    """
     try:
         node = parse(text or '')
     except TbqlError:
@@ -587,9 +611,11 @@ def names_someone(text: str) -> bool:
 
 
 def quote(value: str) -> str:
-    """A value written so TBQL reads it back exactly. A * or ? is quoted too,
-    since bare they are wildcards: an exception for the entity "*" must not
-    match everyone."""
+    """A value written so TBQL reads it back exactly.
+
+    A * or ? is quoted too, since bare they are wildcards: an exception for the
+    entity "*" must not match everyone.
+    """
     if value and re.fullmatch(r'[A-Za-z0-9_.@:/\-]+', value) and value.upper() not in (
             'AND', 'OR', 'NOT'):
         return value

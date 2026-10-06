@@ -19,6 +19,8 @@ NAMING = {
 
 
 class Base(DeclarativeBase):
+    """The base of every table, with constraints named by NAMING."""
+
     metadata = MetaData(naming_convention=NAMING)
 
 
@@ -27,6 +29,7 @@ _sessions: async_sessionmaker[AsyncSession] | None = None
 
 
 def engine() -> AsyncEngine:
+    """The engine for the configured database, made on first use with its session factory."""
     global _engine, _sessions
     if _engine is None:
         # A database that does not answer is given up on: in ten seconds to
@@ -41,12 +44,15 @@ def engine() -> AsyncEngine:
 
 
 def sessionmaker() -> async_sessionmaker[AsyncSession]:
+    """The session factory, made with the engine on first use."""
     engine()
-    assert _sessions is not None
+    if _sessions is None:
+        raise RuntimeError('the database engine was made without its session factory')
     return _sessions
 
 
 async def dispose() -> None:
+    """Closes the engine's connections and forgets it; the next use makes a new one."""
     global _engine, _sessions
     if _engine is not None:
         await _engine.dispose()

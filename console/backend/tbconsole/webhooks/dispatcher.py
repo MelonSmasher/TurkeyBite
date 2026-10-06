@@ -63,9 +63,11 @@ MIN_CONNECT = 2.0
 
 
 def _trust() -> ssl.SSLContext | bool:
-    """The certificates a receiver's may be signed by: the usual public ones,
-    and those in TBCONSOLE_WEBHOOK_CA_CERTS, for a receiver on the LAN with
-    an internal CA."""
+    """The certificates a receiver's may be signed by.
+
+    The usual public ones, and those in TBCONSOLE_WEBHOOK_CA_CERTS, for a
+    receiver on the LAN with an internal CA.
+    """
     extra = get_settings().webhook_ca_certs
     if not extra:
         return True
@@ -75,20 +77,25 @@ def _trust() -> ssl.SSLContext | bool:
 
 
 def client() -> httpx.AsyncClient:
-    """A client for one delivery. It ignores HTTP_PROXY and the like from the
-    environment, which would send pinned addresses through a proxy that checks
-    certificates against the address; a proxy is used only when
-    TBCONSOLE_WEBHOOK_PROXY names one. SSL_CERT_FILE is ignored with them, so
-    extra certificates come from TBCONSOLE_WEBHOOK_CA_CERTS instead."""
+    """A client for one delivery.
+
+    It ignores HTTP_PROXY and the like from the environment, which would send
+    pinned addresses through a proxy that checks certificates against the
+    address; a proxy is used only when TBCONSOLE_WEBHOOK_PROXY names one.
+    SSL_CERT_FILE is ignored with them, so extra certificates come from
+    TBCONSOLE_WEBHOOK_CA_CERTS instead.
+    """
     settings = get_settings()
     return httpx.AsyncClient(timeout=settings.webhook_timeout_sec, trust_env=False, verify=_trust(),
                              proxy=settings.webhook_proxy or None, follow_redirects=False)
 
 
 def _words(e: httpx.TransportError) -> tuple[str, bool]:
-    """What a transport error means, and whether to retry, in words of our
-    own: the library's text can quote what was being sent, header values
-    included, and the error is shown to people who may not see those."""
+    """What a transport error means, and whether to retry, in words of our own.
+
+    The library's text can quote what was being sent, header values included,
+    and the error is shown to people who may not see those.
+    """
     if isinstance(e, httpx.TimeoutException):
         return 'the receiver did not answer in time', True
     if isinstance(e, httpx.ProxyError):
@@ -102,7 +109,7 @@ def _words(e: httpx.TransportError) -> tuple[str, bool]:
     return f'the connection failed ({type(e).__name__})', True
 
 
-async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, headers: dict,
+async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, headers: dict,  # pylint: disable=too-many-locals  # each address in turn
                 outcome: dict) -> None:
     settings = get_settings()
     # Through a proxy the name goes as it is, and the proxy connects; otherwise
@@ -204,6 +211,7 @@ class _Permanent(Exception):
 
 
 def apply(delivery: WebhookDelivery, hook: Webhook, outcome: dict, now: datetime) -> None:
+    """Records how an attempt went, and when to try again, if at all."""
     delivery.attempts += 1
     delivery.last_status_code = outcome['status_code']
     delivery.last_error = outcome['error']
@@ -286,28 +294,32 @@ async def redeliver(db: AsyncSession, delivery: WebhookDelivery) -> WebhookDeliv
 
 
 class Dispatcher:
+    """Sends due deliveries, polling for them while there are none."""
+
     def __init__(self, poll_seconds: float = 2.0):
+        """Looks for due deliveries every `poll_seconds` when the last pass sent none."""
         self.poll_seconds = poll_seconds
         self._task: asyncio.Task | None = None
         self.last_tick: datetime | None = None
 
     async def loop(self) -> None:
+        """Sends until cancelled, logging a pass that fails."""
         while True:
             try:
                 sent = await run_once()
                 self.last_tick = datetime.now(timezone.utc)
                 if sent:
                     continue
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 log.exception('webhook dispatcher pass failed')
             await asyncio.sleep(self.poll_seconds)
 
     def start(self) -> None:
+        """Starts the loop in a task of its own."""
         self._task = asyncio.create_task(self.loop(), name='webhook-dispatcher')
 
     async def stop(self) -> None:
+        """Stops the loop and waits for it to end."""
         if self._task:
             self._task.cancel()
             try:
@@ -317,7 +329,7 @@ class Dispatcher:
 
 
 async def pending_count() -> int:
+    """How many deliveries are waiting to be sent, or sent again."""
     async with database.sessionmaker()() as db:
         return int((await db.execute(select(func.count()).select_from(WebhookDelivery).where(
             WebhookDelivery.status.in_(('pending', 'failed'))))).scalar_one())
-

@@ -18,10 +18,12 @@ _DUMMY = _hasher.hash('not a password anyone has, used only for timing')
 
 
 def hash_password(password: str) -> str:
+    """An Argon2id hash of `password`, to store."""
     return _hasher.hash(password)
 
 
 def verify_password(stored: str | None, password: str) -> bool:
+    """Whether `password` matches the stored hash; with none stored it is checked anyway, for the timing, and fails."""
     try:
         return _hasher.verify(stored or _DUMMY, password) and stored is not None
     except (VerifyMismatchError, VerificationError, InvalidHashError):
@@ -42,16 +44,19 @@ def _turn() -> asyncio.Semaphore:
 
 
 async def verify_async(stored: str | None, password: str) -> bool:
+    """verify_password, off the event loop and a few at a time."""
     async with _turn():
         return await asyncio.to_thread(verify_password, stored, password)
 
 
 async def hash_async(password: str) -> str:
+    """hash_password, off the event loop and a few at a time."""
     async with _turn():
         return await asyncio.to_thread(hash_password, password)
 
 
 def needs_rehash(stored: str) -> bool:
+    """Whether a stored hash was made with older settings, or is not one this hasher reads."""
     try:
         return _hasher.check_needs_rehash(stored)
     except InvalidHashError:

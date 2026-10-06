@@ -24,6 +24,7 @@ GENERAL_DEFAULTS = {
 
 
 async def get(db: AsyncSession, key: str, defaults: dict | None = None) -> dict:
+    """The settings saved under `key`, over `defaults`."""
     row = await db.get(Setting, key)
     merged = dict(defaults or {})
     if row is not None:
@@ -32,6 +33,7 @@ async def get(db: AsyncSession, key: str, defaults: dict | None = None) -> dict:
 
 
 async def put(db: AsyncSession, key: str, value: dict, user_id: uuid.UUID | None) -> None:
+    """Saves `value` under `key`, noting who saved it; the caller commits."""
     forget_cache()
     row = await db.get(Setting, key)
     if row is None:
@@ -42,6 +44,7 @@ async def put(db: AsyncSession, key: str, value: dict, user_id: uuid.UUID | None
 
 
 async def general(db: AsyncSession) -> dict:
+    """The general settings, with the defaults for any not saved."""
     return await get(db, 'general', GENERAL_DEFAULTS)
 
 
@@ -52,11 +55,13 @@ _cache: tuple[float, dict] | None = None
 
 
 def forget_cache() -> None:
+    """Drops this process's cached general settings, so the next read is fresh."""
     global _cache
     _cache = None
 
 
 async def general_cached(db: AsyncSession) -> dict:
+    """The general settings, read at most every few seconds in each process."""
     global _cache
     now = time.monotonic()
     if _cache is not None and now - _cache[0] < _CACHE_SECONDS:

@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True)
 class Field:
+    """A field queries, group-bys and rules can name, and how the console treats it."""
+
     name: str
     label: str
     type: str                     # keyword, ip, date, boolean, long, text
@@ -29,6 +31,7 @@ class Field:
     columns_default: bool = False
 
     def public(self) -> dict:
+        """The field as the API describes it."""
         data = asdict(self)
         data['aliases'] = list(self.aliases)
         return data
@@ -159,4 +162,5 @@ def group_fields(group_by: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def catalog() -> list[dict]:
+    """Every field, as the API describes them."""
     return [f.public() for f in FIELDS]

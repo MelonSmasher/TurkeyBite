@@ -28,7 +28,7 @@ from ..config import get_settings
 
 
 class UnsafeUrl(ValueError):
-    pass
+    """A webhook URL the console will not send to, and why."""
 
 
 _ALWAYS_BLOCKED = tuple(ipaddress.ip_network(n) for n in (
@@ -92,6 +92,7 @@ def check_shape(url: str) -> tuple[str, str, int]:
 @dataclass
 class Target:
     """A checked URL, and how to connect to each address that was checked."""
+
     url: str
     host: str
     host_header: str
@@ -112,7 +113,7 @@ class Target:
         return urlunsplit((self.scheme, netloc, self.path, self.query, ''))
 
 
-async def resolve(url: str) -> Target:
+async def resolve(url: str) -> Target:  # pylint: disable=too-many-locals  # checks every address the name has
     """Checks a URL and picks the address delivery will connect to. Raises UnsafeUrl."""
     scheme, host, port = check_shape(url)
     settings = get_settings()

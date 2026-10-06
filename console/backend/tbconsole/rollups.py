@@ -16,7 +16,7 @@ import os
 import socket
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,11 +55,13 @@ async def acquire_lease(db: AsyncSession, name: str, seconds: int, holder: str =
 
 
 def day_range(day: date) -> TimeRange:
+    """The UTC day `day`, as a range."""
     start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     return TimeRange(start, start + timedelta(days=1))
 
 
 async def count_day(search: SearchClient, day: date) -> list[dict]:
+    """A day's counts, as rows: events in all and by type, risk and the like, and active clients, hosts and users."""
     tr = day_range(day)
     aggs = {name: {'terms': {'field': field, 'size': size}} for name, (field, size) in TERMS.items()}
     aggs['clients'] = {'cardinality': {'field': 'bite.client'}}
@@ -86,8 +88,8 @@ async def count_day(search: SearchClient, day: date) -> list[dict]:
 
 
 async def store(db: AsyncSession, day: date, rows: list[dict]) -> None:
+    """Stores a day's counts in place of those it had."""
     # A day is replaced whole, so a key that disappeared from it goes too
-    from sqlalchemy import delete
     await db.execute(delete(DailyStat).where(DailyStat.day == day))
     if rows:
         await db.execute(insert(DailyStat).values(rows))
@@ -95,6 +97,7 @@ async def store(db: AsyncSession, day: date, rows: list[dict]) -> None:
 
 
 async def oldest_event_day(search: SearchClient) -> date | None:
+    """The day of the oldest event the indices still hold; None when they hold none."""
     result = await search.search({'size': 0, 'aggs': {'o': {'min': {'field': '@timestamp'}}}})
     value = ((result.get('aggregations') or {}).get('o') or {}).get('value')
     if value is None:
@@ -124,11 +127,15 @@ async def run(search: SearchClient, backfill: bool = False) -> int:
 
 
 async def has_any(db: AsyncSession) -> bool:
+    """Whether any daily counts are stored yet."""
     return bool((await db.execute(select(func.count()).select_from(DailyStat))).scalar_one())
 
 
 class Rollups:
+    """Recounts the daily statistics, in whichever replica holds the lease."""
+
     def __init__(self, search: SearchClient, every_seconds: int = 3600):
+        """Counts every `every_seconds`, and five minutes after a run that failed."""
         self.search = search
         self.every_seconds = every_seconds
         self._task: asyncio.Task | None = None
@@ -136,6 +143,7 @@ class Rollups:
         self.last_error: str | None = None
 
     async def loop(self) -> None:
+        """Counts until cancelled; the first run also backfills every day not yet counted."""
         first = True
         while True:
             try:
@@ -146,8 +154,6 @@ class Rollups:
                     self.last_run = datetime.now(timezone.utc)
                     self.last_error = None
                 first = False
-            except asyncio.CancelledError:
-                raise
             except SearchError as e:
                 self.last_error = str(e)
                 log.warning('daily rollups could not reach OpenSearch: %s', e)
@@ -157,9 +163,11 @@ class Rollups:
             await asyncio.sleep(self.every_seconds if not self.last_error else 300)
 
     def start(self) -> None:
+        """Starts the loop in a task of its own."""
         self._task = asyncio.create_task(self.loop(), name='rollups')
 
     async def stop(self) -> None:
+        """Stops the loop and waits for it to end."""
         if self._task:
             self._task.cancel()
             try:

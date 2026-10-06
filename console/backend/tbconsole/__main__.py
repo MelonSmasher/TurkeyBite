@@ -5,11 +5,20 @@ import asyncio
 import getpass
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Each command imports what it needs when it runs, so that the others start
+# without loading the database, the web server or the migrations.
+
+# The console runs in a container, reached through its published port, so by
+# default it listens on every interface
+DEFAULT_HOST = '0.0.0.0'  # nosec B104  # every interface, on purpose, as above
 
 
 def _alembic_config():
-    from alembic.config import Config
+    from alembic.config import Config  # pylint: disable=import-outside-toplevel  # loaded only by the commands that migrate
     root = Path(__file__).resolve().parent.parent
     config = Config(str(root / 'alembic.ini'))
     config.set_main_option('script_location', str(Path(__file__).resolve().parent / 'migrations'))
@@ -17,12 +26,14 @@ def _alembic_config():
 
 
 def migrate() -> None:
-    from alembic import command
+    """Brings the database schema up to date."""
+    from alembic import command  # pylint: disable=import-outside-toplevel  # loaded only by the commands that migrate
     command.upgrade(_alembic_config(), 'head')
 
 
 def serve(args) -> None:
-    import uvicorn
+    """Runs the console's web server, migrating the database first if asked to."""
+    import uvicorn  # pylint: disable=import-outside-toplevel  # loaded only by the command that serves
     if args.migrate:
         migrate()
     uvicorn.run('tbconsole.main:create_app', factory=True, host=args.host, port=args.port,
@@ -31,12 +42,10 @@ def serve(args) -> None:
                 log_level=args.log_level)
 
 
-async def create_user(args) -> int:
-    from sqlalchemy import func, select
-
-    from datetime import datetime, timezone
-
-    from sqlalchemy import update
+async def create_user(args) -> int:  # pylint: disable=too-many-locals  # one pass over the account and its options
+    """Creates a local account, or resets an existing one's password; returns the exit status."""
+    # pylint: disable=import-outside-toplevel  # loaded when the command runs
+    from sqlalchemy import func, select, update
 
     from . import audit, db
     from .models import ApiKey, User
@@ -101,9 +110,12 @@ async def create_user(args) -> int:
     return 0
 
 
-async def reencrypt(args) -> int:
-    """Re-encrypts what the database holds under the current secret key, so the
-    previous one can be removed from TBCONSOLE_SECRET_KEY_PREVIOUS."""
+async def reencrypt(_args) -> int:
+    """Re-encrypts what the database holds under the current secret key.
+
+    The previous key can then be removed from TBCONSOLE_SECRET_KEY_PREVIOUS.
+    """
+    # pylint: disable=import-outside-toplevel  # loaded when the command runs
     from sqlalchemy import select
 
     from . import db, settings_store
@@ -145,6 +157,8 @@ async def reencrypt(args) -> int:
 
 
 async def run_rollups(args) -> int:
+    """Recounts the daily statistics, and with --backfill every day not yet counted."""
+    # pylint: disable=import-outside-toplevel  # loaded when the command runs
     from . import db, rollups
     from .search.client import SearchClient
     search = SearchClient()
@@ -158,11 +172,12 @@ async def run_rollups(args) -> int:
 
 
 def main(argv=None) -> int:
+    """Parses the command line, runs the command it names and returns its exit status."""
     parser = argparse.ArgumentParser(prog='tbconsole', description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
 
     p = sub.add_parser('serve', help='run the console')
-    p.add_argument('--host', default='0.0.0.0')
+    p.add_argument('--host', default=DEFAULT_HOST)
     p.add_argument('--port', type=int, default=8710)
     p.add_argument('--migrate', action='store_true', help='migrate the database first')
     p.add_argument('--log-level', default='info')
@@ -212,45 +227,49 @@ def main(argv=None) -> int:
     if args.command == 'rollups':
         return asyncio.run(run_rollups(args))
     if args.command == 'demo':
-        try:
-            from .demo import feed, seed, start_sink
-        except ImportError:
-            print('The demo is not part of this installation; it is for development.',
-                  file=sys.stderr)
-            return 2
-        agreed = args.yes_replace_everything if args.action == 'seed' else args.yes_write_events
-        if args.action in ('seed', 'feed') and not agreed:
-            from .config import get_settings
-            settings = get_settings()
-            what = ('deletes every tb-index-* index on ' + ', '.join(settings.opensearch_urls)
-                    + ' and empties the database at ' + settings.database_url.split('@')[-1]
-                    if args.action == 'seed' else
-                    'writes made-up events to ' + ', '.join(settings.opensearch_urls))
-            flag = '--yes-replace-everything' if args.action == 'seed' else '--yes-write-events'
-            print(f'demo {args.action} {what}. It is for a development cluster only. '
-                  f'Run it again with {flag} if that is what you want.', file=sys.stderr)
-            return 2
-        if args.action == 'sink':
-            import time
-            server = start_sink(args.sink)
-            if server is None:
-                print(f'Something is already listening at {args.sink}.', file=sys.stderr)
-                return 1
-            print(f'Accepting demo webhook deliveries at {args.sink}. Ctrl-C to stop.')
-            try:
-                while True:
-                    time.sleep(3600)
-            except KeyboardInterrupt:
-                server.shutdown()
-                return 0
-        if args.action == 'feed':
-            try:
-                return asyncio.run(feed(per_day=args.per_day))
-            except KeyboardInterrupt:
-                return 0
-        migrate()
-        return asyncio.run(seed(days=args.days, per_day=args.per_day, sink=args.sink))
+        return run_demo(args)
     return 1
+
+
+def run_demo(args) -> int:
+    """Loads the demo's made-up data, once the user has agreed to what it replaces or writes."""
+    try:
+        from .demo import feed, seed, start_sink  # pylint: disable=import-outside-toplevel  # only development installs have it
+    except ImportError:
+        print('The demo is not part of this installation; it is for development.',
+              file=sys.stderr)
+        return 2
+    agreed = args.yes_replace_everything if args.action == 'seed' else args.yes_write_events
+    if args.action in ('seed', 'feed') and not agreed:
+        from .config import get_settings  # pylint: disable=import-outside-toplevel  # loaded when the command runs
+        settings = get_settings()
+        what = ('deletes every tb-index-* index on ' + ', '.join(settings.opensearch_urls)
+                + ' and empties the database at ' + settings.database_url.split('@')[-1]
+                if args.action == 'seed' else
+                'writes made-up events to ' + ', '.join(settings.opensearch_urls))
+        flag = '--yes-replace-everything' if args.action == 'seed' else '--yes-write-events'
+        print(f'demo {args.action} {what}. It is for a development cluster only. '
+              f'Run it again with {flag} if that is what you want.', file=sys.stderr)
+        return 2
+    if args.action == 'sink':
+        server = start_sink(args.sink)
+        if server is None:
+            print(f'Something is already listening at {args.sink}.', file=sys.stderr)
+            return 1
+        print(f'Accepting demo webhook deliveries at {args.sink}. Ctrl-C to stop.')
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            server.shutdown()
+            return 0
+    if args.action == 'feed':
+        try:
+            return asyncio.run(feed(per_day=args.per_day))
+        except KeyboardInterrupt:
+            return 0
+    migrate()
+    return asyncio.run(seed(days=args.days, per_day=args.per_day, sink=args.sink))
 
 
 if __name__ == '__main__':

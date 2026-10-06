@@ -69,12 +69,13 @@ REVOKE_SHARE = 0.2
 REVOKE_FLOOR = 3
 
 
-async def recheck_directory(now: datetime | None = None) -> dict:
-    """Looks up again every directory account that can act, or that the
-    directory disabled and might restore. Returns counts.
+async def recheck_directory(now: datetime | None = None) -> dict:  # pylint: disable=too-many-locals  # looks everyone up, then applies the answers
+    """Looks up again every directory account that can act, or that the directory disabled and might restore.
 
-    Every look-up is made first, with no transaction open; only if all of them
-    got a clear answer is anything changed, one account at a time."""
+    Returns counts. Every look-up is made first, with no transaction open;
+    only if all of them got a clear answer is anything changed, one account at
+    a time.
+    """
     now = now or datetime.now(timezone.utc)
     counts = {'checked': 0, 'revoked': 0, 'changed': 0, 'restored': 0, 'held_back': 0, 'unclear': 0}
     async with database.sessionmaker()() as db:
@@ -161,7 +162,10 @@ async def recheck_directory(now: datetime | None = None) -> dict:
 
 
 class Maintenance:
+    """Prunes old records, and rechecks directory accounts as often as that is due."""
+
     def __init__(self, every_seconds: int = 3600):
+        """Prunes every `every_seconds`; rechecks follow TBCONSOLE_LDAP_RECHECK_MINUTES."""
         self.every_seconds = every_seconds
         self._task: asyncio.Task | None = None
         self.last_run: datetime | None = None
@@ -169,6 +173,11 @@ class Maintenance:
         self._last_directory: datetime | None = None
 
     async def run_once(self) -> None:
+        """One run, if this process holds the lease: prunes, then rechecks the directory when due.
+
+        Raises MaintenanceProblem when pruning failed, after the recheck has
+        still run.
+        """
         settings = get_settings()
         problem = None
         async with database.sessionmaker()() as db:
@@ -199,12 +208,11 @@ class Maintenance:
             raise MaintenanceProblem(problem)
 
     async def loop(self) -> None:
+        """Runs until cancelled, keeping the last error for the system page."""
         while True:
             try:
                 await self.run_once()
                 self.last_error = None
-            except asyncio.CancelledError:
-                raise
             except Exception as e:
                 self.last_error = f'{type(e).__name__}: {e}'
                 log.exception('maintenance failed')
@@ -213,9 +221,11 @@ class Maintenance:
             await asyncio.sleep(interval)
 
     def start(self) -> None:
+        """Starts the loop in a task of its own."""
         self._task = asyncio.create_task(self.loop(), name='maintenance')
 
     async def stop(self) -> None:
+        """Stops the loop and waits for it to end."""
         if self._task:
             self._task.cancel()
             try:

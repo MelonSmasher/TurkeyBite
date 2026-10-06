@@ -43,7 +43,10 @@ DOCS_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.j
 
 
 class SecurityHeaders(BaseHTTPMiddleware):
+    """Security headers on every response, and the caller's time zone for each request."""
+
     async def dispatch(self, request: Request, call_next):
+        """Takes the request's time zone, then adds the headers the response does not set itself."""
         use_zone(request.headers.get('x-timezone'))
         response: Response = await call_next(request)
         docs = get_settings().api_docs and request.url.path in ('/api/docs', '/api/docs/oauth2-redirect')
@@ -62,6 +65,7 @@ class SecurityHeaders(BaseHTTPMiddleware):
 
 
 async def bootstrap_admin() -> None:
+    """Creates the first admin from the TBCONSOLE_BOOTSTRAP_ADMIN_ settings, if there are no users at all."""
     settings = get_settings()
     if not (settings.bootstrap_admin_username and settings.bootstrap_admin_password):
         return
@@ -87,6 +91,7 @@ async def bootstrap_admin() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Brings the built-in rules and dashboards up to date and runs the workers while the app is up."""
     settings = get_settings()
     app.state.search = SearchClient(settings)
     async with db.sessionmaker()() as session:
@@ -115,7 +120,8 @@ async def lifespan(app: FastAPI):
         await db.dispose()
 
 
-def create_app() -> FastAPI:
+def create_app() -> FastAPI:  # noqa: MC0001  # the error handlers and routes are nested in it
+    """The application: the API, its error handlers, the health probes and the built frontend."""
     settings = get_settings()
     app = FastAPI(title='TurkeyBite Console', version=__version__, lifespan=lifespan,
                   docs_url='/api/docs' if settings.api_docs else None, redoc_url=None,
@@ -166,8 +172,10 @@ def create_app() -> FastAPI:
 
     @app.api_route('/readyz', methods=['GET', 'HEAD'], include_in_schema=False)
     async def readyz():
-        """Ready when the database answers, within a few seconds; a 503
-        otherwise, for a probe to see before its own timeout gives up."""
+        """Ready when the database answers, within a few seconds.
+
+        A 503 otherwise, for a probe to see before its own timeout gives up.
+        """
         async def ask():
             async with db.sessionmaker()() as session:
                 await session.execute(text('SELECT 1'))

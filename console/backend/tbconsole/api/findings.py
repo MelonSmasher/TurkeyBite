@@ -32,6 +32,8 @@ _NUMBER = re.compile(r'(?:[Ff]-?)?(\d{1,9})')
 
 
 class FindingPatch(BaseModel):
+    """Changes to a finding: status, assignee, severity, snooze and tags, with a note for its timeline."""
+
     status: Literal['new', 'acknowledged', 'in_progress', 'resolved', 'false_positive'] | None = None
     assignee_id: str | None = None
     unassign: bool = False
@@ -42,21 +44,27 @@ class FindingPatch(BaseModel):
 
 
 class BulkBody(FindingPatch):
+    """The same changes, for several findings at once."""
+
     ids: list[str] = Field(min_length=1, max_length=500)
 
 
 class CommentBody(BaseModel):
+    """A comment for a finding's timeline."""
+
     body: str = Field(min_length=1, max_length=8000)
 
 
 class ExceptionBody(BaseModel):
+    """What an exception made from a finding matches, its entity, its domains or both, and for how long."""
+
     scope: Literal['entity', 'entity_domain', 'domain'] = 'entity'
     note: str = Field('', max_length=1000)
     expires_days: int | None = Field(None, ge=1, le=365)
 
 
 def _order(sort: str):
-    rank = case({s: i for s, i in SEVERITY_RANK.items()}, value=Finding.severity, else_=0)
+    rank = case(dict(SEVERITY_RANK), value=Finding.severity, else_=0)
     return {
         'severity': (rank.desc(), Finding.last_seen.desc()),
         'last_seen': (Finding.last_seen.desc(),),
@@ -67,14 +75,19 @@ def _order(sort: str):
 
 
 @router.get('')
-async def list_findings(
-        status_: list[str] = Query(default=[], alias='status'),
+async def list_findings(  # pylint: disable=too-many-arguments,too-many-locals  # one parameter per filter
+        *, status_: list[str] = Query(default=[], alias='status'),
         severity: list[str] = Query(default=[]), category: list[str] = Query(default=[]),
         rule_id: str | None = None, entity: str | None = None, assignee: str | None = None,
         q: str | None = None, sort: str = 'severity', limit: int = 50, offset: int = 0,
         since: str | None = None,
         principal: Principal = Depends(require(rbac.FINDINGS_READ)),
         db: AsyncSession = Depends(get_session)) -> dict:
+    """Findings that match the filters, a page at a time, with how many match in all.
+
+    A status of open stands for every open status. `q` matches titles,
+    entities, rule names and summaries, or a finding's number.
+    """
     stmt = select(Finding)
     statuses = [s for s in status_ if s]
     if statuses == ['open']:
@@ -115,8 +128,9 @@ async def list_findings(
 
 
 @router.get('/stats')
-async def stats(days: int = 14, _: Principal = Depends(require(rbac.FINDINGS_READ)),
+async def stats(days: int = 14, _: Principal = Depends(require(rbac.FINDINGS_READ)),  # pylint: disable=too-many-locals  # one count per figure
                 db: AsyncSession = Depends(get_session)) -> dict:
+    """Counts for the findings page: by status and severity, created per day, and the time to resolve."""
     days = max(1, min(days, 90))
     now = datetime.now(timezone.utc)
     by_status = dict((await db.execute(select(Finding.status, func.count())
@@ -157,8 +171,11 @@ async def stats(days: int = 14, _: Principal = Depends(require(rbac.FINDINGS_REA
 
 
 def _entity(finding: Finding) -> str | None:
-    """Who a finding is about, whole: a very long value is stored cut short,
-    with the whole of it kept in the evidence."""
+    """Who a finding is about, whole.
+
+    A very long value is stored cut short, with the whole of it kept in the
+    evidence.
+    """
     return (finding.evidence or {}).get('entity_full') or finding.entity_value
 
 
@@ -170,6 +187,7 @@ class Reopened(Exception):
     """Reopening would make a second open finding for the same rule and entity."""
 
     def __init__(self, number: int):
+        """`number` is the finding already open in its place."""
         super().__init__(number)
         self.number = number
 
@@ -184,6 +202,7 @@ async def _get(db: AsyncSession, finding_id: str) -> Finding:
 @router.get('/{finding_id}')
 async def get_finding(finding_id: str, _: Principal = Depends(require(rbac.FINDINGS_READ)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """One finding, with its timeline, its webhook deliveries, its rule and related findings."""
     finding = await _get(db, finding_id)
     activity = (await db.execute(select(FindingActivity).where(
         FindingActivity.finding_id == finding.id).order_by(FindingActivity.created_at.desc())
@@ -282,6 +301,7 @@ async def _announce(db: AsyncSession, finding: Finding, changes: list[str]) -> N
 async def update_finding(finding_id: str, body: FindingPatch, request: Request,
                          principal: Principal = Depends(require(rbac.FINDINGS_WRITE)),
                          db: AsyncSession = Depends(get_session)) -> dict:
+    """Changes a finding's status, assignee, severity, snooze or tags, and returns it."""
     finding = await _get(db, finding_id)
     try:
         changes = await _apply(db, finding, body, principal, request)
@@ -306,6 +326,11 @@ async def update_finding(finding_id: str, body: FindingPatch, request: Request,
 async def bulk_update(body: BulkBody, request: Request,
                       principal: Principal = Depends(require(rbac.FINDINGS_WRITE)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Makes the same changes to several findings.
+
+    One that cannot be reopened, because a newer finding for the same thing is
+    open, is skipped and its number returned.
+    """
     ids = [parse_uuid(i, 'That finding') for i in body.ids]
     findings = (await db.execute(select(Finding).where(Finding.id.in_(ids))
                                  .order_by(Finding.number))).scalars().all()
@@ -333,6 +358,7 @@ async def bulk_update(body: BulkBody, request: Request,
 async def comment(finding_id: str, body: CommentBody, request: Request,
                   principal: Principal = Depends(require(rbac.FINDINGS_WRITE)),
                   db: AsyncSession = Depends(get_session)) -> dict:
+    """Adds a comment to a finding's timeline."""
     finding = await _get(db, finding_id)
     activity = FindingActivity(finding_id=finding.id, actor_id=principal.user.id,
                                actor_name=principal.user.display_name or principal.user.username,
@@ -346,7 +372,7 @@ async def comment(finding_id: str, body: CommentBody, request: Request,
 
 
 @router.post('/{finding_id}/exception')
-async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
+async def add_exception(finding_id: str, body: ExceptionBody, request: Request,  # pylint: disable=too-many-locals  # builds the exception, then applies it
                         principal: Principal = Depends(require(rbac.FINDINGS_WRITE, rbac.RULES_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
     """Marks a finding a false positive and teaches its rule not to raise it again."""
@@ -377,7 +403,7 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
         parts.append('domain:(' + ' OR '.join(quote(d) for d in domains) + ')')
     query = ' AND '.join(parts)
     try:
-        tbql.compile(query)
+        tbql.compile_query(query)
     except tbql.TbqlError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f'An exception for this finding would not work: {e.message}') from e
@@ -403,8 +429,10 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
 
 
 @router.get('/{finding_id}/assignable')
-async def assignable(finding_id: str, _: Principal = Depends(require(rbac.FINDINGS_READ)),
+async def assignable(finding_id: str,  # pylint: disable=unused-argument  # the path names a finding; who may take one does not depend on which
+                     _: Principal = Depends(require(rbac.FINDINGS_READ)),
                      db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """The people a finding can be assigned to: active analysts and admins."""
     users = (await db.execute(select(User).where(User.disabled.is_(False),
                                                  User.role.in_(('analyst', 'admin')),
                                                  User.source != 'service')

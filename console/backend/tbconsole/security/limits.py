@@ -1,5 +1,7 @@
-"""The brake on guessing passwords, in memory, in front of the per-account
-lockout, which lives in the database and holds across replicas.
+"""The brake on guessing passwords, in memory.
+
+It stands in front of the per-account lockout, which lives in the database
+and holds across replicas.
 
 Failures are counted per address and username, so one person guessing cannot
 lock out everyone who shares their address: a school behind one NAT, or
@@ -35,12 +37,16 @@ _last_sweep = 0.0
 
 
 def reset() -> None:
+    """Forgets every failure counted so far, as the tests need."""
     _failures.clear()
 
 
 def source(ip: str | None) -> str:
-    """Who is counted: the address, an IPv6 one by its /56, or one bucket for
-    every request whose address could not be read."""
+    """Who is counted for an address.
+
+    That is the address, an IPv6 one by its /56, or one bucket for every
+    request whose address could not be read.
+    """
     if not ip:
         return 'unknown'
     try:
@@ -67,12 +73,15 @@ def _recent(key: tuple[str, str]) -> int:
 
 
 def name(username: str) -> str:
-    """A name as it is counted: NFKC, case folded, and never empty, so a blank
-    one is not mistaken for the address's own count."""
+    """A name as it is counted: NFKC, case folded, and never empty.
+
+    A blank one is then not mistaken for the address's own count.
+    """
     return unicodedata.normalize('NFKC', username or '').casefold().strip() or '\x00blank'
 
 
 def limited(ip: str | None, username: str) -> bool:
+    """Whether sign-ins as `username` from this address are held back for now."""
     who = source(ip)
     pair = _recent((who, name(username)))
     if pair >= PAIR_LIMIT:
@@ -82,6 +91,7 @@ def limited(ip: str | None, username: str) -> bool:
 
 
 def failed(ip: str | None, username: str) -> None:
+    """Counts a wrong password for `username` from this address."""
     global _last_sweep
     now = time.monotonic()
     if len(_failures) > _MAX_TRACKED and now - _last_sweep > _SWEEP_EVERY:
@@ -103,11 +113,13 @@ NAME_QUEUE = 16
 
 
 class Busy(Exception):
-    """An address, or an account, with as many sign-ins under way and
-    waiting as it may have. `kind` says which: 'address', 'directory' or
-    'name'."""
+    """An address, or an account, with as many sign-ins under way and waiting as it may have.
+
+    `kind` says which: 'address', 'directory' or 'name'.
+    """
 
     def __init__(self, kind: str):
+        """`kind` is the queue that is full."""
         super().__init__(kind)
         self.kind = kind
 
@@ -145,17 +157,18 @@ def gate_source(ip: str | None) -> str:
 
 @asynccontextmanager
 async def directory_turn(ip: str | None):
-    """One directory call at a time from this address: the directory's few
-    threads are shared fairly between addresses rather than taken by those
-    sending most."""
+    """One directory call at a time from this address.
+
+    The directory's few threads are then shared fairly between addresses
+    rather than taken by those sending most.
+    """
     async with _turn(('directory', gate_source(ip)), 1, IN_FLIGHT + QUEUE):
         yield
 
 
 @asynccontextmanager
 async def admitted(ip: str | None, username: str | None = None):
-    """A turn for one sign-in from this address, and for this account when
-    it is named, or Busy at once."""
+    """A turn for one sign-in from this address, and for this account when it is named, or Busy at once."""
     async with _turn(('address', gate_source(ip)), IN_FLIGHT, QUEUE):
         if username is None:
             yield

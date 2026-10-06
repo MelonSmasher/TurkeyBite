@@ -58,10 +58,12 @@ def _changes(current: dict[str, int], previous: dict[str, int], facet: str) -> l
 
 
 @router.get('/overview')
-async def overview(request: Request, start: str | None = None, end: str | None = None,
+async def overview(request: Request, *,  # pylint: disable=too-many-arguments,too-many-locals  # the whole overview page in one response
+                   start: str | None = None, end: str | None = None,
                    principal: Principal = Depends(require(rbac.EVENTS_READ)),
                    search: SearchClient = Depends(search_client),
                    db: AsyncSession = Depends(get_session)) -> dict:
+    """The overview page: a range's events, risks, changes and findings, each against the period before."""
     tr = time_range(start, end)
     # It names the riskiest people, so it is a look at them
     if audit.look(db, 'analytics.overview', principal=principal, request=request, key=f'{start}|{end}',
@@ -156,7 +158,7 @@ async def overview(request: Request, start: str | None = None, end: str | None =
             Finding.created_at >= tr.start, Finding.created_at < tr.end))).scalar_one()
         created_before = (await db.execute(select(func.count()).select_from(Finding).where(
             Finding.created_at >= prev.start, Finding.created_at < prev.end))).scalar_one()
-        rank = case({s: i for s, i in SEVERITY_RANK.items()}, value=Finding.severity, else_=0)
+        rank = case(dict(SEVERITY_RANK), value=Finding.severity, else_=0)
         latest_findings = (await db.execute(
             select(Finding).where(Finding.status.in_(engine.OPEN))
             .order_by(rank.desc(), Finding.last_seen.desc()).limit(6))).scalars().all()
@@ -215,6 +217,8 @@ async def overview(request: Request, start: str | None = None, end: str | None =
 
 
 class PivotBody(RangeBody):
+    """What to count among the matching events, and what to group the counts by."""
+
     metric: Literal['count', 'unique'] = 'count'
     metric_field: str | None = None
     rows: str | None = None
@@ -243,7 +247,7 @@ def _terms(field: str, size: int, sub: dict | None) -> dict:
 
 
 @router.post('/analytics/pivot')
-async def pivot(body: PivotBody, request: Request,
+async def pivot(body: PivotBody, request: Request,  # pylint: disable=too-many-locals,too-many-branches  # one table or series, built in one place
                 principal: Principal = Depends(require(rbac.EVENTS_READ)),
                 search: SearchClient = Depends(search_client),
                 db: AsyncSession = Depends(get_session)) -> dict:

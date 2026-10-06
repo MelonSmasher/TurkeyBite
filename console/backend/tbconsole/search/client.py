@@ -32,6 +32,7 @@ class SearchRejected(SearchError):
     """OpenSearch answered and refused the request."""
 
     def __init__(self, status: int, reason: str):
+        """`status` is the HTTP status OpenSearch answered with, and `reason` what it said."""
         super().__init__(reason)
         self.status = status
         self.reason = reason
@@ -54,7 +55,10 @@ def _reason(response: httpx.Response) -> str:
 
 
 class SearchClient:
+    """The console's connection to the cluster, for the few read-only requests it makes."""
+
     def __init__(self, settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None):
+        """Connects as the settings say; `transport` stands in for the network in tests."""
         settings = settings or get_settings()
         self.urls = [u.rstrip('/') for u in settings.opensearch_urls]
         self.index = settings.opensearch_index
@@ -72,6 +76,7 @@ class SearchClient:
         self._preferred = 0
 
     async def close(self) -> None:
+        """Closes the client's connections."""
         await self.http.aclose()
 
     async def request(self, method: str, path: str, body=None, params=None,
@@ -103,6 +108,7 @@ class SearchClient:
     # -- the endpoints the console uses ----------------------------------------
 
     async def search(self, body: dict, index: str | None = None) -> dict:
+        """A search over the TurkeyBite indices, or `index`; an answer only part of the cluster gave is refused."""
         result = await self.request('POST', f'/{index or self.index}/_search', body,
                                     params={'ignore_unavailable': 'true',
                                             'allow_no_indices': 'true'})
@@ -110,6 +116,7 @@ class SearchClient:
         return result
 
     async def count(self, query: dict, index: str | None = None) -> int:
+        """How many events match `query`, in the TurkeyBite indices or `index`."""
         result = await self.request('POST', f'/{index or self.index}/_count', {'query': query},
                                     params={'ignore_unavailable': 'true',
                                             'allow_no_indices': 'true'})
@@ -124,12 +131,15 @@ class SearchClient:
         return hits[0] if hits else None
 
     async def info(self) -> dict:
+        """The cluster's name and version."""
         return await self.request('GET', '/')
 
     async def health(self) -> dict:
+        """The cluster's health."""
         return await self.request('GET', '/_cluster/health')
 
     async def indices(self) -> list[dict]:
+        """The TurkeyBite indices, with their health, size and document counts."""
         result = await self.request('GET', f'/_cat/indices/{self.index}',
                                     params={'format': 'json', 'bytes': 'b',
                                             'h': 'index,health,docs.count,store.size,creation.date'})
@@ -137,11 +147,13 @@ class SearchClient:
 
 
 def _whole(result: dict) -> None:
-    """Refuses an answer some shards failed to give, that ran out of time, or
-    that a remote cluster gave only part of. OpenSearch still says 200 then,
-    with what the rest found, and a partial count read as a whole one is
-    wrong in the worst way: a rule takes what it did not see for something
-    that is not there, and calls a value new or a source silent."""
+    """Refuses an answer some shards failed to give, that ran out of time, or that a remote cluster gave only part of.
+
+    OpenSearch still says 200 then, with what the rest found, and a partial
+    count read as a whole one is wrong in the worst way: a rule takes what it
+    did not see for something that is not there, and calls a value new or a
+    source silent.
+    """
     if result.get('timed_out'):
         raise SearchRejected(400, 'the search ran out of time before every shard answered')
     clusters = result.get('_clusters') or {}
@@ -161,6 +173,7 @@ def _whole(result: dict) -> None:
 
 
 def total(result: dict) -> int:
+    """How many events a search matched, in either form the total comes in."""
     value = result.get('hits', {}).get('total', 0)
     if isinstance(value, dict):
         return int(value.get('value', 0))

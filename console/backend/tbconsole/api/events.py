@@ -38,6 +38,8 @@ _INDEX_RE = re.compile(r'^[a-z0-9][a-z0-9._\-]{0,254}$')
 
 
 class RangeBody(BaseModel):
+    """A TBQL query and a time range, sent as from and to."""
+
     model_config = ConfigDict(populate_by_name=True)
     query: str = Field('', max_length=20000)
     start: str | None = Field(None, alias='from')
@@ -45,28 +47,38 @@ class RangeBody(BaseModel):
 
 
 class SearchBody(RangeBody):
+    """A search for one page of matching events, newest or oldest first."""
+
     size: int = Field(50, ge=1, le=500)
     offset: int = Field(0, ge=0, le=MAX_WINDOW)
     sort: Literal['desc', 'asc'] = 'desc'
 
 
 class HistogramBody(RangeBody):
+    """Counts of matching events over time: the bar width, and what to split the bars by."""
+
     interval: str = 'auto'
     split: Literal['none', 'type', 'severity'] = 'severity'
 
 
 class TopBody(RangeBody):
+    """The field whose commonest values to count among the matching events."""
+
     field: str
     size: int = Field(10, ge=1, le=100)
 
 
 class ExportBody(RangeBody):
+    """An export of matching events: its format, its columns and how many rows."""
+
     format: Literal['csv', 'ndjson'] = 'csv'
     columns: list[str] = Field(default_factory=list, max_length=40)
     limit: int = Field(1000, ge=1, le=EXPORT_LIMIT)
 
 
 class ValidateBody(BaseModel):
+    """A query to check."""
+
     query: str = Field('', max_length=20000)
 
 
@@ -77,15 +89,18 @@ def _hit_out(hit: dict) -> dict:
 
 @router.get('/fields')
 async def list_fields(_: Principal = Depends(require(rbac.EVENTS_READ))) -> dict:
+    """The fields queries can use, and the entity field that stands for a person or machine."""
     return {'fields': F.catalog(), 'entity': {'name': F.ENTITY, 'label': F.ENTITY_LABEL,
                                               'fields': list(F.ENTITY_FIELDS)}}
 
 
 def prefix_pattern(prefix: str) -> str:
-    """A Lucene regular expression for values starting with `prefix`, in either
-    case, since values keep theirs (NXDOMAIN, lab-12). Everything but letters
-    and digits is escaped: Lucene gives @, &, ~, < and # meanings Python's
-    re.escape does not know about."""
+    """A Lucene regular expression for values starting with `prefix`, in either case.
+
+    Values keep their own case (NXDOMAIN, lab-12). Everything but letters and
+    digits is escaped: Lucene gives @, &, ~, < and # meanings Python's
+    re.escape does not know about.
+    """
     out = []
     for ch in prefix:
         if ch.isalpha() and ch.isascii():
@@ -98,7 +113,8 @@ def prefix_pattern(prefix: str) -> str:
 
 
 @router.get('/fields/{name}/values')
-async def field_values(name: str, request: Request, prefix: str = '', start: str | None = None,
+async def field_values(name: str, request: Request, *,  # pylint: disable=too-many-arguments  # the query values and dependencies
+                       prefix: str = '', start: str | None = None,
                        principal: Principal = Depends(require(rbac.EVENTS_READ)),
                        search: SearchClient = Depends(search_client),
                        db: AsyncSession = Depends(get_session)) -> dict:
@@ -145,6 +161,7 @@ async def freshness(_: Principal = Depends(require(rbac.EVENTS_READ)),
 
 @router.post('/query/validate')
 async def validate(body: ValidateBody, _: Principal = Depends(require(rbac.EVENTS_READ))) -> dict:
+    """Checks a query: the mistake and where it is, or the fields it uses."""
     try:
         node = tbql.parse(body.query)
         tbql.to_dsl(node)
@@ -158,6 +175,7 @@ async def search_events(body: SearchBody, request: Request,
                         principal: Principal = Depends(require(rbac.EVENTS_READ)),
                         search: SearchClient = Depends(search_client),
                         db: AsyncSession = Depends(get_session)) -> dict:
+    """One page of the events that match a query, newest first unless asked otherwise."""
     tr = time_range(body.start, body.end)
     if body.offset + body.size > MAX_WINDOW:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
@@ -177,10 +195,14 @@ async def search_events(body: SearchBody, request: Request,
             'hits': [_hit_out(h) for h in result.get('hits', {}).get('hits', [])]}
 
 
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments  # the search and who asked it
 async def _audit_search(db: AsyncSession, principal: Principal, request: Request, query: str,
                         tr, asked: str) -> None:
-    """A search that picks someone out is as much a look at them as their
-    profile, so it is recorded the same way, whichever endpoint asks it."""
+    """Records a search in the audit log when it picks someone out.
+
+    A search that picks someone out is as much a look at them as their
+    profile, so it is recorded the same way, whichever endpoint asks it.
+    """
     if get_settings().audit_all_searches or tbql.names_someone(query):
         if audit.look(db, 'events.search', principal=principal, request=request,
                       key=f'{query}|{asked}', details={'query': query[:2000], **tr.public()}):
@@ -188,10 +210,11 @@ async def _audit_search(db: AsyncSession, principal: Principal, request: Request
 
 
 @router.post('/events/histogram')
-async def histogram(body: HistogramBody, request: Request,
+async def histogram(body: HistogramBody, request: Request,  # pylint: disable=too-many-locals  # one request, one pass over its buckets
                     principal: Principal = Depends(require(rbac.EVENTS_READ)),
                     search: SearchClient = Depends(search_client),
                     db: AsyncSession = Depends(get_session)) -> dict:
+    """Counts of the matching events over time, split by type or severity, for the explorer's chart."""
     tr = time_range(body.start, body.end)
     await _audit_search(db, principal, request, body.query, tr, f'{body.start}|{body.end}')
     if body.interval == 'auto':
@@ -265,10 +288,11 @@ async def top_values(body: TopBody, request: Request,
 
 
 @router.get('/events/doc/{index}/{doc_id}')
-async def get_document(index: str, doc_id: str, request: Request,
+async def get_document(index: str, doc_id: str, request: Request, *,  # pylint: disable=too-many-arguments  # the path and dependencies
                        principal: Principal = Depends(require(rbac.EVENTS_READ)),
                        search: SearchClient = Depends(search_client),
                        db: AsyncSession = Depends(get_session)) -> dict:
+    """One event in full, by index and id. Every view is written to the audit log."""
     prefix = get_settings().opensearch_index.rstrip('*')
     if not _INDEX_RE.match(index) or not index.startswith(prefix) or len(doc_id) > 512:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That event does not exist')
@@ -299,6 +323,7 @@ async def export(body: ExportBody, request: Request,
                  principal: Principal = Depends(require(rbac.EVENTS_READ, rbac.EVENTS_EXPORT)),
                  search: SearchClient = Depends(search_client),
                  db: AsyncSession = Depends(get_session)):
+    """The matching events as a CSV or NDJSON download, newest first, up to the limit asked for."""
     tr = time_range(body.start, body.end)
     columns = []
     for name in body.columns or [f.name for f in F.FIELDS if f.columns_default]:
@@ -365,8 +390,10 @@ RECHECK = timedelta(seconds=30)
 
 
 async def _still_allowed(request: Request) -> bool:
-    """Whether the session or key that opened a stream still may read events,
-    asked with a database session of its own, held for the question only."""
+    """Whether the session or key that opened a stream still may read events.
+
+    It is asked with a database session of its own, held for the question only.
+    """
     try:
         async with sessionmaker()() as db:
             principal = await _principal(request, db)
@@ -408,7 +435,7 @@ def _free_slot(who: str, slot: int) -> None:
 
 
 @router.get('/events/live')
-async def live(request: Request, query: str = '',
+async def live(request: Request, query: str = '',  # noqa: MC0001  # the stream's polling loop is nested in it
                principal: Principal = Depends(require(rbac.EVENTS_READ)),
                search: SearchClient = Depends(search_client),
                db: AsyncSession = Depends(get_session)):
@@ -420,7 +447,7 @@ async def live(request: Request, query: str = '',
     out, or being disabled or revoked, ends it.
     """
     try:
-        compiled = tbql.compile(query)
+        compiled = tbql.compile_query(query)
     except tbql.TbqlError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
     if get_settings().audit_all_searches or tbql.names_someone(query):
@@ -484,4 +511,3 @@ async def live(request: Request, query: str = '',
 
     return StreamingResponse(stream(), media_type='text/event-stream',
                              headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
-

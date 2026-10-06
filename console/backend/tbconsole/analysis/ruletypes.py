@@ -54,6 +54,7 @@ class BudgetSpent(RuleError):
 @dataclass
 class RuleSpec:
     """The parts of a rule evaluation needs, from a Rule row or an unsaved draft."""
+
     name: str
     type: str
     query: str = ''
@@ -85,6 +86,8 @@ class RuleSpec:
 
 @dataclass
 class Hit:
+    """One group that met a rule in one window, with what a finding records about it."""
+
     entity_field: str | None
     entity_value: str | None
     count: int                      # events in the window
@@ -102,6 +105,7 @@ class Hit:
     distinct: str = ''
 
     def evidence(self) -> dict:
+        """What a finding keeps about the events behind this hit."""
         return {
             'query': self.evidence_query,
             'from': iso(self.window.start), 'to': iso(self.window.end),
@@ -114,6 +118,8 @@ class Hit:
 
 @dataclass
 class Evaluation:
+    """What evaluating a rule over one window found, or why it looked at nothing."""
+
     hits: list[Hit]
     status: str = 'ok'              # ok, skipped
     reason: str = ''
@@ -195,7 +201,7 @@ def _num(params: dict, name: str, kind: str, spec: dict):
     return value
 
 
-def normalise(spec: RuleSpec) -> dict:
+def normalise(spec: RuleSpec) -> dict:  # pylint: disable=too-many-branches  # one check per part of a rule
     """The rule's params with defaults filled in, checked. Raises RuleError."""
     kind = TYPES.get(spec.type)
     if kind is None:
@@ -208,9 +214,9 @@ def normalise(spec: RuleSpec) -> dict:
         raise RuleError('The window has to be at least as long as the time between runs, '
                         'or events that arrive between runs are never looked at.')
     try:
-        tbql.compile(spec.query or '')
+        tbql.compile_query(spec.query or '')
         for text in spec.exclusions:
-            tbql.compile(text)
+            tbql.compile_query(text)
     except tbql.TbqlError as e:
         raise RuleError(f'The query has a mistake: {e.message}') from e
     try:
@@ -234,7 +240,7 @@ def normalise(spec: RuleSpec) -> dict:
         elif ptype == 'query':
             text = str((spec.params or {}).get(name) or pspec['default'])
             try:
-                tbql.compile(text)
+                tbql.compile_query(text)
             except tbql.TbqlError as e:
                 raise RuleError(f'{pspec["label"]} has a mistake: {e.message}') from e
             params[name] = text
@@ -249,8 +255,11 @@ def normalise(spec: RuleSpec) -> dict:
 # -- helpers --------------------------------------------------------------------
 
 def _evidence_query(spec: RuleSpec, entity_field: str | None, entity_value, extra: str = '') -> str:
-    """TBQL for the events behind a hit. Every part is bracketed, so an OR in
-    one cannot reach across the ANDs that join them."""
+    """TBQL for the events behind a hit.
+
+    Every part is bracketed, so an OR in one cannot reach across the ANDs that
+    join them.
+    """
     parts = []
     if spec.query and spec.query.strip():
         parts.append(f'({spec.query.strip()})')
@@ -294,7 +303,8 @@ def _left_out(aggregations: dict, groups: list[str], enough: int, filled: int | 
     A terms aggregation's sum_other_doc_count is the events in the groups it
     left out, and a group needs `enough` of them to pass. With `filled`, only
     a field that returned that many groups counts; fewer means none passing
-    was left out."""
+    was left out.
+    """
     labels = []
     for i, name in enumerate(groups):
         terms = ((aggregations or {}).get(f'g{i}') or {}).get('t') or {}
@@ -322,7 +332,10 @@ def _span(seconds: float) -> str:
 
 
 class Evaluator:
+    """Asks OpenSearch what each type of rule needs to know, and turns the answers into hits."""
+
     def __init__(self, search: SearchClient, budget: int | None = None):
+        """With `budget`, the most requests it may send, as a backtest sets; None is no limit."""
         self.search = search
         self.state: dict = {}
         # How many requests it may still send, for a backtest; None is no limit
@@ -338,9 +351,11 @@ class Evaluator:
     async def evaluate(self, spec: RuleSpec, now: datetime,
                        recent_since: datetime | None = None,
                        start: datetime | None = None, state: dict | None = None) -> Evaluation:
-        """Evaluates `spec` over the window ending at `now`, or from `start`
-        when the window has been cut short, at the start of active hours.
-        `state` is what the last run carried forward."""
+        """Evaluates `spec` over the window ending at `now`.
+
+        The window begins at `start` instead when it has been cut short, at the
+        start of active hours. `state` is what the last run carried forward.
+        """
         self.state = dict(state or {})
         params = normalise(spec)
         full = now - timedelta(seconds=spec.window_seconds)
@@ -361,16 +376,19 @@ class Evaluator:
         return await self._search({'size': 0, 'track_total_hits': True, 'query': query,
                                    'aggs': aggs})
 
+    # pylint: disable-next=too-many-locals  # pages through, wrapping round once
     async def _composite(self, query: dict, sources: list[tuple[str, str]], sub: dict | None,
                          limit: int, start_after: dict | None = None) -> tuple[list[dict], bool, dict | None]:
-        """Every bucket of a composite aggregation, a page at a time, up to
-        `limit`. Returns the buckets, whether there were more, and where to
-        start next time when there were.
+        """Every bucket of a composite aggregation, a page at a time, up to `limit`.
+
+        Returns the buckets, whether there were more, and where to start next
+        time when there were.
 
         From `start_after` when given, wrapping round to the start, so a
         limit that cuts the buckets short does not cut short the same ones
         every time. It reads one past the limit to know whether there were
-        more, so a page that ends exactly at it is not taken for a cut."""
+        more, so a page that ends exactly at it is not taken for a cut.
+        """
         out: list[dict] = []
         seen: set = set()
         after = start_after
@@ -403,20 +421,23 @@ class Evaluator:
                     continue
                 return out, False, None
 
+    # pylint: disable-next=too-many-arguments,too-many-locals  # shares one limit out across the group fields
     async def _each_group(self, query: dict, groups: list[str], extra: list[tuple[str, str]],
-                          sub: dict | None, limit: int, cursor: str | None = None) -> tuple[list[dict], bool]:
-        """Composite buckets per group field, each as {field, key, ...}; with
-        no groups, one field-less set. `extra` are further sources.
+                          sub: dict | None, limit: int, *, cursor: str | None = None) -> tuple[list[dict], bool]:
+        """Composite buckets per group field, each as {field, key, ...}; with no groups, one field-less set.
+
+        `extra` are further sources.
 
         Each field has its share of `limit`, and what one leaves unused goes
         to those after it, so a field with more than the limit on its own
         cannot keep the others from ever being read. With `cursor`, a name
         under which the evaluation's state keeps where each field's reading
         got to, so the next run carries on from there, starting with the next
-        field, rather than reading the same buckets again."""
+        field, rather than reading the same buckets again.
+        """
         out: list[dict] = []
         truncated = False
-        targets = [(i, name) for i, name in enumerate(groups)] or [(None, None)]
+        targets = list(enumerate(groups)) or [(None, None)]
         places = dict(self.state.get(cursor) or {}) if cursor else {}
         first = int(places.get('field', 0) or 0) % len(targets)
         afters = dict(places.get('after') or {})
@@ -495,7 +516,7 @@ class Evaluator:
                                        f'reached the threshold; the {MAX_GROUPS} busiest were looked at'
                           if crowded else '')
 
-    async def _unique_count(self, spec, params, window, groups, recent_since) -> Evaluation:
+    async def _unique_count(self, spec, params, window, groups, recent_since) -> Evaluation:  # pylint: disable=too-many-locals  # one request, one pass
         target = params['field']
         sub = dict(_detail_aggs(recent_since))
         sub['distinct'] = {'cardinality': {'field': target, 'precision_threshold': 3000}}
@@ -523,8 +544,8 @@ class Evaluator:
                                        f'reached the threshold; the {MAX_GROUPS} with the most distinct '
                                        f'values were looked at' if crowded else '')
 
-    async def _ratio(self, spec, params, window, groups, recent_since) -> Evaluation:
-        numerator = tbql.compile(params['numerator'])
+    async def _ratio(self, spec, params, window, groups, recent_since) -> Evaluation:  # pylint: disable=too-many-locals  # one request, one pass
+        numerator = tbql.compile_query(params['numerator'])
         query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
         reason = ''
         if not groups:
@@ -554,11 +575,14 @@ class Evaluator:
         hits.sort(key=lambda h: h.value, reverse=True)
         return Evaluation(hits, reason=reason)
 
+    # pylint: disable-next=too-many-locals  # ranks the groups, then reads the best
     async def _ratio_groups(self, query, numerator, params, groups, recent_since) -> tuple[list[dict], str]:
-        """The groups with the highest share, not the most events: first ranked
-        by share across many groups with OpenSearch working out each share,
-        then the details read for the best of them alone. And a note when a
-        field had more groups than were ranked."""
+        """The groups with the highest share, not the most events, and a note when a field had more groups than were ranked.
+
+        They are first ranked by share across many groups, with OpenSearch
+        working out each share, then the details are read for the best of them
+        alone.
+        """
         share_aggs = {
             'num': {'filter': numerator},
             'share': {'bucket_script': {'buckets_path': {'n': 'num>_count', 'c': '_count'},
@@ -599,7 +623,7 @@ class Evaluator:
             aggs[f'g{i}'] = {'filter': Q.group_filter(groups, i), 'aggs': {'t': terms}}
         return self._grouped(await self._run(detail_query, aggs), groups), reason
 
-    async def _spike(self, spec, params, window, groups, recent_since) -> Evaluation:
+    async def _spike(self, spec, params, window, groups, recent_since) -> Evaluation:  # pylint: disable=too-many-locals  # one request, one pass
         n = params['baseline_windows']
         size = timedelta(seconds=spec.window_seconds)
         ranges = []
@@ -648,7 +672,7 @@ class Evaluator:
                        'baseline': baseline}))
         return Evaluation(hits)
 
-    async def _new_value(self, spec, params, window, groups, recent_since) -> Evaluation:
+    async def _new_value(self, spec, params, window, groups, recent_since) -> Evaluation:  # pylint: disable=too-many-locals  # window, then history
         target = params['field']
         lookback = TimeRange(window.start - timedelta(days=params['lookback_days']), window.start)
         # Every value is new to a console that has not got the history yet;
@@ -701,11 +725,15 @@ class Evaluator:
                 distinct=str(value)))
         return Evaluation(hits, reason=reason)
 
+    # pylint: disable-next=too-many-locals  # one request per chunk of pairs
     async def _seen_before(self, spec, lookback: TimeRange, target: str, pairs: list[dict]) -> set[int]:
-        """Which of `pairs` occurred in `lookback`, by index. Each pair is its
-        own filter, matched on its own field, so a name is never compared with
-        an address field and no answer can be cut short: the count of requests
-        is fixed by the pairs, not by how much history there is."""
+        """Which of `pairs` occurred in `lookback`, by index.
+
+        Each pair is its own filter, matched on its own field, so a name is
+        never compared with an address field and no answer can be cut short: the
+        count of requests is fixed by the pairs, not by how much history there
+        is.
+        """
         base = Q.bool_query(lookback, spec.query, exclude=spec.exclusions)
         seen: set[int] = set()
         for start in range(0, len(pairs), HISTORY_CHUNK):
@@ -724,7 +752,8 @@ class Evaluator:
                     seen.add(int(key))
         return seen
 
-    async def _absence(self, spec, params, window, groups, recent_since) -> Evaluation:
+    # Called like every type, but silence has no recent events to count
+    async def _absence(self, spec, params, window, groups, _recent_since) -> Evaluation:  # pylint: disable=too-many-locals  # one request, one pass
         lookback = TimeRange(window.start - timedelta(seconds=params['lookback_seconds']),
                              window.start)
         if not groups:

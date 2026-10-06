@@ -28,11 +28,13 @@ def display_url(url: str) -> str:
 
 
 def set_url(hook: Webhook, url: str) -> None:
+    """Stores a webhook's URL encrypted, with a display form that shows only where it goes."""
     hook.url_enc = crypto.encrypt(url)
     hook.url_display = display_url(url)
 
 
 def url_of(hook: Webhook) -> str:
+    """A webhook's full URL, decrypted."""
     return crypto.decrypt(hook.url_enc)
 
 
@@ -46,9 +48,11 @@ _ADDRESS = re.compile(
 
 
 def public_error(error: str | None) -> str | None:
-    """A rule's error as it may leave the console: without the addresses or
-    names of the cluster or anything else on the inside, and short. The whole
-    error is on the rule's page."""
+    """A rule's error as it may leave the console.
+
+    That is without the addresses or names of the cluster or anything else on
+    the inside, and short. The whole error is on the rule's page.
+    """
     if not error:
         return error
     text = _ADDRESS.sub('[address]', _URL.sub('[url]', error))
@@ -56,6 +60,7 @@ def public_error(error: str | None) -> str | None:
 
 
 def finding_url(finding: Finding) -> str:
+    """The finding's page in the console."""
     return f'{get_settings().public_url}/findings/{finding.id}'
 
 
@@ -105,6 +110,7 @@ def finding_body(finding: Finding, redact: bool = False) -> dict:
 
 def event_body(event: str, finding: Finding | None = None, redact: bool = False,
                rule: Rule | None = None, message: str = '') -> dict:
+    """A delivery's body: the event, and the finding, rule or message it is about."""
     body: dict = {
         'event': event, 'id': str(uuid.uuid4()),
         'occurred_at': datetime.now(timezone.utc).isoformat(), 'source': 'turkeybite-console',
@@ -153,6 +159,7 @@ async def enqueue_finding(db: AsyncSession, event: str, finding: Finding,
 
 
 async def enqueue_rule_failing(db: AsyncSession, rule: Rule) -> int:
+    """Queues a rule.failing delivery for every enabled webhook that wants one, and returns how many."""
     hooks = (await db.execute(select(Webhook).where(Webhook.enabled.is_(True)))).scalars().all()
     count = 0
     for hook in hooks:

@@ -69,8 +69,10 @@ class LdapUnavailable(LdapError):
 
 
 class LdapUnreachable(LdapUnavailable):
-    """The service account could not even connect or bind: nothing the
-    directory says about anyone can be read."""
+    """The service account could not even connect or bind.
+
+    Nothing the directory says about anyone can be read.
+    """
 
 
 class LdapInvalidCredentials(LdapError):
@@ -78,8 +80,11 @@ class LdapInvalidCredentials(LdapError):
 
 
 class LdapAmbiguous(LdapInvalidCredentials):
-    """The sign-in filter matched more than one entry: refused, without
-    saying so, at sign-in; no answer at all about anyone, in a recheck."""
+    """The sign-in filter matched more than one entry.
+
+    Refused, without saying so, at sign-in; no answer at all about anyone, in a
+    recheck.
+    """
 
 
 class LdapNotPermitted(LdapError):
@@ -88,6 +93,8 @@ class LdapNotPermitted(LdapError):
 
 @dataclass
 class LdapIdentity:
+    """Who a directory entry is, and the role its groups grant."""
+
     dn: str
     username: str
     display_name: str | None
@@ -100,6 +107,7 @@ class LdapIdentity:
 
 
 def config_with_defaults(value: dict | None) -> dict:
+    """The directory settings, with defaults for any not saved and nothing that is not a setting."""
     merged = dict(DEFAULTS)
     merged.update({k: v for k, v in (value or {}).items() if k in DEFAULTS or k == 'bind_password_enc'})
     return merged
@@ -147,12 +155,15 @@ class _BindRefused(Exception):
 
     @property
     def transient(self) -> bool:
+        """Whether the directory refused because it is struggling, not because the credentials are wrong."""
         return self.result.get('result') in _TRANSIENT_BIND_RESULTS
 
 
 def _connect(cfg: dict, user: str, password: str) -> Connection:
-    """An open, bound connection. Raises _BindRefused, or an ldap3 exception
-    when no server can be reached."""
+    """An open, bound connection.
+
+    Raises _BindRefused, or an ldap3 exception when no server can be reached.
+    """
     timeout = _timeout(cfg)
     conn = Connection(_servers(cfg), user=user, password=password,
                       receive_timeout=timeout, raise_exceptions=False, read_only=True,
@@ -165,7 +176,7 @@ def _connect(cfg: dict, user: str, password: str) -> Connection:
         result = dict(conn.result or {})
         try:
             conn.unbind()
-        except Exception:
+        except Exception:  # nosec B110  # closing what was refused is best effort
             pass
         raise _BindRefused(result)
     return conn
@@ -238,10 +249,12 @@ _NO_SUCH_OBJECT = 32
 
 
 def _answered(conn: Connection, what: str, allow: tuple[int, ...] = _ANSWERED) -> int:
-    """The result code of the last operation, if it is one that means the
-    directory answered. Busy, unavailable, a time limit, refused access: none
-    of those says anything about the person, so they raise rather than read
-    as 'not found', which would revoke everyone at once."""
+    """The result code of the last operation, if it is one that means the directory answered.
+
+    Busy, unavailable, a time limit, refused access: none of those says
+    anything about the person, so they raise rather than read as 'not found',
+    which would revoke everyone at once.
+    """
     result = conn.result or {}
     code = int(result.get('result', 0) or 0)
     if code not in allow:
@@ -352,11 +365,13 @@ class _Breaker:
         self.open_until = 0.0
 
     def check(self) -> None:
+        """Refuses a call at once while the directory is being given a rest."""
         if time.monotonic() < self.open_until:
             raise LdapUnavailable('the directory has not been answering; the console will try it '
                                   'again in a few seconds')
 
     def record(self, ok: bool) -> None:
+        """Notes how a call went; several failures in a row give the directory a rest."""
         if ok:
             self.failures = 0
             return
@@ -370,8 +385,11 @@ _breaker = _Breaker()
 
 
 async def call(fn, *args, guarded: bool = True):
-    """Runs a directory call in the directory's own threads. With `guarded`,
-    a directory that keeps failing is given a rest: calls fail at once."""
+    """Runs a directory call in the directory's own threads.
+
+    With `guarded`, a directory that keeps failing is given a rest: calls fail
+    at once.
+    """
     if guarded:
         _breaker.check()
     slots = _slots()
@@ -393,9 +411,12 @@ async def call(fn, *args, guarded: bool = True):
 
 
 def authenticate(cfg: dict, bind_password: str, username: str, password: str) -> LdapIdentity:
-    """Signs a person in against the directory. Raises an LdapError subclass, and
-    only that: anything unexpected from the library means the directory could
-    not be used, not that the console should fail the request."""
+    """Signs a person in against the directory.
+
+    Raises an LdapError subclass, and only that: anything unexpected from the
+    library means the directory could not be used, not that the console should
+    fail the request.
+    """
     try:
         return _authenticate(cfg, bind_password, username, password)
     except LdapError:
@@ -429,7 +450,7 @@ def _authenticate(cfg: dict, bind_password: str, username: str, password: str) -
     finally:
         try:
             service.unbind()
-        except Exception:
+        except Exception:  # nosec B110  # closing the service connection is best effort
             pass
     identity = LdapIdentity(
         dn=dn,
@@ -451,7 +472,8 @@ def recheck(cfg: dict, bind_password: str, dn: str | None, username: str) -> Lda
     Active Directory account, if the filter says so); an identity whose role
     is None when no group grants one. Looked up by its DN, the one thing that
     does not depend on which attribute people type at sign-in. Raises
-    LdapUnavailable whenever the directory does not give a clear answer."""
+    LdapUnavailable whenever the directory does not give a clear answer.
+    """
     try:
         service = _service_connection(cfg, bind_password)
         try:
@@ -481,7 +503,7 @@ def recheck(cfg: dict, bind_password: str, dn: str | None, username: str) -> Lda
         finally:
             try:
                 service.unbind()
-            except Exception:
+            except Exception:  # nosec B110  # closing the service connection is best effort
                 pass
     except LdapError:
         raise
@@ -548,6 +570,6 @@ def _test(cfg: dict, bind_password: str, username: str | None, password: str | N
     finally:
         try:
             service.unbind()
-        except Exception:
+        except Exception:  # nosec B110  # closing the service connection is best effort
             pass
     return steps

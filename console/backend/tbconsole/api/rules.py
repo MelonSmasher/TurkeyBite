@@ -26,6 +26,8 @@ CATEGORIES = {'threat': 'Threats', 'policy': 'Policy', 'content': 'Content', 'an
 
 
 class Schedule(BaseModel):
+    """The days and hours a rule is active, in a time zone; days run from 0 (Monday) to 6 (Sunday)."""
+
     days: list[int] = Field(default_factory=lambda: list(range(7)))
     start: str = Field('00:00', pattern=r'^([01]\d|2[0-3]):[0-5]\d$')
     end: str = Field('24:00', pattern=r'^(([01]\d|2[0-3]):[0-5]\d|24:00)$')
@@ -33,6 +35,8 @@ class Schedule(BaseModel):
 
 
 class RuleBody(BaseModel):
+    """A rule's whole definition, as the rule editor sends it."""
+
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=200)
     description: str = Field('', max_length=4000)
@@ -54,6 +58,8 @@ class RuleBody(BaseModel):
 
 
 class BacktestBody(RuleBody):
+    """A rule, saved or not, and the range to backtest it over."""
+
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
     name: str = Field('Draft', max_length=200)
     start: str | None = Field('now-24h', alias='from')
@@ -135,8 +141,10 @@ def _assign(rule: Rule, body: RuleBody, params: dict) -> bool:
 
 
 def _restart(rule: Rule) -> None:
-    """A rule switched back on starts from now: the weeks it was off are not
-    windows it missed."""
+    """A rule switched back on starts from now.
+
+    The weeks it was off are not windows it missed.
+    """
     rule.next_run_at = datetime.now(timezone.utc)
     rule.evaluated_until = None
 
@@ -150,6 +158,7 @@ async def _get(db: AsyncSession, rule_id: str) -> Rule:
 
 @router.get('/meta')
 async def meta(_: Principal = Depends(require(rbac.RULES_READ))) -> dict:
+    """What the rule editor offers: the types and their settings, severities, categories, fields to group by and title placeholders."""
     return {
         'types': TYPES, 'severities': list(SEVERITIES), 'categories': CATEGORIES,
         'group_fields': [{'name': F.ENTITY, 'label': F.ENTITY_LABEL}] + [
@@ -162,6 +171,7 @@ async def meta(_: Principal = Depends(require(rbac.RULES_READ))) -> dict:
 @router.get('')
 async def list_rules(_: Principal = Depends(require(rbac.RULES_READ)),
                      db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Every rule, with its open findings and the findings it raised each day for the last two weeks."""
     rules = (await db.execute(select(Rule).order_by(Rule.category, Rule.name))).scalars().all()
     now = datetime.now(timezone.utc)
     open_counts = dict((await db.execute(
@@ -188,6 +198,7 @@ async def list_rules(_: Principal = Depends(require(rbac.RULES_READ)),
 async def create_rule(body: RuleBody, request: Request,
                       principal: Principal = Depends(require(rbac.RULES_WRITE)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Makes a rule."""
     params = await _validate(db, body)
     rule = Rule(created_by_id=principal.user.id, enabled=body.enabled,
                 next_run_at=datetime.now(timezone.utc))
@@ -207,7 +218,8 @@ async def backtest(body: BacktestBody, _: Principal = Depends(require(rbac.RULES
     """What a rule, saved or not, would have raised over a range. Records nothing.
 
     It needs rules:write: a backtest runs dozens of aggregations over up to a
-    month of events, which is the cost of authoring a rule, not of reading."""
+    month of events, which is the cost of authoring a rule, not of reading.
+    """
     _check_exceptions(body.exceptions)
     try:
         normalise(_spec(body))
@@ -222,6 +234,7 @@ async def backtest(body: BacktestBody, _: Principal = Depends(require(rbac.RULES
 @router.get('/{rule_id}')
 async def get_rule(rule_id: str, _: Principal = Depends(require(rbac.RULES_READ)),
                    db: AsyncSession = Depends(get_session)) -> dict:
+    """One rule, with how many findings it raised and, for a built-in rule, its shipped definition."""
     rule = await _get(db, rule_id)
     out = rule_out(rule)
     if rule.builtin_key:
@@ -239,6 +252,11 @@ async def get_rule(rule_id: str, _: Principal = Depends(require(rbac.RULES_READ)
 async def update_rule(rule_id: str, body: RuleBody, request: Request,
                       principal: Principal = Depends(require(rbac.RULES_WRITE)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Replaces a rule's definition.
+
+    A built-in rule whose definition changes is marked modified, and new
+    versions of it are no longer taken on without asking.
+    """
     rule = await _get(db, rule_id)
     params = await _validate(db, body)
     changed = _assign(rule, body, params)
@@ -263,6 +281,7 @@ async def update_rule(rule_id: str, body: RuleBody, request: Request,
 async def delete_rule(rule_id: str, request: Request,
                       principal: Principal = Depends(require(rbac.RULES_WRITE)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Deletes a rule. Built-in rules cannot be deleted, only switched off."""
     rule = await _get(db, rule_id)
     if rule.builtin_key:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
@@ -291,6 +310,7 @@ async def _toggle(db: AsyncSession, rule_id: str, enabled: bool, principal: Prin
 async def enable(rule_id: str, request: Request,
                  principal: Principal = Depends(require(rbac.RULES_WRITE)),
                  db: AsyncSession = Depends(get_session)) -> dict:
+    """Switches a rule on. It starts from now; the time it was off is not caught up on."""
     return await _toggle(db, rule_id, True, principal, request)
 
 
@@ -298,6 +318,7 @@ async def enable(rule_id: str, request: Request,
 async def disable(rule_id: str, request: Request,
                   principal: Principal = Depends(require(rbac.RULES_WRITE)),
                   db: AsyncSession = Depends(get_session)) -> dict:
+    """Switches a rule off."""
     return await _toggle(db, rule_id, False, principal, request)
 
 
@@ -305,6 +326,7 @@ async def disable(rule_id: str, request: Request,
 async def clone(rule_id: str, request: Request,
                 principal: Principal = Depends(require(rbac.RULES_WRITE)),
                 db: AsyncSession = Depends(get_session)) -> dict:
+    """Copies a rule, built-in or not, into a new one of the caller's, switched off."""
     source = await _get(db, rule_id)
     copy = Rule(created_by_id=principal.user.id, enabled=False, modified=False,
                 name=f'Copy of {source.name}'[:200], next_run_at=datetime.now(timezone.utc))
@@ -327,6 +349,7 @@ async def clone(rule_id: str, request: Request,
 async def reset(rule_id: str, request: Request,
                 principal: Principal = Depends(require(rbac.RULES_WRITE)),
                 db: AsyncSession = Depends(get_session)) -> dict:
+    """Puts a built-in rule back as it ships, at the current version, undoing any edits."""
     rule = await _get(db, rule_id)
     if not rule.builtin_key or rule.builtin_key not in defaults.BY_KEY:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Only built-in rules have a default.')
@@ -343,6 +366,7 @@ async def run_now(rule_id: str, request: Request,
                   principal: Principal = Depends(require(rbac.RULES_WRITE)),
                   search: SearchClient = Depends(search_client),
                   db: AsyncSession = Depends(get_session)) -> dict:
+    """Runs a rule now, as the scheduler would, and returns what the run found."""
     rule = await _get(db, rule_id)
     claimed = await engine.claim_run(db, rule.id)
     if claimed is None:
@@ -366,6 +390,7 @@ async def run_now(rule_id: str, request: Request,
 @router.get('/{rule_id}/runs')
 async def runs(rule_id: str, limit: int = 50, _: Principal = Depends(require(rbac.RULES_READ)),
                db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """A rule's recent runs, newest first."""
     rule = await _get(db, rule_id)
     rows = (await db.execute(select(RuleRun).where(RuleRun.rule_id == rule.id)
                              .order_by(RuleRun.started_at.desc())
@@ -374,4 +399,3 @@ async def runs(rule_id: str, limit: int = 50, _: Principal = Depends(require(rba
              'created': r.findings_created, 'updated': r.findings_updated,
              'duration_ms': r.duration_ms, 'error': r.error,
              'window_start': ts(r.window_start), 'window_end': ts(r.window_end)} for r in rows]
-

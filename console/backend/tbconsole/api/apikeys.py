@@ -7,7 +7,7 @@ how an integration gets access that does not end when a person leaves.
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,8 @@ router = APIRouter(prefix='/api-keys', tags=['api keys'])
 
 
 class KeyBody(BaseModel):
+    """A new key: its name, scopes and lifetime, and for an admin, the service account to own it."""
+
     name: str = Field(min_length=1, max_length=200)
     scopes: list[str] = Field(min_length=1, max_length=len(rbac.ALL))
     expires_days: int | None = Field(90, ge=1, le=730)
@@ -31,15 +33,18 @@ class KeyBody(BaseModel):
 
 @router.get('/scopes')
 async def scopes(principal: Principal = Depends(require(rbac.APIKEYS_SELF))) -> list[dict]:
+    """Every scope a key can hold, and whether the caller may grant it."""
     return [{'name': name, 'description': rbac.DESCRIPTIONS[name],
              'available': principal.can(name)} for name in rbac.ALL]
 
 
 @router.get('')
-async def list_keys(all: bool = False, principal: Principal = Depends(require(rbac.APIKEYS_SELF)),
+async def list_keys(all_: bool = Query(default=False, alias='all'),
+                    principal: Principal = Depends(require(rbac.APIKEYS_SELF)),
                     db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """The caller's own keys, newest first; with `all`, an admin sees everyone's."""
     stmt = select(ApiKey).order_by(ApiKey.created_at.desc())
-    if all:
+    if all_:
         if not principal.can(rbac.USERS_ADMIN):
             raise HTTPException(status.HTTP_403_FORBIDDEN, 'Only admins can see every key.')
     else:
@@ -51,6 +56,7 @@ async def list_keys(all: bool = False, principal: Principal = Depends(require(rb
 async def create_key(body: KeyBody, request: Request,
                      principal: Principal = Depends(require(rbac.APIKEYS_SELF)),
                      db: AsyncSession = Depends(get_session)) -> dict:
+    """Makes a key, for the caller or a service account. The full key is in this response alone; only its hash is kept."""
     if principal.kind == 'apikey':
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'An API key cannot make more API keys.')
     owner = principal.user
@@ -95,6 +101,7 @@ async def create_key(body: KeyBody, request: Request,
 async def revoke_key(key_id: str, request: Request,
                      principal: Principal = Depends(require(rbac.APIKEYS_SELF)),
                      db: AsyncSession = Depends(get_session)) -> dict:
+    """Revokes a key: the caller's own, or for an admin, anyone's."""
     row = await db.get(ApiKey, parse_uuid(key_id, 'That key'))
     if row is None or (row.user_id != principal.user.id and not principal.can(rbac.USERS_ADMIN)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That key does not exist')

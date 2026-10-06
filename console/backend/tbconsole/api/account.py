@@ -23,11 +23,15 @@ DENSITIES = ('comfortable', 'compact')
 
 
 class ProfileBody(BaseModel):
+    """The profile details a person may change; those left out stay as they are."""
+
     display_name: str | None = Field(None, max_length=200)
     email: str | None = Field(None, max_length=320)
 
 
 class PreferencesBody(BaseModel):
+    """Display preferences; only those sent change."""
+
     theme: str | None = None
     accent: str | None = None
     density: str | None = None
@@ -42,15 +46,21 @@ class PreferencesBody(BaseModel):
 
 
 class PasswordBody(BaseModel):
+    """The current password, and the new one to replace it."""
+
     current: str = Field(max_length=1024)
     new: str = Field(max_length=1024)
 
 
 class CodeBody(BaseModel):
+    """A code from the authenticator app."""
+
     code: str = Field(max_length=20)
 
 
 class PasswordOnly(BaseModel):
+    """The account's password, asked again before a sensitive change."""
+
     password: str = Field(max_length=1024)
 
 
@@ -67,6 +77,7 @@ def _local_only(principal: Principal) -> None:
 async def update_profile(body: ProfileBody, request: Request,
                          principal: Principal = Depends(session_principal),
                          db: AsyncSession = Depends(get_session)) -> dict:
+    """Changes the display name or email of a local account, and returns the account."""
     _local_only(principal)
     user = await db.merge(principal.user)
     if body.display_name is not None:
@@ -83,6 +94,7 @@ async def update_profile(body: ProfileBody, request: Request,
 async def update_preferences(body: PreferencesBody,
                              principal: Principal = Depends(session_principal),
                              db: AsyncSession = Depends(get_session)) -> dict:
+    """Saves the display preferences sent, leaving the others as they are, and returns them all."""
     if body.user_id is not None and body.user_id != str(principal.user.id):
         raise HTTPException(status.HTTP_409_CONFLICT,
                             'Someone else has signed in on this browser since this page was opened; reload it.')
@@ -105,11 +117,14 @@ async def update_preferences(body: PreferencesBody,
     return merged
 
 
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments  # the request, who is asking, and what for
 async def _check_password(db: AsyncSession, request: Request, principal: Principal, user,
                           password: str, action: str) -> None:
-    """The account's own password, asked again before a sensitive change. A
-    session left open on someone's desk is not a way to guess it: wrong answers
-    count against the same brake as sign-ins."""
+    """The account's own password, asked again before a sensitive change.
+
+    A session left open on someone's desk is not a way to guess it: wrong
+    answers count against the same brake as sign-ins.
+    """
     ip = sessions.client_ip(request)
     locked = HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                            'Too many wrong passwords. Wait a few minutes and try again.')
@@ -145,6 +160,10 @@ async def _check_password(db: AsyncSession, request: Request, principal: Princip
 async def change_password(body: PasswordBody, request: Request, response: Response,
                           principal: Principal = Depends(session_principal),
                           db: AsyncSession = Depends(get_session)) -> dict:
+    """Changes a local account's password, given the current one.
+
+    Every session from before ends, and this browser gets a new one.
+    """
     _local_only(principal)
     user = await db.merge(principal.user)
     await _check_password(db, request, principal, user, body.current, 'account.password')
@@ -189,6 +208,7 @@ async def mfa_setup(body: PasswordOnly, request: Request,
 async def mfa_enable(body: CodeBody, request: Request,
                      principal: Principal = Depends(session_principal),
                      db: AsyncSession = Depends(get_session)) -> dict:
+    """Turns two-factor sign-in on, once a code shows the authenticator has the new secret."""
     _local_only(principal)
     user = await db.merge(principal.user)
     if user.totp_enabled or not user.totp_secret_enc:
@@ -212,6 +232,7 @@ async def mfa_enable(body: CodeBody, request: Request,
 async def mfa_disable(body: DisableMfaBody, request: Request,
                       principal: Principal = Depends(session_principal),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Turns two-factor sign-in off, given the account's password."""
     _local_only(principal)
     user = await db.merge(principal.user)
     await _check_password(db, request, principal, user, body.password, 'account.mfa_disabled')
@@ -226,6 +247,7 @@ async def mfa_disable(body: DisableMfaBody, request: Request,
 @router.get('/sessions')
 async def list_sessions(principal: Principal = Depends(session_principal),
                         db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """The signed-in person's sessions, the most recently used first, marking the one asking."""
     rows = (await db.execute(select(UserSession).where(UserSession.user_id == principal.user.id)
                              .order_by(UserSession.last_seen_at.desc()))).scalars().all()
     now = datetime.now(timezone.utc)
@@ -239,6 +261,7 @@ async def list_sessions(principal: Principal = Depends(session_principal),
 async def end_session(session_id: str, request: Request,
                       principal: Principal = Depends(session_principal),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Ends one of the signed-in person's own sessions."""
     session = await db.get(UserSession, parse_uuid(session_id, 'That session'))
     if session is None or session.user_id != principal.user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That session does not exist')

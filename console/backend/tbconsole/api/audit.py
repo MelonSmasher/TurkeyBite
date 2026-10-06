@@ -14,11 +14,16 @@ router = APIRouter(prefix='/audit', tags=['audit'])
 
 
 @router.get('')
-async def list_events(action: str | None = None, actor: str | None = None,
+async def list_events(*, action: str | None = None, actor: str | None = None,  # pylint: disable=too-many-arguments  # one per filter
                       outcome: str | None = None, q: str | None = None,
                       before: str | None = None, limit: int = 100,
                       _: Principal = Depends(require(rbac.AUDIT_READ)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """The audit log, newest first, with how many entries match.
+
+    It filters by action, in which * is a wildcard, by actor, outcome and any
+    text; `before` pages back to older entries.
+    """
     stmt = select(AuditEvent)
     if action:
         stmt = stmt.where(AuditEvent.action.like(like_escape(action[:100]).replace('*', '%'), escape='\\'))
@@ -47,5 +52,6 @@ async def list_events(action: str | None = None, actor: str | None = None,
 @router.get('/actions')
 async def actions(_: Principal = Depends(require(rbac.AUDIT_READ)),
                   db: AsyncSession = Depends(get_session)) -> list[str]:
+    """Every action the log has recorded, to filter by."""
     return list((await db.execute(select(AuditEvent.action).distinct()
                                   .order_by(AuditEvent.action))).scalars())

@@ -34,15 +34,18 @@ MAX_RANGE = timedelta(days=400)
 
 
 class RangeError(ValueError):
-    pass
+    """A time or range from a request that cannot be used, in words for the caller."""
 
 
 _zone: ContextVar[str] = ContextVar('tbconsole_zone', default='UTC')
 
 
 def use_zone(name: str | None) -> None:
-    """Rounds relative times in `name` for the rest of this request. An unknown
-    or malformed zone is ignored rather than refused: it only shifts days."""
+    """Rounds relative times in `name` for the rest of this request.
+
+    An unknown or malformed zone is ignored rather than refused: it only shifts
+    days.
+    """
     if not name or len(name) > 64:
         return
     try:
@@ -53,10 +56,12 @@ def use_zone(name: str | None) -> None:
 
 
 def zone_name() -> str:
+    """The time zone this request rounds relative times in."""
     return _zone.get()
 
 
 def utcnow() -> datetime:
+    """The time now, in UTC."""
     return datetime.now(timezone.utc)
 
 
@@ -125,11 +130,14 @@ def parse_moment(value: str) -> datetime:
 
 @dataclass(frozen=True)
 class TimeRange:
+    """A window of time in UTC, from `start` up to but not including `end`."""
+
     start: datetime
     end: datetime
 
     @property
     def seconds(self) -> float:
+        """How long the range is, in seconds."""
         return (self.end - self.start).total_seconds()
 
     def previous(self) -> 'TimeRange':
@@ -138,14 +146,17 @@ class TimeRange:
         return TimeRange(self.start - span, self.start)
 
     def filter(self, field: str = '@timestamp') -> dict:
+        """A query clause for the events in the range, by `field`."""
         return {'range': {field: {'gte': iso(self.start), 'lt': iso(self.end)}}}
 
     def public(self) -> dict:
+        """The range as the API shows it."""
         return {'from': iso(self.start), 'to': iso(self.end)}
 
 
 def parse_range(start: str | None, end: str | None, now: datetime | None = None,
                 default_start: str = 'now-24h') -> TimeRange:
+    """The range a request's from and to name, which has to run forwards and not be too long."""
     now = now or utcnow()
     tr = TimeRange(resolve(start, now, default_start), resolve(end, now, 'now'))
     if tr.end <= tr.start:
@@ -156,6 +167,7 @@ def parse_range(start: str | None, end: str | None, now: datetime | None = None,
 
 
 def iso(moment: datetime) -> str:
+    """A time as ISO 8601 text in UTC, to the millisecond."""
     return moment.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
 
@@ -168,6 +180,7 @@ def auto_interval(tr: TimeRange, buckets: int = 90) -> tuple[int, str]:
 
 
 def interval_seconds(name: str) -> int:
+    """The length of a named histogram interval, in seconds."""
     for seconds, label in INTERVALS:
         if label == name:
             return seconds

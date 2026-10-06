@@ -35,4 +35,5 @@ def parse(key: str) -> str | None:
 
 
 def matches(key: str, stored_hash: bytes) -> bool:
+    """Whether `key` is the key whose hash was stored, compared in constant time."""
     return hmac.compare_digest(sha256(key), stored_hash)

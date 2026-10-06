@@ -15,11 +15,15 @@ router = APIRouter(prefix='/settings', tags=['settings'])
 
 
 class RoleMapping(BaseModel):
+    """A directory group, and the console role its members get."""
+
     group: str = Field(min_length=1, max_length=1000)
     role: str
 
 
 class LdapBody(BaseModel):
+    """How to reach the directory, find people in it and turn their groups into roles."""
+
     enabled: bool = False
     urls: list[str] = Field(default_factory=list, max_length=10)
     start_tls: bool = False
@@ -42,11 +46,15 @@ class LdapBody(BaseModel):
 
 
 class LdapTestBody(LdapBody):
+    """Directory settings to try, saved or not, and if given, a person to sign in as."""
+
     username: str | None = Field(None, max_length=256)
     password: str | None = Field(None, max_length=1024)
 
 
 class GeneralBody(BaseModel):
+    """The organisation's name, the sign-in banner, and defaults for the whole console."""
+
     org_name: str = Field('TurkeyBite', min_length=1, max_length=100)
     login_banner: str = Field('', max_length=2000)
     default_range: Literal[settings_store.DEFAULT_RANGES] = 'now-24h'
@@ -111,6 +119,7 @@ def _merge(body: LdapBody, saved: dict) -> dict:
 @router.get('/ldap')
 async def get_ldap(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
                    db: AsyncSession = Depends(get_session)) -> dict:
+    """The directory settings, with whether a bind password is saved, but never the password."""
     return _public(ldap.config_with_defaults(await settings_store.get(db, 'ldap')))
 
 
@@ -118,6 +127,11 @@ async def get_ldap(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
 async def put_ldap(body: LdapBody, request: Request,
                    principal: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
                    db: AsyncSession = Depends(get_session)) -> dict:
+    """Saves the directory settings.
+
+    A saved bind password is kept only while the servers and the bind DN stay
+    the same; otherwise it has to be entered again.
+    """
     _check(body)
     cfg = _merge(body, await settings_store.get(db, 'ldap'))
     await settings_store.put(db, 'ldap', cfg, principal.user.id)
@@ -153,6 +167,7 @@ async def test_ldap(body: LdapTestBody, request: Request,
 @router.get('/general')
 async def get_general(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """The general settings: the organisation's name, the sign-in banner and console-wide defaults."""
     return await settings_store.general(db)
 
 
@@ -160,6 +175,7 @@ async def get_general(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
 async def put_general(body: GeneralBody, request: Request,
                       principal: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Saves the general settings, and returns them."""
     await settings_store.put(db, 'general', body.model_dump(), principal.user.id)
     audit.record(db, 'settings.general', principal=principal, request=request,
                  details=body.model_dump())

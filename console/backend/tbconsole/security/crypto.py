@@ -36,10 +36,12 @@ def _fernet() -> MultiFernet:
 
 
 def encrypt(plaintext: str) -> str:
+    """`plaintext` encrypted under the current secret key, as text to store."""
     return _fernet().encrypt(plaintext.encode('utf-8')).decode('ascii')
 
 
 def decrypt(token: str) -> str:
+    """What `encrypt` stored, under the current or a previous key; raises SecretUnreadable otherwise."""
     try:
         return _fernet().decrypt(token.encode('ascii')).decode('utf-8')
     except InvalidToken as e:
@@ -54,6 +56,7 @@ def mac(purpose: str, message: bytes) -> bytes:
 
 
 def sha256(value: str | bytes) -> bytes:
+    """The SHA-256 digest of `value`, text taken as UTF-8."""
     if isinstance(value, str):
         value = value.encode('utf-8')
     return hashlib.sha256(value).digest()

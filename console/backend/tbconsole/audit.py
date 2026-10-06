@@ -15,6 +15,7 @@ from .models import AuditEvent
 from .security.sessions import client_ip
 
 
+# pylint: disable-next=too-many-arguments  # one keyword per part of the event
 def record(db: AsyncSession, action: str, *, principal=None, actor_name: str | None = None,
            actor_type: str | None = None, actor_id=None, request: Request | None = None,
            target_type: str | None = None, target_id=None, target_label: str | None = None,
@@ -45,13 +46,16 @@ LIST_LOOK_WINDOW = 15 * 60.0
 _looks: dict[tuple, tuple[float, float]] = {}
 
 
+# pylint: disable-next=too-many-arguments  # the event's parts, as for record
 def look(db: AsyncSession, action: str, *, principal=None, request: Request | None, key: str,
          details: dict | None = None, target_type: str | None = None,
          actor_name: str | None = None, outcome: str = 'success', window: float = _LOOK_WINDOW) -> bool:
-    """Records an event unless the same person recorded the same one in the
-    last `window` seconds, a minute unless said: a look at people that several
-    endpoints ask at once, a page that refreshes itself, or a failure repeated
-    in a flood. True if it did."""
+    """Records an event unless the same person recorded the same one in the last `window` seconds.
+
+    That is a minute unless said. It keeps to one row a look at people that
+    several endpoints ask at once, a page that refreshes itself, or a failure
+    repeated in a flood. True if it recorded the event.
+    """
     now = time.monotonic()
     who = str(principal.user.id) if principal is not None else f'name:{actor_name}'
     marker = (who, action, key)

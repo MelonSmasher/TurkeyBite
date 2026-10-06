@@ -30,8 +30,11 @@ EVENTS = {
 
 
 def _slack(text: str, limit: int) -> str:
-    """Text for Slack mrkdwn: its three control characters escaped, as Slack
-    asks, so a value from the events cannot become a link, and cut to fit."""
+    """Text for Slack mrkdwn, cut to fit.
+
+    Its three control characters are escaped, as Slack asks, so a value from
+    the events cannot become a link.
+    """
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     return text if len(text) <= limit else text[:limit - 1] + '…'
 
@@ -41,8 +44,11 @@ def _plain(text: str, limit: int) -> str:
 
 
 def _markup(text: str, limit: int) -> str:
-    """Text for Google Chat, whose cards read HTML and whose messages turn
-    <users/all> into a mention and <url|text> into a link."""
+    """Text for Google Chat, cut to fit.
+
+    Its cards read HTML, and its messages turn <users/all> into a mention and
+    <url|text> into a link, so the markup characters are escaped.
+    """
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     return _plain(text, limit)
 

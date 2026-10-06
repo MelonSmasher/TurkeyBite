@@ -30,7 +30,7 @@ MAX_WIDGETS = 40
 MAX_WIDGETS_BYTES = 64 * 1024
 
 
-def _w(title, span, pivot=None, viz='bar', kind='pivot', height='md', **extra) -> dict:
+def _w(title, span, pivot=None, viz='bar', kind='pivot', *, height='md', **extra) -> dict:  # pylint: disable=too-many-arguments  # a widget's parts
     slug = ''.join(ch if ch.isalnum() else '-' for ch in title.lower()).strip('-')
     widget = {'id': slug[:40], 'title': title, 'type': kind, 'span': span,
               'height': height, 'viz': viz}
@@ -108,6 +108,8 @@ BUILTIN_DASHBOARDS = [
 
 
 class DashboardBody(BaseModel):
+    """A dashboard: its name, look, widgets and default range, and whether others can see it."""
+
     name: str = Field(min_length=1, max_length=200)
     description: str = Field('', max_length=2000)
     icon: str = Field('layout-dashboard', max_length=40)
@@ -117,6 +119,8 @@ class DashboardBody(BaseModel):
 
 
 class SavedSearchBody(BaseModel):
+    """A search to keep: its query, range and columns, and whether it is shared or pinned."""
+
     name: str = Field(min_length=1, max_length=200)
     description: str = Field('', max_length=2000)
     query: str = Field('', max_length=20000)
@@ -142,6 +146,7 @@ def _check_widgets(widgets: list[dict]) -> list[dict]:
 
 
 async def sync_builtin_dashboards(db: AsyncSession) -> None:
+    """Writes the built-in dashboards as they ship, adding any that are missing."""
     # Several console processes may start at once; they take turns
     await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': engine.SYNC_LOCK})
     existing = {d.builtin_key: d for d in (await db.execute(
@@ -183,6 +188,7 @@ async def _get_dashboard(db: AsyncSession, dashboard_id: str, principal: Princip
 @router.get('/dashboards')
 async def list_dashboards(principal: Principal = Depends(require(rbac.DASHBOARDS_READ)),
                           db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """The dashboards the caller can see, the built-in ones first, then by name."""
     rows = (await db.execute(select(Dashboard).where(_visible(principal))
                              .order_by(Dashboard.builtin_key.is_(None), Dashboard.name))).scalars().all()
     return [dashboard_out(d, principal.user.id) for d in rows]
@@ -192,6 +198,7 @@ async def list_dashboards(principal: Principal = Depends(require(rbac.DASHBOARDS
 async def create_dashboard(body: DashboardBody, request: Request,
                            principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                            db: AsyncSession = Depends(get_session)) -> dict:
+    """Makes a dashboard, owned by the caller."""
     board = Dashboard(owner_id=principal.user.id, name=body.name.strip(),
                       description=body.description, icon=body.icon,
                       widgets=_check_widgets(body.widgets), time_range=body.time_range,
@@ -209,6 +216,7 @@ async def create_dashboard(body: DashboardBody, request: Request,
 async def get_dashboard(dashboard_id: str,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_READ)),
                         db: AsyncSession = Depends(get_session)) -> dict:
+    """One dashboard, if the caller can see it."""
     return dashboard_out(await _get_dashboard(db, dashboard_id, principal), principal.user.id)
 
 
@@ -216,6 +224,7 @@ async def get_dashboard(dashboard_id: str,
 async def update_dashboard(dashboard_id: str, body: DashboardBody, request: Request,
                            principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                            db: AsyncSession = Depends(get_session)) -> dict:
+    """Replaces a dashboard, for its owner or an admin. Built-in dashboards cannot be changed."""
     board = await _get_dashboard(db, dashboard_id, principal, write=True)
     board.name = body.name.strip()
     board.description = body.description
@@ -234,6 +243,7 @@ async def update_dashboard(dashboard_id: str, body: DashboardBody, request: Requ
 async def clone_dashboard(dashboard_id: str, request: Request,
                           principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                           db: AsyncSession = Depends(get_session)) -> dict:
+    """Copies a dashboard the caller can see, built-in ones included, into a new unshared one of their own."""
     source = await _get_dashboard(db, dashboard_id, principal)
     board = Dashboard(owner_id=principal.user.id, name=f'{source.name} (copy)'[:200],
                       description=source.description, icon=source.icon,
@@ -253,6 +263,7 @@ async def clone_dashboard(dashboard_id: str, request: Request,
 async def delete_dashboard(dashboard_id: str, request: Request,
                            principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                            db: AsyncSession = Depends(get_session)) -> dict:
+    """Deletes a dashboard, for its owner or an admin. Built-in dashboards cannot be deleted."""
     board = await _get_dashboard(db, dashboard_id, principal, write=True)
     audit.record(db, 'dashboard.delete', principal=principal, request=request,
                  target_type='dashboard', target_id=board.id, target_label=board.name)
@@ -276,6 +287,7 @@ async def _get_search(db: AsyncSession, search_id: str, principal: Principal,
 @router.get('/saved-searches')
 async def list_searches(principal: Principal = Depends(require(rbac.DASHBOARDS_READ)),
                         db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """The saved searches the caller can see, their own and shared ones, pinned first."""
     rows = (await db.execute(select(SavedSearch).where(or_(
         SavedSearch.owner_id == principal.user.id, SavedSearch.shared.is_(True)))
         .order_by(SavedSearch.pinned.desc(), SavedSearch.name))).scalars().all()
@@ -286,6 +298,7 @@ async def list_searches(principal: Principal = Depends(require(rbac.DASHBOARDS_R
 async def create_search(body: SavedSearchBody, request: Request,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
+    """Saves a search, owned by the caller."""
     saved = SavedSearch(owner_id=principal.user.id, **body.model_dump())
     db.add(saved)
     await db.flush()
@@ -302,6 +315,7 @@ async def create_search(body: SavedSearchBody, request: Request,
 async def update_search(search_id: str, body: SavedSearchBody, request: Request,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
+    """Replaces a saved search, for its owner or an admin."""
     saved = await _get_search(db, search_id, principal, write=True)
     for name, value in body.model_dump().items():
         setattr(saved, name, value)
@@ -317,6 +331,7 @@ async def update_search(search_id: str, body: SavedSearchBody, request: Request,
 async def delete_search(search_id: str, request: Request,
                         principal: Principal = Depends(require(rbac.DASHBOARDS_WRITE)),
                         db: AsyncSession = Depends(get_session)) -> dict:
+    """Deletes a saved search, for its owner or an admin."""
     saved = await _get_search(db, search_id, principal, write=True)
     audit.record(db, 'search.delete', principal=principal, request=request,
                  target_type='saved_search', target_id=saved.id, target_label=saved.name,

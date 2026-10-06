@@ -27,6 +27,8 @@ USERNAME = r'^[A-Za-z0-9][A-Za-z0-9._@\-]{1,149}$'
 
 
 class CreateUser(BaseModel):
+    """A new local or service account; a local one needs a password."""
+
     username: str = Field(pattern=USERNAME)
     display_name: str | None = Field(None, max_length=200)
     email: str | None = Field(None, max_length=320)
@@ -36,6 +38,8 @@ class CreateUser(BaseModel):
 
 
 class UpdateUser(BaseModel):
+    """Changes to an account; those left out stay as they are."""
+
     display_name: str | None = Field(None, max_length=200)
     email: str | None = Field(None, max_length=320)
     role: str | None = None
@@ -43,6 +47,8 @@ class UpdateUser(BaseModel):
 
 
 class PasswordReset(BaseModel):
+    """A new password for a local account, and whether to revoke its API keys too."""
+
     password: str = Field(max_length=1024)
     # A password reset for an account someone else got into wants their keys
     # gone as well, or what they made with the old password still works
@@ -65,6 +71,7 @@ async def _other_admins(db: AsyncSession, user: User) -> int:
 @router.get('')
 async def list_users(_: Principal = Depends(require(rbac.USERS_ADMIN)),
                      db: AsyncSession = Depends(get_session)) -> list[dict]:
+    """Every account, with how many API keys and live sessions each holds."""
     users = (await db.execute(select(User).order_by(User.source, User.username))).scalars().all()
     keys = dict((await db.execute(select(ApiKey.user_id, func.count()).where(
         ApiKey.revoked_at.is_(None)).group_by(ApiKey.user_id))).all())
@@ -79,6 +86,7 @@ async def list_users(_: Principal = Depends(require(rbac.USERS_ADMIN)),
 async def create_user(body: CreateUser, request: Request,
                       principal: Principal = Depends(require(rbac.USERS_ADMIN)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Makes a local or service account. Directory accounts appear when their owner first signs in."""
     if body.role not in rbac.ROLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'role is one of {", ".join(rbac.ROLES)}')
     if body.kind not in ('local', 'service'):
@@ -110,6 +118,11 @@ async def create_user(body: CreateUser, request: Request,
 async def update_user(user_id: str, body: UpdateUser, request: Request,
                       principal: Principal = Depends(require(rbac.USERS_ADMIN)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Changes an account's name, email, role or whether it is disabled.
+
+    Disabling an account ends its sessions. The last enabled admin cannot be
+    demoted or disabled, and a directory account's role comes from its groups.
+    """
     user = await _get(db, user_id)
     changes = {}
     if body.role is not None and body.role != user.role:
@@ -153,6 +166,7 @@ async def update_user(user_id: str, body: UpdateUser, request: Request,
 async def reset_password(user_id: str, body: PasswordReset, request: Request,
                          principal: Principal = Depends(require(rbac.USERS_ADMIN)),
                          db: AsyncSession = Depends(get_session)) -> dict:
+    """Sets a local account's password, unlocks it and ends its sessions, revoking its API keys if asked."""
     user = await _get(db, user_id)
     if user.source != 'local':
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Only local accounts have a password here.')
@@ -180,6 +194,7 @@ async def reset_password(user_id: str, body: PasswordReset, request: Request,
 async def unlock(user_id: str, request: Request,
                  principal: Principal = Depends(require(rbac.USERS_ADMIN)),
                  db: AsyncSession = Depends(get_session)) -> dict:
+    """Lifts the lock that wrong passwords put on an account."""
     user = await _get(db, user_id)
     user.locked_until = None
     user.failed_logins = 0
@@ -193,6 +208,7 @@ async def unlock(user_id: str, request: Request,
 async def reset_mfa(user_id: str, request: Request,
                     principal: Principal = Depends(require(rbac.USERS_ADMIN)),
                     db: AsyncSession = Depends(get_session)) -> dict:
+    """Turns off an account's two-factor sign-in, for someone who lost their authenticator."""
     user = await _get(db, user_id)
     user.totp_enabled = False
     user.totp_secret_enc = None
@@ -207,6 +223,7 @@ async def reset_mfa(user_id: str, request: Request,
 async def delete_user(user_id: str, request: Request,
                       principal: Principal = Depends(require(rbac.USERS_ADMIN)),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Deletes an account. Nobody can delete themselves, and the last enabled admin cannot be deleted."""
     user = await _get(db, user_id)
     if user.id == principal.user.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'You cannot delete yourself.')

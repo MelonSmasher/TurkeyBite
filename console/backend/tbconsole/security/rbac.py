@@ -67,6 +67,7 @@ def permissions_for(role: str, scopes=None) -> frozenset[str]:
 
 
 def higher_role(a: str | None, b: str | None) -> str | None:
+    """The role of the two that may do more; either may be None."""
     if a is None:
         return b
     if b is None:

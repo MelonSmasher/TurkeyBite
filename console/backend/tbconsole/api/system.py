@@ -20,9 +20,10 @@ router = APIRouter(prefix='/system', tags=['system'])
 
 
 @router.get('/status')
-async def status_(request: Request, _: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
+async def status_(request: Request, _: Principal = Depends(require(rbac.SETTINGS_ADMIN)),  # pylint: disable=too-many-locals  # one figure per part
                   search: SearchClient = Depends(search_client),
                   db: AsyncSession = Depends(get_session)) -> dict:
+    """How the database, OpenSearch and the background workers are doing, for the system page."""
     settings = get_settings()
     opensearch: dict = {'ok': False, 'urls': settings.opensearch_urls,
                         'index_pattern': settings.opensearch_index,

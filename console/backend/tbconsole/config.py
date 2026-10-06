@@ -31,6 +31,8 @@ def _split(value):
 
 
 class Settings(BaseSettings):
+    """The console's settings, each from a TBCONSOLE_ environment variable."""
+
     model_config = SettingsConfigDict(env_prefix='TBCONSOLE_', env_file=None,
                                       extra='ignore')
 
@@ -167,7 +169,7 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def _password_into_url(self):
         if self.database_password:
-            from sqlalchemy.engine import make_url
+            from sqlalchemy.engine import make_url  # pylint: disable=import-outside-toplevel  # needed only with a separate password
             url = make_url(self.database_url)
             if not url.username:
                 raise ValueError('TBCONSOLE_DATABASE_PASSWORD needs a user name in '
@@ -179,4 +181,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """The settings, read from the environment on first use and kept."""
     return Settings()
