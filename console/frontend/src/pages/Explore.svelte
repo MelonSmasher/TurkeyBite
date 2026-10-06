@@ -19,10 +19,12 @@
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { tip } from '../lib/components/tooltip';
   import { compact, dateTime, num, taxon } from '../lib/format';
-  import { maskQuery, who } from '../lib/privacy';
+  import { isIdentity, maskQuery, who } from '../lib/privacy';
+  import { hide, reveal } from '../lib/urlsafe';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { fields } from '../lib/stores/fields.svelte';
+  import { prefs } from '../lib/stores/prefs.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
@@ -32,7 +34,9 @@
   fields.load();
 
   const DEFAULT_COLUMNS = ['@timestamp', 'bite.type', 'bite.requested', 'entity', 'bite.contexts', 'bite.risk'];
-  let draft = $state(router.query.get('q') ?? '');
+  // The query, from ?q= or, as privacy mode writes it, hidden in ?qe=
+  const asked = () => router.query.get('q') ?? reveal(router.query.get('qe') ?? '');
+  let draft = $state(asked());
   let columns = $state<string[]>(JSON.parse(localStorage.getItem('tbc.columns') || 'null') ?? DEFAULT_COLUMNS);
   let split = $state<'severity' | 'type'>('severity');
   let selected = $state<Hit | null>(null);
@@ -48,7 +52,7 @@
   let fieldFilter = $state('');
   const PAGE = 100;
 
-  const query = $derived(router.query.get('q') ?? '');
+  const query = $derived(asked());
   $effect(() => {
     draft = query;
   });
@@ -91,7 +95,7 @@
   });
 
   function run(text: string) {
-    router.setQuery({ q: text || null }, { push: true });
+    router.setQuery(prefs.privacy && text ? { q: null, qe: hide(text) } : { q: text || null, qe: null }, { push: true });
     const recent: string[] = JSON.parse(localStorage.getItem('tbc.recent') || '[]');
     if (text) localStorage.setItem('tbc.recent', JSON.stringify([text, ...recent.filter((r) => r !== text)].slice(0, 8)));
   }
@@ -143,10 +147,23 @@
     source.addEventListener('problem', (event) => toasts.error('Live tail', JSON.parse((event as MessageEvent).data).message));
     // The server ends a tail after a while; reconnecting by itself would keep
     // one open for ever, so the tail stops and says so
-    source.addEventListener('end', () => {
+    source.addEventListener('end', (event) => {
       source.close();
       live = false;
-      toasts.push({ kind: 'info', title: 'Live tail stopped', body: 'It ran for its full time. Start it again to keep watching.' });
+      const reason = JSON.parse((event as MessageEvent).data || '{}').reason;
+      toasts.push({ kind: 'info', title: 'Live tail stopped',
+                    body: reason ? 'You are no longer signed in.' : 'It ran for its full time. Start it again to keep watching.' });
+    });
+    // A tail that keeps failing to connect gives up rather than retry for ever
+    let failures = 0;
+    source.addEventListener('open', () => { failures = 0; });
+    source.addEventListener('error', () => {
+      failures += 1;
+      if (failures >= 3) {
+        source.close();
+        live = false;
+        toasts.error('Live tail stopped', 'The console could not be reached. Start it again when it is back.');
+      }
     });
     return () => source.close();
   });
@@ -220,7 +237,10 @@
   }
 
   const recent = $derived(JSON.parse(localStorage.getItem('tbc.recent') || '[]') as string[]);
+  // Pinned searches first; the rest, which a person or a colleague saved
+  // without pinning, are a menu away rather than nowhere
   const pinned = $derived((saved.data ?? []).filter((s) => s.pinned));
+  const unpinned = $derived((saved.data ?? []).filter((s) => !s.pinned));
 </script>
 
 <PageHeader title="Explore" subtitle="Every lookup and page visit TurkeyBite recorded. Search, then pivot on anything you see.">
@@ -235,7 +255,7 @@
       </button>
     {/if}
     {#if session.can('dashboards:write')}
-      <button class="btn" onclick={() => { saveName = query || 'All events'; saveOpen = true; }}><Bookmark size={15} /> Save</button>
+      <button class="btn" onclick={() => { saveName = prefs.privacy ? '' : query || 'All events'; saveOpen = true; }}><Bookmark size={15} /> Save</button>
     {/if}
     {#if session.can('events:export')}
       <Menu width={210}>
@@ -251,7 +271,8 @@
 </PageHeader>
 
 <div class="query-area">
-  <QueryBar bind:value={draft} onsubmit={run} error={queryError} autofocus />
+  <!-- Not focused at once in privacy mode, where focus shows the real query -->
+  <QueryBar bind:value={draft} onsubmit={run} error={queryError} autofocus={!prefs.privacy} />
   <div class="quick">
     {#each pinned as s (s.id)}
       <span class="chip saved-chip">
@@ -261,8 +282,23 @@
         {/if}
       </span>
     {/each}
+    {#if unpinned.length}
+      <Menu width={280} label="Other saved searches">
+        {#snippet trigger({ toggle })}<button class="chip" onclick={toggle}><Bookmark size={12} /> {unpinned.length} more saved</button>{/snippet}
+        {#snippet children({ close })}
+          {#each unpinned as s (s.id)}
+            <div class="saved-row">
+              <a class="menu-item" href="/explore{qs({ q: s.query, from: s.time_range.from, to: s.time_range.to })}" onclick={close}>{s.name}</a>
+              {#if s.mine || session.can('users:admin')}
+                <button class="chip-x" aria-label="Remove the saved search {s.name}" onclick={() => forget(s.id, s.name)}><X size={11} /></button>
+              {/if}
+            </div>
+          {/each}
+        {/snippet}
+      </Menu>
+    {/if}
     {#each recent.slice(0, 4) as r (r)}
-      <button class="chip" onclick={() => run(r)}><Search size={12} /> <span class="mono truncate qtext">{r}</span></button>
+      <button class="chip" onclick={() => run(r)}><Search size={12} /> <span class="mono truncate qtext">{maskQuery(r)}</span></button>
     {/each}
     {#if !pinned.length && !recent.length}
       <span class="muted small">Try <button class="link-btn mono" onclick={() => run('risk:threat')}>risk:threat</button>,
@@ -317,8 +353,8 @@
                         <span class="fv-bar" style:width="{Math.max(2, share * 100)}%"></span>
                         <span class="fv-key truncate" title={shown}>{shown}</span>
                         <span class="fv-count tabular">{compact(v.count)}</span>
-                        <button class="fv-act" onclick={() => addTerm(`${def.aliases[0] ?? def.name}:${/[\s():"]/.test(v.key) ? `"${v.key}"` : v.key}`)} aria-label="Filter for {v.key}"><Plus size={12} /></button>
-                        <button class="fv-act" onclick={() => addTerm(`${def.aliases[0] ?? def.name}:${/[\s():"]/.test(v.key) ? `"${v.key}"` : v.key}`, true)} aria-label="Filter out {v.key}"><Minus size={12} /></button>
+                        <button class="fv-act" onclick={() => addTerm(`${def.aliases[0] ?? def.name}:${/[\s():"]/.test(v.key) ? `"${v.key}"` : v.key}`)} aria-label="Filter for {shown}"><Plus size={12} /></button>
+                        <button class="fv-act" onclick={() => addTerm(`${def.aliases[0] ?? def.name}:${/[\s():"]/.test(v.key) ? `"${v.key}"` : v.key}`, true)} aria-label="Filter out {shown}"><Minus size={12} /></button>
                       </div>
                     {:else}<div class="muted fmeta">No values in these events.</div>{/each}
                   {:else}<div class="skeleton" style="height:90px;margin:4px 0"></div>{/if}
@@ -348,7 +384,7 @@
           </thead>
           <tbody>
             {#each hits as hit (hit.id + hit.index)}
-              <tr class="clickable" class:fresh={hit.source._fresh} class:selected={selected?.id === hit.id} onclick={() => (selected = hit)} use:opens={() => (selected = hit)}>
+              <tr class="clickable" class:fresh={hit.source._fresh} class:selected={selected?.id === hit.id} use:opens={() => (selected = hit)}>
                 {#each columns as c (c)}
                   {@const v = value(hit, c)}
                   <td class:nowrap={c === '@timestamp'}>
@@ -363,13 +399,13 @@
                     {:else if c === 'bite.registrable_domain'}<DomainLink domain={v as string} />
                     {:else if Array.isArray(v)}
                       <span class="cells">
-                        {#each v.slice(0, 4) as item (item)}
-                          <span class="badge" class:risk-chip={c === 'bite.risk'}>{c.startsWith('bite.client') ? who(item, c) : (c === 'bite.risk' || c === 'bite.purpose' || c === 'bite.service') ? taxon(item) : item}</span>
+                        {#each v.slice(0, 4) as item, i (i)}
+                          <span class="badge" class:risk-chip={c === 'bite.risk'}>{isIdentity(c) ? who(item, c) : (c === 'bite.risk' || c === 'bite.purpose' || c === 'bite.service') ? taxon(item) : item}</span>
                         {/each}
                         {#if v.length > 4}<span class="faint">+{v.length - 4}</span>{/if}
                       </span>
                     {:else if v === undefined || v === null || v === ''}<span class="faint">–</span>
-                    {:else if c.startsWith('bite.client')}<EntityLink field={c} value={String(v)} size="sm" />
+                    {:else if isIdentity(c)}<EntityLink field={c} value={String(v)} size="sm" />
                     {:else}<span class="truncate">{String(v)}</span>{/if}
                   </td>
                 {/each}
@@ -390,7 +426,7 @@
 
 <Modal bind:open={saveOpen} title="Save this search" subtitle="Pinned searches appear under the search bar.">
   <div class="stack">
-    <label class="field"><span class="field-label">Name</span><input class="input" bind:value={saveName} /></label>
+    <label class="field"><span class="field-label">Name</span><input class="input" bind:value={saveName} placeholder="Name this search" /></label>
     <div class="field"><span class="field-label">Query</span><code class="code">{maskQuery(query) || '(everything)'}</code></div>
     <label class="checkbox"><input type="checkbox" bind:checked={saveShared} /> Share with everyone who can read dashboards</label>
   </div>
@@ -403,6 +439,8 @@
 <style>
   .query-area { margin-bottom: 16px; }
   .saved-chip { padding-right: 4px; }
+  .saved-row { display: flex; align-items: center; gap: 4px; }
+  .saved-row .menu-item { flex: 1; min-width: 0; }
   .saved-chip a { display: inline-flex; align-items: center; gap: 5px; color: inherit; }
   .saved-chip a:hover { text-decoration: none; }
   .chip-x { display: grid; place-items: center; width: 18px; height: 18px; border: 0; border-radius: 99px; background: none;

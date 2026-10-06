@@ -14,12 +14,13 @@ function ensure(): HTMLDivElement {
 
 export function tip(node: HTMLElement, text: string | null | undefined) {
   let current = text;
-  // The tip names an element that has no name of its own, such as an icon
-  // button or a collapsed sidebar link, and keeps naming it as it changes
+  // The tip names an element that shows no name of its own, such as an icon
+  // button or a collapsed sidebar link, and keeps naming it as it changes;
+  // one whose text can be seen keeps that text as its name
   const names = !node.getAttribute('aria-label');
   function label(value: string | null | undefined) {
     if (!names) return;
-    if (value) node.setAttribute('aria-label', value);
+    if (value && !node.innerText?.trim()) node.setAttribute('aria-label', value);
     else node.removeAttribute('aria-label');
   }
   function show() {

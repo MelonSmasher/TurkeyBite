@@ -36,8 +36,10 @@ async def create_user(args) -> int:
 
     from datetime import datetime, timezone
 
+    from sqlalchemy import update
+
     from . import audit, db
-    from .models import User
+    from .models import ApiKey, User
     from .security import passwords, rbac, sessions
     if args.role is not None and args.role not in rbac.ROLES:
         print(f'role is one of {", ".join(rbac.ROLES)}', file=sys.stderr)
@@ -63,15 +65,25 @@ async def create_user(args) -> int:
             user.role = args.role
         user.password_hash = passwords.hash_password(password)
         user.password_changed_at = datetime.now(timezone.utc)
+        notes = []
         if args.reset_mfa:
             # For someone who lost their authenticator, and with it the only way in
             user.totp_enabled = False
             user.totp_secret_enc = None
             user.totp_last_step = None
-        user.disabled = False
-        user.disabled_reason = None
+        if user.disabled and not args.enable:
+            notes.append('it stays disabled; add --enable to turn it back on')
+        elif user.disabled:
+            user.disabled = False
+            user.disabled_reason = None
         user.locked_until = None
         user.failed_logins = 0
+        if args.revoke_keys and not created:
+            # A reset after a compromise: the keys may be compromised too
+            revoked = (await session.execute(
+                update(ApiKey).where(ApiKey.user_id == user.id, ApiKey.revoked_at.is_(None))
+                .values(revoked_at=datetime.now(timezone.utc)))).rowcount
+            notes.append(f'{revoked} API key{"s" if revoked != 1 else ""} revoked')
         await session.flush()
         if not created:
             # A reset password is often a reset because the old one leaked
@@ -79,12 +91,57 @@ async def create_user(args) -> int:
         audit.record(session, 'user.create' if created else 'user.password_reset',
                      actor_type='cli', actor_name='tbconsole create-user', target_type='user',
                      target_id=user.id, target_label=user.username,
-                     details={'role': user.role, 'mfa_reset': bool(args.reset_mfa)})
+                     details={'role': user.role, 'mfa_reset': bool(args.reset_mfa),
+                              'keys_revoked': bool(args.revoke_keys), 'enabled': bool(args.enable)})
         role = user.role
         await session.commit()
     await db.dispose()
-    print(f'{args.username} is a local {role}' + ('.' if created else '; its sessions have ended.'))
+    print(f'{args.username} is a local {role}' + ('.' if created else '; its sessions have ended')
+          + ''.join(f'; {n}' for n in notes) + ('' if created else '.'))
     return 0
+
+
+async def reencrypt(args) -> int:
+    """Re-encrypts what the database holds under the current secret key, so the
+    previous one can be removed from TBCONSOLE_SECRET_KEY_PREVIOUS."""
+    from sqlalchemy import select
+
+    from . import db, settings_store
+    from .models import User, Webhook
+    from .security import crypto
+
+    done, unreadable = 0, []
+
+    def again(token: str | None, what: str) -> str | None:
+        nonlocal done
+        if not token:
+            return token
+        try:
+            value = crypto.encrypt(crypto.decrypt(token))
+        except crypto.SecretUnreadable:
+            unreadable.append(what)
+            return token
+        done += 1
+        return value
+
+    async with db.sessionmaker()() as session:
+        for user in (await session.execute(select(User).where(User.totp_secret_enc.is_not(None)))).scalars():
+            user.totp_secret_enc = again(user.totp_secret_enc, f'two-factor secret of {user.username}')
+        for hook in (await session.execute(select(Webhook))).scalars():
+            hook.secret_enc = again(hook.secret_enc, f'signing secret of webhook {hook.name}')
+            hook.url_enc = again(hook.url_enc, f'URL of webhook {hook.name}')
+            hook.headers_enc = again(hook.headers_enc, f'headers of webhook {hook.name}')
+        ldap = await settings_store.get(session, 'ldap')
+        if ldap.get('bind_password_enc'):
+            ldap['bind_password_enc'] = again(ldap['bind_password_enc'], 'LDAP bind password')
+            await settings_store.put(session, 'ldap', ldap, None)
+        await session.commit()
+    await db.dispose()
+    print(f'{done} secrets encrypted under the current key.')
+    for what in unreadable:
+        print(f'Could not read the {what}: it was saved under a key that is no longer configured.',
+              file=sys.stderr)
+    return 1 if unreadable else 0
 
 
 async def run_rollups(args) -> int:
@@ -119,6 +176,12 @@ def main(argv=None) -> int:
     p.add_argument('--password-stdin', action='store_true')
     p.add_argument('--reset-mfa', action='store_true',
                    help='turn off two-factor sign-in, for someone who lost their authenticator')
+    p.add_argument('--enable', action='store_true', help='turn a disabled account back on')
+    p.add_argument('--revoke-keys', action='store_true',
+                   help='revoke every API key the account holds, after a compromise')
+
+    sub.add_parser('reencrypt', help='encrypt every stored secret again under the current '
+                                     'TBCONSOLE_SECRET_KEY, to finish changing it')
 
     p = sub.add_parser('rollups', help='recount the daily statistics')
     p.add_argument('--backfill', action='store_true')
@@ -127,7 +190,9 @@ def main(argv=None) -> int:
     p.add_argument('action', choices=['seed', 'feed', 'sink'])
     p.add_argument('--yes-replace-everything', action='store_true',
                    help='seed: deletes every tb-index-* index and empties the console\'s '
-                        'database first; feed: writes made-up events to the cluster')
+                        'database first')
+    p.add_argument('--yes-write-events', action='store_true',
+                   help='feed: writes made-up events to the cluster')
     p.add_argument('--days', type=int, default=21)
     p.add_argument('--per-day', type=int, default=12000)
     p.add_argument('--sink', default='http://127.0.0.1:8799',
@@ -142,6 +207,8 @@ def main(argv=None) -> int:
         return 0
     if args.command == 'create-user':
         return asyncio.run(create_user(args))
+    if args.command == 'reencrypt':
+        return asyncio.run(reencrypt(args))
     if args.command == 'rollups':
         return asyncio.run(run_rollups(args))
     if args.command == 'demo':
@@ -151,16 +218,17 @@ def main(argv=None) -> int:
             print('The demo is not part of this installation; it is for development.',
                   file=sys.stderr)
             return 2
-        if args.action in ('seed', 'feed') and not args.yes_replace_everything:
+        agreed = args.yes_replace_everything if args.action == 'seed' else args.yes_write_events
+        if args.action in ('seed', 'feed') and not agreed:
             from .config import get_settings
             settings = get_settings()
             what = ('deletes every tb-index-* index on ' + ', '.join(settings.opensearch_urls)
                     + ' and empties the database at ' + settings.database_url.split('@')[-1]
                     if args.action == 'seed' else
                     'writes made-up events to ' + ', '.join(settings.opensearch_urls))
+            flag = '--yes-replace-everything' if args.action == 'seed' else '--yes-write-events'
             print(f'demo {args.action} {what}. It is for a development cluster only. '
-                  'Run it again with --yes-replace-everything if that is what you want.',
-                  file=sys.stderr)
+                  f'Run it again with {flag} if that is what you want.', file=sys.stderr)
             return 2
         if args.action == 'sink':
             import time

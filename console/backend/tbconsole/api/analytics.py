@@ -5,18 +5,21 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import audit
 from ..analysis import engine
 from ..analysis.ruletypes import SEVERITY_RANK
+from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, require, search_client
 from ..models import DailyStat, Finding
 from ..search import fields as F
 from ..search import queries as Q
+from ..search import tbql
 from ..search.client import SearchClient, total
 from ..search.timerange import TimeRange, auto_interval, interval_seconds, iso
 from ..security import rbac
@@ -236,12 +239,22 @@ def _terms(field: str, size: int, sub: dict | None) -> dict:
 
 
 @router.post('/analytics/pivot')
-async def pivot(body: PivotBody, _: Principal = Depends(require(rbac.EVENTS_READ)),
-                search: SearchClient = Depends(search_client)) -> dict:
+async def pivot(body: PivotBody, request: Request,
+                principal: Principal = Depends(require(rbac.EVENTS_READ)),
+                search: SearchClient = Depends(search_client),
+                db: AsyncSession = Depends(get_session)) -> dict:
     """Counts or distinct counts, by up to two fields, or over time."""
     tr = time_range(body.start, body.end)
     rows = _resolve(body.rows, 'Rows')
     split = _resolve(body.split, 'Split')
+    # A pivot that ranks people, or narrows to someone, is a look at them
+    by_people = [f for f in (rows, split) if f and (f == F.ENTITY or F.BY_NAME[f].identity)]
+    if by_people or get_settings().audit_all_searches or tbql.names_someone(body.query):
+        if audit.look(db, 'analytics.pivot', principal=principal, request=request,
+                      key=f'{body.query}|{rows}|{split}|{body.start}|{body.end}',
+                      target_type=by_people[0] if by_people else None,
+                      details={'query': body.query[:2000], 'rows': rows, 'split': split, **tr.public()}):
+            await db.commit()
     metric_field = _resolve(body.metric_field, 'Metric') if body.metric == 'unique' else None
     if body.metric == 'unique' and (not metric_field or metric_field == F.ENTITY):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Choose a field to count distinct values of')

@@ -90,17 +90,35 @@ def resolve(value: str | None, now: datetime, default: str) -> datetime:
                 moment = moment - delta if sign == '-' else moment + delta
             except OverflowError as e:
                 raise RangeError(f'{value!r} reaches too far') from e
+            if not EARLIEST <= moment.year <= LATEST:
+                raise RangeError(f'{value!r} reaches too far')
         if rounding:
             zone = ZoneInfo(_zone.get())
             moment = _round_down(moment.astimezone(zone), rounding).astimezone(timezone.utc)
         return moment
     try:
-        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except ValueError as e:
+        return parse_moment(value)
+    except RangeError as e:
         raise RangeError(f'{value!r} is neither a time nor a relative time such as now-24h') from e
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc)
+
+
+# The years a time may fall in: anything else is a typing slip, and near the
+# ends of what Python can hold, arithmetic on it overflows
+EARLIEST, LATEST = 1970, 2200
+
+
+def parse_moment(value: str) -> datetime:
+    """An ISO 8601 time in UTC; one without a zone is taken as UTC."""
+    try:
+        moment = datetime.fromisoformat(str(value).strip().replace('Z', '+00:00'))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as e:
+        raise RangeError(f'{value!r} is not a time') from e
+    if not EARLIEST <= moment.year <= LATEST:
+        raise RangeError(f'{value!r} is outside the years {EARLIEST} to {LATEST}')
+    return moment
 
 
 @dataclass(frozen=True)

@@ -32,3 +32,42 @@ describe('privacy masking', () => {
                                                     tags: [alias('ava')] });
   });
 });
+
+describe('privacy masking, round two', () => {
+  it('masks grouped values and field names in any case', async () => {
+    const { maskQueryValues } = await import('./mask');
+    expect(maskQueryValues('User:noah.kim')).toBe(`User:${alias('noah.kim')}`);
+    expect(maskQueryValues('user:(noah.kim OR "ava chen") AND risk:threat'))
+      .toBe(`user:(${alias('noah.kim')} OR "${alias('ava chen')}") AND risk:threat`);
+  });
+
+  it('masks a name stored cut short wherever its whole appears', async () => {
+    const { maskPrefixes } = await import('./mask');
+    expect(maskPrefixes('Seen by averyveryverylongname.example today', ['averyvery']))
+      .toBe(`Seen by ${alias('averyveryverylongname.example')} today`);
+  });
+
+  it('copies a document that is a proxy', () => {
+    const doc = new Proxy({ bite: { client_user: 'ava' } }, {});
+    expect(maskDocument(doc).bite.client_user).toBe(alias('ava'));
+  });
+});
+
+describe('addresses and queries', () => {
+  it('hides text in an address and gets it back', async () => {
+    const { hide, reveal } = await import('./urlsafe');
+    for (const text of ['noah.kim', 'user:"ava chen" AND risk:threat', 'zoë', '']) {
+      expect(reveal(hide(text))).toBe(text);
+      expect(hide(text)).not.toContain('noah');
+    }
+    expect(reveal('plain')).toBe('plain');
+  });
+
+  it('quotes a value as the server would', async () => {
+    const { quoteValue } = await import('./components/tbql');
+    expect(quoteValue('lab-12')).toBe('lab-12');
+    expect(quoteValue('*')).toBe('"*"');
+    expect(quoteValue('ava chen')).toBe('"ava chen"');
+    expect(quoteValue('OR')).toBe('"OR"');
+  });
+});

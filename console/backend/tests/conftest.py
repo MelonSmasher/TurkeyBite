@@ -62,10 +62,11 @@ async def clean():
         names = ', '.join(t.name for t in reversed(db.Base.metadata.sorted_tables))
         await session.execute(text(f'TRUNCATE {names} RESTART IDENTITY CASCADE'))
         await session.commit()
-    from tbconsole import settings_store
-    from tbconsole.api import auth
+    from tbconsole import audit, settings_store
+    from tbconsole.security import limits
     settings_store.forget_cache()
-    auth._failures.clear()
+    limits.reset()
+    audit._looks.clear()
     yield
     await db.dispose()
 

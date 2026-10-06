@@ -1,0 +1,15 @@
+# The repository's rules are for TurkeyBite's Python packages and each
+# install's own files; some would hide the console's source (lib/, a
+# docker-compose.yml). Here everything is source except what follows.
+!lib/
+!lib64/
+!build/
+!parts/
+!var/
+!docker-compose.yml
+
+frontend/node_modules/
+frontend/dist/
+backend/tbconsole/static/
+console.env
+certs/

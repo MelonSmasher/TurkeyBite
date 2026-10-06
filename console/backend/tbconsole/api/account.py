@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from .. import audit
 from ..db import get_session
 from ..deps import Principal, session_principal
 from ..models import UserSession
-from ..security import crypto, passwords, sessions, totp
+from ..security import crypto, limits, passwords, sessions, totp
 from .common import parse_uuid, ts, user_out
 
 router = APIRouter(prefix='/account', tags=['account'])
@@ -34,9 +34,6 @@ class PreferencesBody(BaseModel):
     privacy_mode: bool | None = None
     sidebar_collapsed: bool | None = None
     columns: list[str] | None = None
-    # When the browser made the change, in milliseconds: an older save
-    # arriving late, from another tab, does not undo a newer one
-    updated_at: int | None = Field(None, ge=0)
 
 
 class PasswordBody(BaseModel):
@@ -91,32 +88,48 @@ async def update_preferences(body: PreferencesBody,
     if data.get('density') and data['density'] not in DENSITIES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f'density is one of {", ".join(DENSITIES)}')
-    if data.get('updated_at') and int(prefs.get('updated_at') or 0) > data['updated_at']:
-        return prefs
+    # Only what was sent changes: a tab that changes the theme cannot put back
+    # a privacy setting another tab has since changed
+    prefs.pop('updated_at', None)
     prefs.update(data)
     user.preferences = prefs
     await db.commit()
     return prefs
 
 
+async def _check_password(db: AsyncSession, request: Request, principal: Principal, user,
+                          password: str, action: str) -> None:
+    """The account's own password, asked again before a sensitive change. A
+    session left open on someone's desk is not a way to guess it: wrong answers
+    count against the same brake as sign-ins."""
+    ip = sessions.client_ip(request)
+    if limits.limited(ip, user.username):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            'Too many wrong passwords. Wait a few minutes and try again.')
+    if not await passwords.verify_async(user.password_hash, password):
+        limits.failed(ip, user.username)
+        audit.record(db, action, principal=principal, request=request,
+                     outcome='failure', details={'reason': 'wrong password'})
+        await db.commit()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The password is not right.')
+
+
 @router.post('/password')
-async def change_password(body: PasswordBody, request: Request,
+async def change_password(body: PasswordBody, request: Request, response: Response,
                           principal: Principal = Depends(session_principal),
                           db: AsyncSession = Depends(get_session)) -> dict:
     _local_only(principal)
     user = await db.merge(principal.user)
-    if not passwords.verify_password(user.password_hash, body.current):
-        audit.record(db, 'account.password', principal=principal, request=request,
-                     outcome='failure', details={'reason': 'wrong current password'})
-        await db.commit()
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The current password is not right.')
+    await _check_password(db, request, principal, user, body.current, 'account.password')
     problems = passwords.password_problems(body.new, user.username)
     if problems:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, ' '.join(problems))
-    user.password_hash = passwords.hash_password(body.new)
-    # Every other session ends, so a password someone else knew stops working
-    # everywhere; the session that changed it stays signed in
-    await sessions.end_all(db, user.id, keep=principal.session_id)
+    user.password_hash = await passwords.hash_async(body.new)
+    # Every session from before ends, so a password someone else knew stops
+    # working everywhere; this browser gets a new session in its place
+    user.password_changed_at = datetime.now(timezone.utc)
+    await sessions.end_all(db, user.id)
+    await sessions.create(db, user, request, response, 'password')
     audit.record(db, 'account.password', principal=principal, request=request)
     await db.commit()
     return {'ok': True}
@@ -133,11 +146,7 @@ async def mfa_setup(body: PasswordOnly, request: Request,
     """
     _local_only(principal)
     user = await db.merge(principal.user)
-    if not passwords.verify_password(user.password_hash, body.password):
-        audit.record(db, 'account.mfa_setup', principal=principal, request=request,
-                     outcome='failure', details={'reason': 'wrong password'})
-        await db.commit()
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The password is not right.')
+    await _check_password(db, request, principal, user, body.password, 'account.mfa_setup')
     if user.totp_enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             'Two-factor authentication is already on. Turn it off first.')
@@ -157,7 +166,11 @@ async def mfa_enable(body: CodeBody, request: Request,
     user = await db.merge(principal.user)
     if user.totp_enabled or not user.totp_secret_enc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'Start setting it up first.')
-    step = totp.verify(crypto.decrypt(user.totp_secret_enc), body.code, None)
+    try:
+        secret = crypto.decrypt(user.totp_secret_enc)
+    except crypto.SecretUnreadable as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, 'Start setting it up again.') from e
+    step = totp.verify(secret, body.code, None)
     if step is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             'That code is not right. Check the time on your phone and try again.')
@@ -174,8 +187,7 @@ async def mfa_disable(body: DisableMfaBody, request: Request,
                       db: AsyncSession = Depends(get_session)) -> dict:
     _local_only(principal)
     user = await db.merge(principal.user)
-    if not passwords.verify_password(user.password_hash, body.password):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The password is not right.')
+    await _check_password(db, request, principal, user, body.password, 'account.mfa_disabled')
     user.totp_enabled = False
     user.totp_secret_enc = None
     user.totp_last_step = None

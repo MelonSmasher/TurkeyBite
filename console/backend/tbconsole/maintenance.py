@@ -19,7 +19,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import audit, settings_store
@@ -58,48 +58,79 @@ async def prune(db: AsyncSession, now: datetime | None = None) -> dict:
     return removed
 
 
-async def recheck_directory(db: AsyncSession, now: datetime | None = None) -> dict:
-    """Looks up again every directory account that can still act. Returns counts."""
+# A recheck that would revoke more than this share of the accounts it looked
+# at, and more than a handful, is more likely a directory or settings mistake
+# than a mass departure: it revokes nobody and says so
+REVOKE_SHARE = 0.2
+REVOKE_FLOOR = 3
+
+
+async def recheck_directory(now: datetime | None = None) -> dict:
+    """Looks up again every directory account that can act, or that the
+    directory disabled and might restore. Returns counts.
+
+    Every look-up is made first, with no transaction open; only if all of them
+    got a clear answer is anything changed, one account at a time."""
     now = now or datetime.now(timezone.utc)
-    counts = {'checked': 0, 'revoked': 0, 'changed': 0, 'restored': 0}
-    cfg = ldap.config_with_defaults(await settings_store.get(db, 'ldap'))
-    if not cfg.get('enabled'):
-        return counts
-    secret = crypto.decrypt(cfg['bind_password_enc']) if cfg.get('bind_password_enc') else ''
-    active_session = select(UserSession.user_id).where(UserSession.expires_at > now)
-    usable_key = select(ApiKey.user_id).where(
-        ApiKey.revoked_at.is_(None), or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now))
-    users = (await db.execute(select(User).where(
-        User.source == 'ldap',
-        or_(User.disabled.is_(False), User.disabled_reason == 'directory'),
-        or_(User.id.in_(active_session), User.id.in_(usable_key))))).scalars().all()
-    for user in users:
-        identity = await asyncio.to_thread(ldap.recheck, cfg, secret, user.username)
-        counts['checked'] += 1
-        user.directory_checked_at = now
-        if identity is None or identity.role is None:
-            if not user.disabled:
-                user.disabled = True
-                user.disabled_reason = 'directory'
-                await db.execute(delete(UserSession).where(UserSession.user_id == user.id))
-                audit.record(db, 'user.directory_revoked', actor_name='TurkeyBite Console',
-                             target_type='user', target_id=user.id, target_label=user.username,
-                             details={'reason': 'not in the directory' if identity is None
-                                      else 'no group grants a role'})
-                counts['revoked'] += 1
-            continue
-        if user.disabled and user.disabled_reason == 'directory':
-            user.disabled = False
-            user.disabled_reason = None
-            counts['restored'] += 1
-        if identity.role != user.role:
-            audit.record(db, 'user.directory_role', actor_name='TurkeyBite Console',
-                         target_type='user', target_id=user.id, target_label=user.username,
-                         details={'from': user.role, 'to': identity.role})
-            user.role = identity.role
-            counts['changed'] += 1
-        user.ldap_dn = identity.dn
-    await db.commit()
+    counts = {'checked': 0, 'revoked': 0, 'changed': 0, 'restored': 0, 'held_back': 0}
+    async with database.sessionmaker()() as db:
+        cfg = ldap.config_with_defaults(await settings_store.get(db, 'ldap'))
+        if not cfg.get('enabled'):
+            return counts
+        secret = crypto.decrypt(cfg['bind_password_enc']) if cfg.get('bind_password_enc') else ''
+        active_session = select(UserSession.user_id).where(UserSession.expires_at > now)
+        usable_key = select(ApiKey.user_id).where(
+            ApiKey.revoked_at.is_(None), or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now))
+        accounts = [(u.id, u.username, u.ldap_dn) for u in (await db.execute(select(User).where(
+            User.source == 'ldap',
+            or_(User.disabled_reason == 'directory',
+                and_(User.disabled.is_(False),
+                     or_(User.id.in_(active_session), User.id.in_(usable_key))))))).scalars()]
+    verdicts = []
+    for user_id, username, dn in accounts:
+        verdicts.append((user_id, await asyncio.to_thread(ldap.recheck, cfg, secret, dn, username)))
+    counts['checked'] = len(verdicts)
+    losing = [v for v in verdicts if v[1] is None or v[1].role is None]
+    hold_back = len(losing) > REVOKE_FLOOR and len(losing) > REVOKE_SHARE * len(verdicts)
+    if hold_back:
+        log.warning('directory recheck would revoke %s of %s accounts; revoking none. '
+                    'Check the LDAP settings.', len(losing), len(verdicts))
+        counts['held_back'] = len(losing)
+    for user_id, identity in verdicts:
+        async with database.sessionmaker()() as db:
+            user = await db.get(User, user_id)
+            if user is None:
+                continue
+            user.directory_checked_at = now
+            if identity is None or identity.role is None:
+                if not user.disabled and not hold_back:
+                    user.disabled = True
+                    user.disabled_reason = 'directory'
+                    await db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+                    audit.record(db, 'user.directory_revoked', actor_name='TurkeyBite Console',
+                                 actor_type='system', target_type='user', target_id=user.id,
+                                 target_label=user.username,
+                                 details={'reason': 'not in the directory, or no longer allowed to '
+                                                    'sign in' if identity is None
+                                          else 'no group grants a role'})
+                    counts['revoked'] += 1
+            else:
+                if user.disabled and user.disabled_reason == 'directory':
+                    user.disabled = False
+                    user.disabled_reason = None
+                    audit.record(db, 'user.directory_restored', actor_name='TurkeyBite Console',
+                                 actor_type='system', target_type='user', target_id=user.id,
+                                 target_label=user.username)
+                    counts['restored'] += 1
+                if identity.role != user.role:
+                    audit.record(db, 'user.directory_role', actor_name='TurkeyBite Console',
+                                 actor_type='system', target_type='user', target_id=user.id,
+                                 target_label=user.username,
+                                 details={'from': user.role, 'to': identity.role})
+                    user.role = identity.role
+                    counts['changed'] += 1
+                user.ldap_dn = identity.dn
+            await db.commit()
     return counts
 
 
@@ -119,17 +150,16 @@ class Maintenance:
             removed = await prune(db)
             if any(removed.values()):
                 log.info('maintenance removed %s', removed)
-            now = datetime.now(timezone.utc)
-            due = timedelta(minutes=settings.ldap_recheck_minutes)
-            if self._last_directory is None or now - self._last_directory >= due:
-                try:
-                    counts = await recheck_directory(db, now)
-                    self._last_directory = now
-                    if counts['revoked'] or counts['changed'] or counts['restored']:
-                        log.info('directory recheck: %s', counts)
-                except ldap.LdapError as e:
-                    await db.rollback()
-                    log.warning('directory recheck could not reach the directory: %s', e)
+        now = datetime.now(timezone.utc)
+        due = timedelta(minutes=settings.ldap_recheck_minutes)
+        if self._last_directory is None or now - self._last_directory >= due:
+            try:
+                counts = await recheck_directory(now)
+                self._last_directory = now
+                if counts['revoked'] or counts['changed'] or counts['restored'] or counts['held_back']:
+                    log.info('directory recheck: %s', counts)
+            except ldap.LdapError as e:
+                log.warning('directory recheck got no clear answer, so changed nothing: %s', e)
         self.last_run = datetime.now(timezone.utc)
 
     async def loop(self) -> None:

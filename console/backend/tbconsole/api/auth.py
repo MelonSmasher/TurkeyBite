@@ -11,13 +11,11 @@ account for fifteen minutes, and an address that fails often is slowed down.
 """
 
 import asyncio
-import time
-from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import __version__, audit, settings_store
@@ -25,55 +23,12 @@ from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, current_principal, optional_principal, origin_ok
 from ..models import User, UserSession
-from ..security import crypto, ldap, passwords, sessions, totp
+from ..security import crypto, ldap, limits, passwords, sessions, totp
 from .common import user_out
 
 router = APIRouter(prefix='/auth', tags=['auth'])
 
 GENERIC = 'Invalid username or password.'
-
-# Failed sign-ins, in memory: a coarse brake in front of the per-account
-# lockout, which lives in the database and holds across replicas. Counted per
-# address and username, so one person guessing cannot lock out everyone who
-# shares their address (a school behind one NAT, or every user when a proxy's
-# address is not trusted to forward the real one), with a looser limit per
-# address on its own against someone trying many usernames.
-_WINDOW = 300
-_PAIR_LIMIT = 10
-_IP_LIMIT = 100
-_MAX_TRACKED = 20000
-_failures: dict[tuple[str, str], deque] = defaultdict(deque)
-
-
-def _recent(key: tuple[str, str]) -> int:
-    window = _failures.get(key)
-    if not window:
-        return 0
-    cutoff = time.monotonic() - _WINDOW
-    while window and window[0] < cutoff:
-        window.popleft()
-    if not window:
-        del _failures[key]
-    return len(window)
-
-
-def _limited(ip: str | None, username: str) -> bool:
-    if not ip:
-        return False
-    return (_recent((ip, username.lower())) >= _PAIR_LIMIT
-            or _recent((ip, '')) >= _IP_LIMIT)
-
-
-def _failed(ip: str | None, username: str) -> None:
-    if not ip:
-        return
-    if len(_failures) > _MAX_TRACKED:
-        for key in list(_failures):
-            _recent(key)
-    now = time.monotonic()
-    _failures[(ip, username.lower())].append(now)
-    _failures[(ip, '')].append(now)
-
 
 TOO_MANY = 'Too many failed sign-ins. Wait a few minutes and try again.'
 
@@ -127,7 +82,7 @@ async def _finish(db: AsyncSession, user: User, request: Request, response: Resp
 
 async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
                 user: User | None = None) -> None:
-    _failed(sessions.client_ip(request), username)
+    limits.failed(sessions.client_ip(request), username)
     settings = get_settings()
     if user is not None and user.source == 'local':
         user.failed_logins += 1
@@ -136,6 +91,9 @@ async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
                 minutes=settings.login_lockout_minutes)
             user.failed_logins = 0
             reason += '; account locked'
+        # The count is committed on its own first, so nothing about the audit
+        # row can undo it
+        await db.commit()
     audit.record(db, 'auth.login', actor_name=username, request=request, outcome='failure',
                  details={'reason': reason})
     await db.commit()
@@ -146,28 +104,28 @@ async def login(body: LoginBody, request: Request, response: Response,
                 db: AsyncSession = Depends(get_session)) -> dict:
     _same_origin(request)
     username = body.username.strip()
-    if _limited(sessions.client_ip(request), username):
+    if limits.limited(sessions.client_ip(request), username):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
     user = (await db.execute(select(User).where(
         func.lower(User.username) == username.lower()))).scalar_one_or_none()
 
     if user is not None and user.source == 'service':
-        passwords.verify_password(None, body.password)
+        await passwords.verify_async(None, body.password)
         await _fail(db, request, username, 'service accounts cannot sign in')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
 
     if user is not None and user.source == 'local':
         now = datetime.now(timezone.utc)
         if user.locked_until and user.locked_until > now:
-            passwords.verify_password(None, body.password)
+            await passwords.verify_async(None, body.password)
             await _fail(db, request, username, 'account locked', None)
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
-        if not passwords.verify_password(user.password_hash, body.password) or user.disabled:
+        if not await passwords.verify_async(user.password_hash, body.password) or user.disabled:
             await _fail(db, request, username, 'wrong password' if not user.disabled
                         else 'account disabled', user)
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
         if passwords.needs_rehash(user.password_hash):
-            user.password_hash = passwords.hash_password(body.password)
+            user.password_hash = await passwords.hash_async(body.password)
         if user.totp_enabled:
             await db.commit()
             return {'ok': False, 'mfa_required': True, 'token': sessions.mfa_token(user)}
@@ -175,7 +133,7 @@ async def login(body: LoginBody, request: Request, response: Response,
 
     cfg, bind_password = await _ldap_config(db)
     if not cfg.get('enabled'):
-        passwords.verify_password(None, body.password)
+        await passwords.verify_async(None, body.password)
         await _fail(db, request, username, 'no such local account and LDAP is off')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
     try:
@@ -198,6 +156,19 @@ async def login(body: LoginBody, request: Request, response: Response,
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC) from e
 
     if user is None:
+        # People may sign in with a name other than the one the console keeps
+        # (an email address for a sAMAccountName): find them by their entry
+        user = (await db.execute(select(User).where(User.source == 'ldap', or_(
+            User.ldap_dn == identity.dn,
+            func.lower(User.username) == identity.username.lower())))).scalars().first()
+    if user is None:
+        taken = (await db.execute(select(User.id).where(
+            func.lower(User.username) == identity.username.lower()))).first()
+        if taken:
+            await _fail(db, request, username, 'a local or service account has the directory name')
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                'A console account already has your directory name. Ask an '
+                                'administrator to rename it.')
         user = User(username=identity.username, source='ldap', role=identity.role,
                     display_name=identity.display_name, email=identity.email,
                     ldap_dn=identity.dn, preferences={},
@@ -229,7 +200,10 @@ async def login_mfa(body: MfaBody, request: Request, response: Response,
     ip = sessions.client_ip(request)
     parsed = sessions.read_mfa_token(body.token)
     user = await db.get(User, parsed[0]) if parsed else None
-    if _limited(ip, user.username if user else ''):
+    # One token, one session: a sign-in completed since it was issued spends it
+    if user is not None and user.last_login_at and user.last_login_at.timestamp() >= parsed[2]:
+        user = None
+    if limits.limited(ip, user.username if user else ''):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
     fingerprint = (user.password_hash or '')[-16:] if user else ''
     now = datetime.now(timezone.utc)
@@ -237,10 +211,16 @@ async def login_mfa(body: MfaBody, request: Request, response: Response,
     # here too, or the five-minute token would allow guessing past it
     if (user is None or not user.totp_enabled or user.disabled or parsed[1] != fingerprint
             or not user.totp_secret_enc or (user.locked_until and user.locked_until > now)):
-        _failed(ip, user.username if user else '')
+        limits.failed(ip, user.username if user else '')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                             'That sign-in has expired. Start again.')
-    step = totp.verify(crypto.decrypt(user.totp_secret_enc), body.code, user.totp_last_step)
+    try:
+        secret = crypto.decrypt(user.totp_secret_enc)
+    except crypto.SecretUnreadable as e:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'Your second factor was saved under a secret key the console no longer '
+                            'has. An administrator can reset it with create-user --reset-mfa.') from e
+    step = totp.verify(secret, body.code, user.totp_last_step)
     if step is None:
         await _fail(db, request, user.username, 'wrong one-time code', user)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'That code is not right.')

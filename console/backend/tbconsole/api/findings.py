@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
@@ -20,7 +21,7 @@ from ..search import queries as Q
 from ..search.tbql import quote
 from ..security import rbac
 from ..webhooks import service as hooks
-from .common import delivery_out, finding_out, like_escape, parse_uuid, rule_out, ts, user_out
+from .common import delivery_out, finding_out, like_escape, moment_param, parse_uuid, rule_out, ts, user_out
 
 router = APIRouter(prefix='/findings', tags=['findings'])
 
@@ -94,13 +95,7 @@ async def list_findings(
     elif assignee:
         stmt = stmt.where(Finding.assignee_id == parse_uuid(assignee, 'That user'))
     if since:
-        try:
-            moment = datetime.fromisoformat(since.replace('Z', '+00:00'))
-        except ValueError as e:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'since is a time') from e
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=timezone.utc)
-        stmt = stmt.where(Finding.last_seen >= moment)
+        stmt = stmt.where(Finding.last_seen >= moment_param(since, 'since'))
     if q and q.strip():
         text_ = q.strip()[:200]
         like = '%' + like_escape(text_) + '%'
@@ -160,6 +155,12 @@ async def stats(days: int = 14, _: Principal = Depends(require(rbac.FINDINGS_REA
     }
 
 
+def _entity(finding: Finding) -> str | None:
+    """Who a finding is about, whole: a very long value is stored cut short,
+    with the whole of it kept in the evidence."""
+    return (finding.evidence or {}).get('entity_full') or finding.entity_value
+
+
 class Reopened(Exception):
     """Reopening would make a second open finding for the same rule and entity."""
 
@@ -196,7 +197,7 @@ async def get_finding(finding_id: str, _: Principal = Depends(require(rbac.FINDI
     out['rule'] = rule_out(rule) if rule else None
     out['related'] = [finding_out(f) for f in related]
     if finding.entity_field and finding.entity_value:
-        out['entity_query'] = Q.entity_term(finding.entity_field, finding.entity_value)
+        out['entity_query'] = Q.entity_term(finding.entity_field, _entity(finding))
     return out
 
 
@@ -284,7 +285,14 @@ async def update_finding(finding_id: str, body: FindingPatch, request: Request,
                             f'F-{e.number} is already open for the same rule and entity; '
                             'work on that one instead.') from e
     await _announce(db, finding, changes)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as e:
+        # The rule opened a new finding for the same thing a moment ago
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'The rule has just opened a newer finding for the same thing; '
+                            'work on that one instead.') from e
     await db.refresh(finding)
     return finding_out(finding)
 
@@ -306,7 +314,13 @@ async def bulk_update(body: BulkBody, request: Request,
         if changes:
             changed += 1
             await _announce(db, finding, changes)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as e:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'A rule has just opened a newer finding for one of these; '
+                            'reload and try again.') from e
     return {'updated': changed, 'skipped': skipped}
 
 
@@ -340,7 +354,7 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
         if not finding.entity_field or finding.entity_value is None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 'This finding is not about one person or machine.')
-        parts.append(Q.entity_term(finding.entity_field, finding.entity_value))
+        parts.append(Q.entity_term(finding.entity_field, _entity(finding)))
     if body.scope in ('entity_domain', 'domain'):
         domains = [d['key'] for d in (finding.evidence or {}).get('top_domains', [])][:5]
         if not domains:
@@ -352,9 +366,9 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
                  'created_by': principal.user.username, 'created_at': ts(now),
                  'expires_at': ts(now + timedelta(days=body.expires_days)) if body.expires_days else None,
                  'finding': f'F-{finding.number}'}
+    # Exceptions are the rule's own, not part of its shipped definition, so
+    # adding one leaves a built-in rule able to take the next version
     rule.exceptions = [*(rule.exceptions or []), exception]
-    if rule.builtin_key:
-        rule.modified = True
     changes = await _apply(db, finding, FindingPatch(status='false_positive',
                                                      note=body.note or f'Exception added: {query}'),
                            principal, request)

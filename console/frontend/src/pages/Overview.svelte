@@ -14,7 +14,7 @@
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { tip } from '../lib/components/tooltip';
   import { ago, compact, dateTime, num, pct, signedPct, taxon } from '../lib/format';
-  import { findingText } from '../lib/privacy';
+  import { exploreLink, findingText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
@@ -54,7 +54,7 @@
   }
 
   function exploreHref(query: string): string {
-    return `/explore${qs({ q: query, from: timeRange.from, to: timeRange.to })}`;
+    return exploreLink({ q: query, from: timeRange.from, to: timeRange.to });
   }
 
   const severityOrder = ['critical', 'high', 'medium', 'low', 'info'];

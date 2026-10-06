@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_USER: tbconsole
           POSTGRES_PASSWORD: tbconsole-ci
@@ -54,7 +54,9 @@ jobs:
             console/backend/requirements.lock
 
       - name: Install
-        run: pip install -r requirements-dev.txt -c requirements.lock
+        run: |
+          pip install --require-hashes -r requirements.lock
+          pip install -r requirements-dev.txt
 
       - name: Test
         run: python -m pytest -q
@@ -97,7 +99,17 @@ jobs:
   image:
     name: Docker image
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: tbconsole
+          POSTGRES_PASSWORD: tbconsole-ci
+          POSTGRES_DB: tbconsole
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U tbconsole" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -107,11 +119,28 @@ jobs:
         run: docker build -t turkeybite-console console
 
       - name: The image is what it should be
-        # Runs as the unprivileged user, has the built app, imports cleanly,
-        # and leaves the demo out
+        # Runs as the unprivileged user, has the built app and leaves the demo out
         run: |
           docker run --rm --entrypoint sh turkeybite-console -c '
             test "$(id -u)" = 10001 &&
             test -f tbconsole/static/index.html &&
-            test ! -e tbconsole/demo.py &&
-            TBCONSOLE_SECRET_KEY=image-check-secret-key-long-enough-0123 python -c "import tbconsole.main"'
+            test ! -e tbconsole/demo.py'
+
+      - name: The image starts, migrates and serves
+        run: |
+          docker run -d --name console --network host \
+            -e TBCONSOLE_SECRET_KEY=image-check-secret-key-long-enough-0123 \
+            -e TBCONSOLE_DATABASE_URL=postgresql+asyncpg://tbconsole@127.0.0.1:5432/tbconsole \
+            -e TBCONSOLE_DATABASE_PASSWORD=tbconsole-ci \
+            -e TBCONSOLE_OPENSEARCH_URLS=http://127.0.0.1:9 \
+            turkeybite-console
+          for i in $(seq 60); do
+            if curl -fsS http://127.0.0.1:8710/readyz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8710/readyz
+          curl -fsS http://127.0.0.1:8710/ | grep -q '<div id="app">'
+
+      - name: Its log, if it did not
+        if: failure()
+        run: docker logs console || true

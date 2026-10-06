@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -15,15 +16,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
 from ..config import get_settings
-from ..db import get_session
-from ..deps import Principal, require, search_client
+from ..db import get_session, sessionmaker
+from ..deps import Principal, _principal, require, search_client
 from ..search import fields as F
 from ..search import queries as Q
 from ..search import tbql
-from ..search.client import SearchClient, total
+from ..search.client import SearchClient, SearchError, total
 from ..search.timerange import auto_interval, interval_seconds, iso
 from ..security import rbac
 from .common import time_range
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=['events'])
 
@@ -93,13 +96,20 @@ def prefix_pattern(prefix: str) -> str:
 
 
 @router.get('/fields/{name}/values')
-async def field_values(name: str, prefix: str = '', start: str | None = None,
-                       _: Principal = Depends(require(rbac.EVENTS_READ)),
-                       search: SearchClient = Depends(search_client)) -> dict:
+async def field_values(name: str, request: Request, prefix: str = '', start: str | None = None,
+                       principal: Principal = Depends(require(rbac.EVENTS_READ)),
+                       search: SearchClient = Depends(search_client),
+                       db: AsyncSession = Depends(get_session)) -> dict:
     """Common values of a field, for autocompleting the search bar."""
     f = F.resolve(name)
     if f is None or not f.aggregatable or f.type not in ('keyword', 'boolean'):
         return {'field': name, 'values': []}
+    if f.identity:
+        # The busiest people or machines are a ranking of them; recorded once
+        # per field and few minutes, not once per keystroke
+        if audit.look(db, 'events.top', principal=principal, request=request, key=f'suggest|{f.name}',
+                      target_type=f.name, details={'suggested': True, 'prefix': prefix[:100]}):
+            await db.commit()
     if f.type == 'boolean':
         return {'field': f.name, 'values': [{'key': 'true'}, {'key': 'false'}]}
     tr = time_range(start, None, 'now-7d')
@@ -159,18 +169,29 @@ async def search_events(body: SearchBody, request: Request,
     })
     # A search that picks someone out is as much a look at them as their
     # profile, so it is recorded the same way; the first page is enough
-    if body.offset == 0 and (get_settings().audit_all_searches or tbql.names_someone(body.query)):
-        audit.record(db, 'events.search', principal=principal, request=request,
-                     details={'query': body.query[:2000], **tr.public()})
-        await db.commit()
+    if body.offset == 0:
+        await _audit_search(db, principal, request, body.query, tr, f'{body.start}|{body.end}')
     return {'total': total(result), 'took': result.get('took'), 'range': tr.public(),
             'hits': [_hit_out(h) for h in result.get('hits', {}).get('hits', [])]}
 
 
+async def _audit_search(db: AsyncSession, principal: Principal, request: Request, query: str,
+                        tr, asked: str) -> None:
+    """A search that picks someone out is as much a look at them as their
+    profile, so it is recorded the same way, whichever endpoint asks it."""
+    if get_settings().audit_all_searches or tbql.names_someone(query):
+        if audit.look(db, 'events.search', principal=principal, request=request,
+                      key=f'{query}|{asked}', details={'query': query[:2000], **tr.public()}):
+            await db.commit()
+
+
 @router.post('/events/histogram')
-async def histogram(body: HistogramBody, _: Principal = Depends(require(rbac.EVENTS_READ)),
-                    search: SearchClient = Depends(search_client)) -> dict:
+async def histogram(body: HistogramBody, request: Request,
+                    principal: Principal = Depends(require(rbac.EVENTS_READ)),
+                    search: SearchClient = Depends(search_client),
+                    db: AsyncSession = Depends(get_session)) -> dict:
     tr = time_range(body.start, body.end)
+    await _audit_search(db, principal, request, body.query, tr, f'{body.start}|{body.end}')
     if body.interval == 'auto':
         seconds, name = auto_interval(tr)
     else:
@@ -210,9 +231,12 @@ async def top_values(body: TopBody, request: Request,
     field_def = F.resolve(body.field)
     if body.field == F.ENTITY or (field_def is not None and field_def.identity):
         # A ranking of people is a look at them, recorded as one
-        audit.record(db, 'events.top', principal=principal, request=request,
-                     target_type=body.field, details={'query': body.query[:2000], **tr.public()})
-        await db.commit()
+        if audit.look(db, 'events.top', principal=principal, request=request,
+                      key=f'{body.field}|{body.query}|{tr.start.isoformat()}',
+                      target_type=body.field, details={'query': body.query[:2000], **tr.public()}):
+            await db.commit()
+    else:
+        await _audit_search(db, principal, request, body.query, tr, f'{body.start}|{body.end}')
     if body.field == F.ENTITY:
         groups = list(F.ENTITY_FIELDS)
         result = await search.search({'size': 0, 'track_total_hits': True,
@@ -334,22 +358,44 @@ async def export(body: ExportBody, request: Request,
 
 # Live tails open at once, per person, in this process
 MAX_LIVE_PER_USER = 3
+# How often a tail checks its caller is still signed in and allowed
+RECHECK = timedelta(seconds=30)
+
+
+async def _still_allowed(request: Request) -> bool:
+    """Whether the session or key that opened a stream still may read events,
+    asked with a database session of its own, held for the question only."""
+    try:
+        async with sessionmaker()() as db:
+            principal = await _principal(request, db)
+            await db.commit()
+    except HTTPException:
+        return False
+    return principal is not None and not principal.mfa_setup_required \
+        and principal.can(rbac.EVENTS_READ)
 _live: dict[str, int] = {}
 
 
 @router.get('/events/live')
 async def live(request: Request, query: str = '',
                principal: Principal = Depends(require(rbac.EVENTS_READ)),
-               search: SearchClient = Depends(search_client)):
+               search: SearchClient = Depends(search_client),
+               db: AsyncSession = Depends(get_session)):
     """New matching events as server-sent events, polled every two seconds.
 
     Each stream holds no database connection, and a person can have only a
-    few open, so tails left open in forgotten tabs cannot starve anyone.
+    few open, so tails left open in forgotten tabs cannot starve anyone. Every
+    half minute the stream checks its caller may still see events, so signing
+    out, or being disabled or revoked, ends it.
     """
     try:
         compiled = tbql.compile(query)
     except tbql.TbqlError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
+    if get_settings().audit_all_searches or tbql.names_someone(query):
+        audit.record(db, 'events.live', principal=principal, request=request,
+                     details={'query': query[:2000]})
+        await db.commit()
     who = str(principal.user.id)
     if _live.get(who, 0) >= MAX_LIVE_PER_USER:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
@@ -369,10 +415,16 @@ async def live(request: Request, query: str = '',
         since = datetime.now(timezone.utc) - timedelta(seconds=30)
         deadline = datetime.now(timezone.utc) + timedelta(minutes=30)
         seen: set[str] = set()
+        checked = datetime.now(timezone.utc)
         yield 'retry: 5000\n\n'
         while datetime.now(timezone.utc) < deadline:
             if await request.is_disconnected():
                 return
+            if datetime.now(timezone.utc) - checked >= RECHECK:
+                checked = datetime.now(timezone.utc)
+                if not await _still_allowed(request):
+                    yield 'event: end\ndata: {"reason": "signed out"}\n\n'
+                    return
             try:
                 result = await search.search({
                     'size': 100, 'sort': [{'@timestamp': {'order': 'asc'}}],
@@ -391,8 +443,11 @@ async def live(request: Request, query: str = '',
                 if len(seen) > 5000:
                     seen.clear()
                 yield ': keep-alive\n\n'
-            except Exception as e:
+            except SearchError as e:
                 yield f'event: problem\ndata: {json.dumps({"message": str(e)})}\n\n'
+            except Exception as e:
+                log.warning('live tail failed: %s', type(e).__name__)
+                yield f'event: problem\ndata: {json.dumps({"message": "the tail hit a problem"})}\n\n'
             await asyncio.sleep(2)
         yield 'event: end\ndata: {}\n\n'
 

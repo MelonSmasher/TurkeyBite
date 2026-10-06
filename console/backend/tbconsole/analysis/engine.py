@@ -7,14 +7,17 @@ gap, the rule's dedup_seconds, decides whether that also sends a reminder.
 Once a finding is resolved or marked a false positive, the next match raises
 a new one.
 
-Rules are claimed with FOR UPDATE SKIP LOCKED and their next run is pushed
-forward before they run, and a rule's row stays locked while it runs, so any
-number of console processes can run the scheduler, each rule runs once per
-interval, and a slow run is never overlapped by the next.
+Rules are claimed with FOR UPDATE SKIP LOCKED and their next run pushed
+forward, and the claim takes a short lease on the rule, so any number of
+console processes can run the scheduler, each rule runs once per interval,
+and a slow run is not overlapped by the next. The lease is a column, not a
+held lock: nothing waits on a rule while its run is asking OpenSearch, and no
+database connection is held for it then.
 
-If runs were missed, because the console was stopped or the cluster was
-down, the next run catches up: it evaluates the windows it missed, up to a
-limit, so events that arrived meanwhile are still looked at.
+A rule remembers the end of the last window it evaluated without error. The
+next run starts from there, so windows missed while the console was stopped,
+or that failed while the cluster was down, are evaluated when it is back, up
+to a limit, and events that arrived late with their own timestamps still are.
 """
 
 import asyncio
@@ -27,8 +30,8 @@ from dataclasses import dataclass
 from datetime import datetime, time as clock, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import delete, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import db as database
@@ -38,7 +41,7 @@ from ..search.client import SearchClient, SearchError
 from ..search.timerange import TimeRange, iso
 from ..webhooks import service as hooks
 from . import defaults
-from .ruletypes import SEVERITY_RANK, Evaluation, Evaluator, Hit, RuleError, RuleSpec
+from .ruletypes import SEVERITY_RANK, BudgetSpent, Evaluation, Evaluator, Hit, RuleError, RuleSpec
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,8 @@ FAILURES_BEFORE_ALERT = 3
 CATCH_UP = timedelta(hours=6)
 CATCH_UP_STEPS = 12
 ENTITY_MAX = 400
+# How long a claimed run may take before another process may start it
+RUN_LEASE = timedelta(minutes=15)
 # pg_advisory_xact_lock key for syncing built-in rules and dashboards
 SYNC_LOCK = 0x7462_0001
 
@@ -109,8 +114,40 @@ def active_since(schedule: dict | None, now: datetime) -> datetime | None:
     day = local.date()
     if lo > hi and local.hour * 60 + local.minute < lo:
         day -= timedelta(days=1)
-    begin = datetime.combine(day, clock(lo // 60, lo % 60), tzinfo=zone)
-    return begin.astimezone(timezone.utc)
+    begin = datetime.combine(day, clock(lo // 60, lo % 60), tzinfo=zone).astimezone(timezone.utc)
+    # A start inside the hour a clock skips (02:30 on the night it springs
+    # forward) reads as later than it is; never begin after now
+    return min(begin, now)
+
+
+def active_until(schedule: dict | None, now: datetime) -> datetime | None:
+    """When the active hours that `now` falls in end. None as for active_since."""
+    if not schedule or not in_schedule(schedule, now):
+        return None
+    lo, hi = _bounds(schedule)
+    if lo == hi:
+        return None
+    zone = _zone(schedule)
+    local = now.astimezone(zone)
+    day = local.date()
+    if lo > hi and local.hour * 60 + local.minute >= lo:
+        day += timedelta(days=1)
+    if hi >= 24 * 60:
+        day, hi = day + timedelta(days=1), 0
+    end = datetime.combine(day, clock(hi // 60, hi % 60), tzinfo=zone).astimezone(timezone.utc)
+    return max(end, now)
+
+
+def _clean(value):
+    """Postgres stores no NUL character, in text or in JSON; a value from the
+    events that holds one would otherwise abort the whole run."""
+    if isinstance(value, str):
+        return value.replace('\x00', '\ufffd')
+    if isinstance(value, dict):
+        return {_clean(k): _clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    return value
 
 
 def dedup_key(rule_id: uuid.UUID, hit: Hit) -> str:
@@ -158,38 +195,49 @@ class RunOutcome:
     duration_ms: int = 0
 
 
-async def _apply_hit(db: AsyncSession, rule: Rule, hit: Hit, now: datetime) -> tuple[bool, Finding]:
-    """Creates or updates the open finding for a hit. Returns (created, finding)."""
+async def _apply_hit(db: AsyncSession, rule: Rule, hit: Hit, now: datetime,
+                     touched: set) -> tuple[bool, Finding]:
+    """Creates or updates the open finding for a hit. Returns (created, finding).
+
+    `touched` holds the findings this run has matched already: a run that
+    catches up on several windows counts one occurrence, not one per window."""
     key = dedup_key(rule.id, hit)
     finding = (await db.execute(select(Finding).where(
         Finding.dedup_key == key, Finding.status.in_(OPEN))
         .with_for_update(of=Finding))).scalar_one_or_none()
-    evidence = hit.evidence()
+    evidence = _clean(hit.evidence())
+    summary = _clean(hit.summary)
     last_event = datetime.fromisoformat(hit.last.replace('Z', '+00:00')) if hit.last else now
-    entity = hit.entity_value
+    entity = _clean(hit.entity_value) if hit.entity_value is not None else None
     if entity is not None and len(str(entity)) > ENTITY_MAX:
-        # The dedup key holds the whole value; the column, a readable part
+        # The column holds a readable part; the evidence keeps the whole
+        # value, which exceptions and links need
+        evidence['entity_full'] = str(entity)
         entity = str(entity)[:ENTITY_MAX - 1] + '…'
     if finding is None:
         first_event = datetime.fromisoformat(hit.first.replace('Z', '+00:00')) if hit.first else now
         finding = Finding(
             rule_id=rule.id, rule_name=rule.name, rule_type=rule.type, category=rule.category,
-            severity=rule.severity, status='new', title=render_title(rule.title_template, rule, hit),
-            summary=hit.summary, entity_field=hit.entity_field, entity_value=entity,
+            severity=rule.severity, status='new',
+            title=_clean(render_title(rule.title_template, rule, hit)),
+            summary=summary, entity_field=hit.entity_field, entity_value=entity,
             dedup_key=key, first_seen=first_event, last_seen=last_event, event_count=hit.count,
             occurrences=1, evidence=dict(evidence, last_notified=iso(now), rule_severity=rule.severity),
             tags=list(rule.tags or []))
         db.add(finding)
         await db.flush()
+        touched.add(finding.id)
         db.add(FindingActivity(finding_id=finding.id, actor_name='TurkeyBite Console',
-                               kind='created', body=hit.summary,
+                               kind='created', body=summary,
                                data={'window': evidence['from'] + '/' + evidence['to'],
                                      'count': hit.count}))
         return True, finding
     finding.last_seen = max(finding.last_seen, last_event)
-    finding.occurrences += 1
+    if finding.id not in touched:
+        finding.occurrences += 1
+        touched.add(finding.id)
     finding.event_count += max(hit.recent, 0)
-    finding.summary = hit.summary
+    finding.summary = summary
     previous = finding.evidence or {}
     # Escalate if the rule's severity was raised since the finding opened, but
     # not merely because an analyst lowered this finding's
@@ -213,17 +261,26 @@ async def _remind_due(finding: Finding, rule: Rule, now: datetime) -> bool:
     return (now - last_at).total_seconds() >= rule.dedup_seconds
 
 
-async def record_hits(db: AsyncSession, rule: Rule, hits: list[Hit], now: datetime) -> tuple[int, int]:
-    """Turns hits into findings and queues their webhooks. Returns (created, updated)."""
-    created = updated = 0
+async def record_hits(db: AsyncSession, rule: Rule, hits: list[Hit], now: datetime,
+                      touched: set | None = None) -> tuple[int, int, int]:
+    """Turns hits into findings and queues their webhooks. Returns (created,
+    updated, failed): a hit that cannot be stored is logged and skipped, so one
+    odd value does not cost the run every other finding."""
+    touched = set() if touched is None else touched
+    created = updated = failed = 0
     for hit in hits:
         try:
-            async with db.begin_nested():
-                is_new, finding = await _apply_hit(db, rule, hit, now)
-        except IntegrityError:
-            # Another process opened the same finding a moment ago; add to it
-            async with db.begin_nested():
-                is_new, finding = await _apply_hit(db, rule, hit, now)
+            try:
+                async with db.begin_nested():
+                    is_new, finding = await _apply_hit(db, rule, hit, now, touched)
+            except IntegrityError:
+                # Another process opened the same finding a moment ago; add to it
+                async with db.begin_nested():
+                    is_new, finding = await _apply_hit(db, rule, hit, now, touched)
+        except SQLAlchemyError:
+            log.exception('rule %s: a hit for %s could not be recorded', rule.id, hit.entity_value)
+            failed += 1
+            continue
         if is_new:
             created += 1
             await hooks.enqueue_finding(db, 'finding.created', finding, rule)
@@ -236,93 +293,134 @@ async def record_hits(db: AsyncSession, rule: Rule, hits: list[Hit], now: dateti
                 sent = await hooks.enqueue_finding(db, 'finding.reminder', finding, rule)
                 finding.evidence = dict(finding.evidence or {}, last_notified=iso(now))
                 db.add(FindingActivity(finding_id=finding.id, actor_name='TurkeyBite Console',
-                                       kind='occurrence', body=hit.summary,
+                                       kind='occurrence', body=_clean(hit.summary),
                                        data={'count': hit.count, 'reminded': bool(sent)}))
-    return created, updated
+    return created, updated, failed
 
 
-def _moments(rule: Rule, now: datetime, delay: timedelta) -> tuple[list[datetime], str]:
-    """The instants to evaluate at: now less the ingest delay, and before it
-    the ends of windows that were missed since the last run, oldest first.
-    Also says what was skipped."""
+def plan(rule: Rule, end: datetime) -> tuple[list[datetime], str]:
+    """The window ends to evaluate this run, oldest first, and a note on any
+    that were given up.
+
+    Windows tile forward from where the rule last got to, so none is skipped
+    and none evaluated twice. Within a window's length of that, one window
+    ending now, as usual. Outside the rule's active hours nothing is evaluated,
+    except the last stretch of hours that ended since it last ran."""
     step = timedelta(seconds=rule.window_seconds)
-    last = rule.last_run_at - delay if rule.last_run_at else None
-    now = now - delay
-    if last is None or last >= now or now - last <= step:
-        return [now], ''
+    last = rule.evaluated_until
     note = ''
-    if now - last > CATCH_UP:
-        note = f'the {_hours(now - last - CATCH_UP)} before the last {_hours(CATCH_UP)} were not checked'
-        last = now - CATCH_UP
-    moments = []
-    moment = last + step
-    while moment < now:
-        moments.append(moment)
-        moment += step
-    if len(moments) > CATCH_UP_STEPS:
-        note = note or f'caught up on the last {CATCH_UP_STEPS} windows only'
-        moments = moments[-CATCH_UP_STEPS:]
-    return moments + [now], note
+    if last is not None and last >= end:
+        return [], ''
+    if last is None or end - last <= step:
+        candidates = [end]
+    else:
+        if end - last > CATCH_UP:
+            note = f'{_hours(end - CATCH_UP - last)} before the last {_hours(CATCH_UP)} were not checked'
+            last = end - CATCH_UP
+        candidates = []
+        moment = last + step
+        while moment < end:
+            candidates.append(moment)
+            moment += step
+        if len(candidates) > CATCH_UP_STEPS:
+            skipped = candidates[-CATCH_UP_STEPS - 1] - last
+            note = note or f'{_hours(skipped)} of missed windows were not checked'
+            candidates = candidates[-CATCH_UP_STEPS:]
+        candidates.append(end)
+    if not rule.schedule:
+        return candidates, note
+    moments: list[datetime] = []
+    previous = rule.evaluated_until
+    for moment in candidates:
+        if in_schedule(rule.schedule, moment):
+            moments.append(moment)
+            previous = moment
+            continue
+        # The active hours ended since the last window: evaluate up to their end
+        if previous is not None and in_schedule(rule.schedule, previous):
+            tail = active_until(rule.schedule, previous)
+            if tail is not None and previous < tail <= moment:
+                moments.append(tail)
+                previous = tail
+    return moments, note
 
 
 def _hours(span: timedelta) -> str:
     hours = span.total_seconds() / 3600
-    return f'{hours:.0f} hour{"s" if round(hours) != 1 else ""}' if hours >= 1 else \
-        f'{span.total_seconds() / 60:.0f} minutes'
+    if hours >= 1:
+        return f'{hours:.0f} hour{"s" if round(hours) != 1 else ""}'
+    return f'{span.total_seconds() / 60:.0f} minutes'
+
+
+def _error_text(e: Exception) -> str:
+    """What went wrong, in words fit for the rule's page and its alerts: never
+    the SQL or the values a database error carries."""
+    if isinstance(e, SQLAlchemyError):
+        return f'the database refused it ({type(getattr(e, "orig", None) or e).__name__})'
+    return f'{type(e).__name__}: {str(e)[:300]}'
 
 
 async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: datetime | None = None,
                    persist: bool = True) -> RunOutcome:
-    """Evaluates one rule at `now`, catching up on missed windows, and records what it found."""
+    """Evaluates one rule's due windows and records what they found.
+
+    Every window is evaluated before anything is written, so no transaction
+    is open while OpenSearch is asked; the windows that succeeded are then
+    recorded together, and the rule's mark moves to the end of the last."""
     now = now or datetime.now(timezone.utc)
     started = time.monotonic()
-    delay = timedelta(seconds=get_settings().rule_ingest_delay_sec)
-    moments, note = _moments(rule, now, delay)
-    moments = [m for m in moments if in_schedule(rule.schedule, m)]
-    outcome = RunOutcome('skipped', reason='outside its active hours')
-    first_start = now - delay - timedelta(seconds=rule.window_seconds)
-    if moments:
-        outcome = RunOutcome('ok', reason=note)
+    end = now - timedelta(seconds=get_settings().rule_ingest_delay_sec)
+    moments, note = plan(rule, end)
+    window = timedelta(seconds=rule.window_seconds)
+    outcome = RunOutcome('ok', reason=note)
+    done: list[tuple[datetime, Evaluation]] = []
+    if not moments:
+        outcome = RunOutcome('skipped', reason='outside its active hours'
+                             if rule.schedule and not in_schedule(rule.schedule, end) else 'nothing new to look at')
+    else:
         evaluator = Evaluator(search)
         spec = spec_of(rule)
-        last_end = rule.last_run_at - delay if rule.last_run_at else None
-        previous = last_end if last_end and last_end < moments[0] else None
-        try:
-            for i, moment in enumerate(moments):
-                recent_since = previous
-                if recent_since is not None and (moment - recent_since).total_seconds() > rule.window_seconds:
-                    recent_since = None
-                # Cut a window that reaches back past the start of active hours
-                start = None
-                if rule.schedule and not in_schedule(rule.schedule, moment - timedelta(
-                        seconds=rule.window_seconds)):
-                    start = active_since(rule.schedule, moment)
-                if i == 0:
-                    full = moment - timedelta(seconds=rule.window_seconds)
-                    first_start = max(start, full) if start else full
-                evaluation: Evaluation = await evaluator.evaluate(spec, moment, recent_since, start)
-                outcome.hits += len(evaluation.hits)
-                if evaluation.status != 'ok':
-                    outcome.status = evaluation.status
-                    outcome.reason = '; '.join(r for r in (outcome.reason, evaluation.reason) if r)
-                elif evaluation.reason:
-                    outcome.reason = '; '.join(r for r in (outcome.reason, evaluation.reason) if r)
-                if persist and evaluation.hits:
-                    created, updated = await record_hits(db, rule, evaluation.hits, now)
-                    outcome.created += created
-                    outcome.updated += updated
-                previous = moment
-        except (RuleError, SearchError) as e:
-            outcome = RunOutcome('error', error=str(e))
-        except Exception as e:  # a rule must never take the scheduler down
-            log.exception('rule %s failed', rule.id)
-            outcome = RunOutcome('error', error=f'{type(e).__name__}: {e}')
-        if outcome.status == 'skipped' and outcome.hits:
-            outcome.status = 'ok'
+        previous = rule.evaluated_until
+        for moment in moments:
+            recent_since = previous if previous is not None and previous < moment \
+                and moment - previous <= window else None
+            start = active_since(rule.schedule, moment - timedelta(seconds=1)) if rule.schedule else None
+            try:
+                evaluation = await evaluator.evaluate(spec, moment, recent_since, start)
+            except (RuleError, SearchError) as e:
+                outcome.status, outcome.error = 'error', str(e)
+                break
+            except Exception as e:  # a rule must never take the scheduler down
+                log.exception('rule %s failed', rule.id)
+                outcome.status, outcome.error = 'error', _error_text(e)
+                break
+            done.append((moment, evaluation))
+            previous = moment
+        for _, evaluation in done:
+            outcome.hits += len(evaluation.hits)
+            if evaluation.reason:
+                outcome.reason = '; '.join(r for r in (outcome.reason, evaluation.reason) if r)
+        if done and outcome.status == 'ok' and all(e.status == 'skipped' for _, e in done):
+            outcome.status = 'skipped'
     outcome.duration_ms = int((time.monotonic() - started) * 1000)
     if not persist:
         return outcome
+    touched: set = set()
+    failed = 0
+    for moment, evaluation in done:
+        if evaluation.hits:
+            created, updated, lost = await record_hits(db, rule, evaluation.hits, now, touched)
+            outcome.created += created
+            outcome.updated += updated
+            failed += lost
+        rule.evaluated_until = moment
+    if not moments and outcome.status == 'skipped':
+        # Nothing in these hours is the rule's to look at
+        rule.evaluated_until = max(rule.evaluated_until or end, end)
+    if failed:
+        outcome.reason = '; '.join(r for r in (outcome.reason, f'{failed} hits could not be recorded') if r)
     rule.last_run_at = now
+    rule.running_until = None
     rule.last_status = outcome.status
     rule.last_error = outcome.error or (outcome.reason or None)
     rule.last_duration_ms = outcome.duration_ms
@@ -333,8 +431,12 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
             await hooks.enqueue_rule_failing(db, rule)
     else:
         rule.consecutive_failures = 0
+    first = done[0][0] - window if done else end - window
+    if done and rule.schedule:
+        cut = active_since(rule.schedule, done[0][0] - timedelta(seconds=1))
+        first = max(first, cut) if cut else first
     db.add(RuleRun(rule_id=rule.id, started_at=now, finished_at=datetime.now(timezone.utc),
-                   window_start=first_start, window_end=now - delay,
+                   window_start=first, window_end=done[-1][0] if done else end,
                    status=outcome.status, hits=outcome.hits, findings_created=outcome.created,
                    findings_updated=outcome.updated, duration_ms=outcome.duration_ms,
                    error=outcome.error or (outcome.reason or None)))
@@ -351,6 +453,9 @@ async def prune_runs(db: AsyncSession, rule_id: uuid.UUID) -> None:
 # -- backtesting ------------------------------------------------------------------
 
 MAX_BACKTEST_STEPS = 96
+# Requests one backtest may send, whatever the rule: a first-seen rule over
+# a busy network pages through many values at every step
+BACKTEST_BUDGET = 600
 
 
 async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
@@ -360,12 +465,13 @@ async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
     stays a few dozen queries.
     """
     step = max(spec.interval_seconds, int(tr.seconds / MAX_BACKTEST_STEPS) + 1)
-    evaluator = Evaluator(search)
+    evaluator = Evaluator(search, budget=BACKTEST_BUDGET)
     moment = tr.start + timedelta(seconds=spec.window_seconds)
     if moment > tr.end:
         moment = tr.end
     series, samples, entities, statuses = [], [], {}, set()
     previous: datetime | None = None
+    stopped: str | None = None
     while moment <= tr.end:
         if not in_schedule(spec.schedule, moment):
             series.append({'t': iso(moment), 'hits': 0, 'status': 'skipped',
@@ -373,10 +479,12 @@ async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
             previous = None
             moment += timedelta(seconds=step)
             continue
-        start = None
-        if spec.schedule and not in_schedule(spec.schedule, moment - timedelta(seconds=spec.window_seconds)):
-            start = active_since(spec.schedule, moment)
-        evaluation = await evaluator.evaluate(spec, moment, previous, start)
+        start = active_since(spec.schedule, moment - timedelta(seconds=1)) if spec.schedule else None
+        try:
+            evaluation = await evaluator.evaluate(spec, moment, previous, start)
+        except BudgetSpent:
+            stopped = iso(moment)
+            break
         statuses.add(evaluation.status)
         series.append({'t': iso(moment), 'hits': len(evaluation.hits),
                        'status': evaluation.status, 'reason': evaluation.reason})
@@ -394,7 +502,9 @@ async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
             'would_fire': sum(s['hits'] for s in series), 'distinct_findings': len(entities),
             'samples': samples,
             'warming_up': [s['reason'] for s in series if s['status'] == 'skipped'
-                           and s['reason'] != 'outside its active hours'][:1]}
+                           and s['reason'] != 'outside its active hours'][:1],
+            # Where it stopped, when the rule needs more requests than a backtest may send
+            'stopped_at': stopped}
 
 
 # -- built-in rules ------------------------------------------------------------------
@@ -450,17 +560,23 @@ def update_available(rule: Rule) -> bool:
 
 # -- the scheduler ---------------------------------------------------------------------
 
-async def lock_rule(db: AsyncSession, rule_id: uuid.UUID, wait: bool = False) -> Rule | None:
-    """The rule, locked for a run; None if it does not exist or, unless
-    `wait`, is running elsewhere right now."""
-    stmt = select(Rule).where(Rule.id == rule_id).execution_options(populate_existing=True)
-    stmt = stmt.with_for_update(of=Rule) if wait else stmt.with_for_update(of=Rule, skip_locked=True)
-    return (await db.execute(stmt)).scalar_one_or_none()
+async def claim_run(db: AsyncSession, rule_id: uuid.UUID) -> datetime | None:
+    """Takes the lease to run a rule, and commits it. Returns the database's
+    time, which the run uses as now, or None when the rule is running
+    elsewhere. Database time, so replicas with different clocks agree."""
+    row = (await db.execute(
+        update(Rule).where(Rule.id == rule_id,
+                           or_(Rule.running_until.is_(None), Rule.running_until < func.now()))
+        .values(running_until=func.now() + RUN_LEASE)
+        .returning(func.now()))).first()
+    await db.commit()
+    return row[0] if row else None
 
 
 async def claim_due(db: AsyncSession, now: datetime, limit: int = 10) -> list[Rule]:
     rules = (await db.execute(
-        select(Rule).where(Rule.enabled.is_(True), Rule.next_run_at <= now)
+        select(Rule).where(Rule.enabled.is_(True), Rule.next_run_at <= now,
+                           or_(Rule.running_until.is_(None), Rule.running_until < now))
         .order_by(Rule.next_run_at).limit(limit).with_for_update(skip_locked=True))).scalars().all()
     for rule in rules:
         rule.next_run_at = now + timedelta(seconds=rule.interval_seconds)
@@ -478,19 +594,32 @@ class Scheduler:
     async def _run_one(self, rule_id: uuid.UUID) -> None:
         async with self.semaphore:
             async with database.sessionmaker()() as db:
-                # Held until the run commits: a run still going when the rule
-                # comes due again, here or in another process, is not doubled
-                rule = await lock_rule(db, rule_id, wait=False)
-                if rule is None or not rule.enabled:
+                now = await claim_run(db, rule_id)
+                if now is None:
                     return
-                await run_rule(db, self.search, rule)
-                await prune_runs(db, rule.id)
+                rule = await db.get(Rule, rule_id)
+                if rule is None or not rule.enabled:
+                    if rule is not None:
+                        rule.running_until = None
+                    await db.commit()
+                    return
+                # Nothing is held while OpenSearch is asked
                 await db.commit()
+                try:
+                    await run_rule(db, self.search, rule, now=now)
+                    await prune_runs(db, rule.id)
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    await db.execute(update(Rule).where(Rule.id == rule_id).values(running_until=None))
+                    await db.commit()
+                    raise
 
     async def tick(self) -> int:
-        now = datetime.now(timezone.utc)
         async with database.sessionmaker()() as db:
             async with db.begin():
+                # The database's clock, so replicas agree on what is due
+                now = (await db.execute(select(func.now()))).scalar_one()
                 due = await claim_due(db, now)
                 ids = [r.id for r in due]
         if ids:

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analysis import engine
 from ..models import ApiKey, Dashboard, Finding, Rule, SavedSearch, User, Webhook, WebhookDelivery
-from ..search.timerange import RangeError, TimeRange, iso, parse_range
+from ..search.timerange import RangeError, TimeRange, iso, parse_moment, parse_range
 
 SEVERITY_WEIGHT = {'critical': 40, 'high': 20, 'medium': 8, 'low': 3, 'info': 1}
 
@@ -19,6 +19,14 @@ def time_range(start: str | None, end: str | None, default: str = 'now-24h') -> 
         return parse_range(start, end, default_start=default)
     except RangeError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+
+
+def moment_param(text: str, name: str) -> datetime:
+    """An ISO 8601 time from a request, in UTC, or a 400 saying which."""
+    try:
+        return parse_moment(text)
+    except RangeError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f'{name}: {e}') from e
 
 
 def like_escape(text: str) -> str:
@@ -136,7 +144,9 @@ def webhook_out(w: Webhook, reveal: bool = False) -> dict:
     }
 
 
-def delivery_out(d: WebhookDelivery, full: bool = False) -> dict:
+def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> dict:
+    """A delivery. What it says about a finding, its title and who it is
+    about, only with `about`, for those who may read findings."""
     out = {
         'id': str(d.id), 'webhook_id': str(d.webhook_id), 'event': d.event,
         'finding_id': str(d.finding_id) if d.finding_id else None, 'status': d.status,
@@ -144,8 +154,8 @@ def delivery_out(d: WebhookDelivery, full: bool = False) -> dict:
         'last_status_code': d.last_status_code, 'last_error': d.last_error,
         'duration_ms': d.duration_ms, 'created_at': ts(d.created_at),
         'delivered_at': ts(d.delivered_at),
-        'entity': ((d.payload or {}).get('finding') or {}).get('entity'),
-        'title': ((d.payload or {}).get('finding') or {}).get('title')
+        'entity': ((d.payload or {}).get('finding') or {}).get('entity') if about else None,
+        'title': (((d.payload or {}).get('finding') or {}).get('title') if about else None)
         or ((d.payload or {}).get('rule') or {}).get('name') or (d.payload or {}).get('message'),
     }
     if full:

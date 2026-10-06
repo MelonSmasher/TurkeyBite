@@ -48,10 +48,10 @@ class Settings(BaseSettings):
     # Off only for plain-http development; a session cookie sent in clear
     # is a session anyone on the path can take
     cookie_secure: bool = True
-    session_idle_minutes: int = 12 * 60
-    session_max_hours: int = 7 * 24
-    login_max_failures: int = 5
-    login_lockout_minutes: int = 15
+    session_idle_minutes: int = Field(12 * 60, ge=5, le=30 * 24 * 60)
+    session_max_hours: int = Field(7 * 24, ge=1, le=90 * 24)
+    login_max_failures: int = Field(5, ge=1, le=100)
+    login_lockout_minutes: int = Field(15, ge=1, le=24 * 60)
     # Run the rule scheduler, webhook dispatcher and rollups in this process.
     # Turn off on extra API-only replicas; any number may run them, since
     # work is claimed with SKIP LOCKED.
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     opensearch_verify_certs: bool = True
     opensearch_ca_certs: Path | None = None
     opensearch_index: str = 'tb-index-*'
-    opensearch_timeout_sec: float = 30.0
+    opensearch_timeout_sec: float = Field(30.0, gt=0, le=300)
 
     # -- webhooks -------------------------------------------------------------
     # Webhook URLs may not point at private, loopback or link-local addresses
@@ -96,7 +96,12 @@ class Settings(BaseSettings):
     # probe the console's own network. Turn on for an alert receiver on the
     # LAN, such as a self-hosted chat server.
     webhook_allow_private: bool = False
-    webhook_timeout_sec: float = 10.0
+    webhook_timeout_sec: float = Field(10.0, gt=0, le=120)
+    # An HTTP proxy every webhook goes through, when the console's network has
+    # no direct way out. The proxy then connects to the receiver itself, so
+    # what it may reach is its rules' to decide; the console still refuses
+    # URLs whose names resolve, for it, to addresses webhooks may not reach.
+    webhook_proxy: str | None = None
 
     @field_validator('opensearch_urls', mode='before')
     @classmethod
@@ -125,7 +130,11 @@ class Settings(BaseSettings):
     def _password_into_url(self):
         if self.database_password:
             from sqlalchemy.engine import make_url
-            url = make_url(self.database_url).set(password=self.database_password)
+            url = make_url(self.database_url)
+            if not url.username:
+                raise ValueError('TBCONSOLE_DATABASE_PASSWORD needs a user name in '
+                                 'TBCONSOLE_DATABASE_URL, such as postgresql+asyncpg://tbconsole@host/db')
+            url = url.set(password=self.database_password)
             self.database_url = url.render_as_string(hide_password=False)
         return self
 

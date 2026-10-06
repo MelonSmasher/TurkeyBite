@@ -10,6 +10,7 @@ copy it.
 
 import base64
 import hmac
+import ipaddress
 import json
 import secrets
 import time
@@ -37,7 +38,16 @@ def now() -> datetime:
 
 
 def client_ip(request: Request) -> str | None:
-    return request.client.host if request.client else None
+    """The caller's address, if it is one. Behind a trusted proxy the address
+    comes from a header that a client may have written, so anything that is
+    not an IP address is dropped rather than stored or counted as given."""
+    host = request.client.host if request.client else None
+    if not host:
+        return None
+    try:
+        return str(ipaddress.ip_address(host.split('%', 1)[0]))
+    except ValueError:
+        return None
 
 
 async def create(db: AsyncSession, user: User, request: Request, response: Response,
@@ -122,14 +132,16 @@ def _unb64(text: str) -> bytes:
 
 def mfa_token(user: User) -> str:
     """Proof that the password was right, good for five minutes, for one user."""
-    payload = json.dumps({'u': str(user.id), 'e': int(time.time()) + MFA_TOKEN_SECONDS,
+    issued = time.time()
+    payload = json.dumps({'u': str(user.id), 'e': int(issued) + MFA_TOKEN_SECONDS, 'i': issued,
                           'p': user.password_hash[-16:] if user.password_hash else ''},
                          separators=(',', ':')).encode('utf-8')
     return _b64(payload) + '.' + _b64(mac('mfa', payload))
 
 
-def read_mfa_token(token: str) -> tuple[uuid.UUID, str] | None:
-    """(user id, password fingerprint) from a valid, unexpired token, else None."""
+def read_mfa_token(token: str) -> tuple[uuid.UUID, str, float] | None:
+    """(user id, password fingerprint, when issued) from a valid, unexpired
+    token, else None."""
     try:
         body, signature = token.split('.', 1)
         payload = _unb64(body)
@@ -138,6 +150,6 @@ def read_mfa_token(token: str) -> tuple[uuid.UUID, str] | None:
         data = json.loads(payload)
         if int(data['e']) < time.time():
             return None
-        return uuid.UUID(data['u']), data.get('p', '')
+        return uuid.UUID(data['u']), data.get('p', ''), float(data.get('i', 0))
     except (ValueError, KeyError, TypeError):
         return None

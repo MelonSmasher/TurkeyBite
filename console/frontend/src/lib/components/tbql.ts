@@ -80,3 +80,11 @@ export function context(input: string, caret: number): { kind: 'field' | 'value'
   if (/(^|[\s(])$/.test(before)) return { kind: 'field', prefix: '', start: caret };
   return { kind: 'none', prefix: '', start: caret };
 }
+
+/** A value written so TBQL reads it back exactly, as the server's quote()
+ *  does: bare when it can be, quoted when it has spaces, brackets, quotes or
+ *  wildcards, which bare would mean something else. */
+export function quoteValue(value: string): string {
+  if (/^[A-Za-z0-9_.@:/-]+$/.test(value) && !['AND', 'OR', 'NOT'].includes(value.toUpperCase())) return value;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}

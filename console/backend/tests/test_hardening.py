@@ -125,7 +125,7 @@ async def test_create_user_resets_a_password_ends_sessions_and_keeps_the_role(cl
     await login(client, 'ana')
     monkeypatch.setattr('sys.stdin', io.StringIO('An-entirely-new-passphrase-2026\n'))
     code = await cli.create_user(argparse.Namespace(username='ana', role=None, password_stdin=True,
-                                                    reset_mfa=False))
+                                                    reset_mfa=False, enable=False, revoke_keys=False))
     assert code == 0
     async with db.sessionmaker()() as session:
         user = (await session.execute(select(User).where(User.username == 'ana'))).scalar_one()
@@ -139,7 +139,8 @@ async def test_create_user_can_turn_off_a_lost_second_factor(monkeypatch):
     from tbconsole import __main__ as cli
     await make_user('root', role='admin', totp_enabled=True, totp_secret_enc=crypto.encrypt('ABC'))
     monkeypatch.setattr('sys.stdin', io.StringIO('An-entirely-new-passphrase-2026\n'))
-    await cli.create_user(argparse.Namespace(username='root', role=None, password_stdin=True, reset_mfa=True))
+    await cli.create_user(argparse.Namespace(username='root', role=None, password_stdin=True, reset_mfa=True,
+                                             enable=False, revoke_keys=False))
     async with db.sessionmaker()() as session:
         user = (await session.execute(select(User).where(User.username == 'root'))).scalar_one()
         assert not user.totp_enabled and user.totp_secret_enc is None and user.role == 'admin'
@@ -224,8 +225,7 @@ async def test_the_directory_takes_access_away_within_the_hour_and_gives_it_back
     await login(client, 'ava', 'ava-pw')
     # Ava's group no longer grants a role
     await _save_directory(dict(directory, role_mappings=[{'group': 'cn=other', 'role': 'analyst'}]))
-    async with db.sessionmaker()() as session:
-        counts = await maintenance.recheck_directory(session)
+    counts = await maintenance.recheck_directory()
     assert counts['revoked'] == 1
     assert (await client.get('/api/v1/auth/me')).status_code == 401
     async with db.sessionmaker()() as session:
@@ -261,9 +261,8 @@ async def test_a_recheck_that_cannot_reach_the_directory_changes_nothing(client,
     await _save_directory(directory)
     await login(client, 'ava', 'ava-pw')
     await _save_directory(directory, password='the-wrong-service-password')
-    async with db.sessionmaker()() as session:
-        with pytest.raises(ldap.LdapUnavailable):
-            await maintenance.recheck_directory(session)
+    with pytest.raises(ldap.LdapUnavailable):
+        await maintenance.recheck_directory()
     assert (await client.get('/api/v1/auth/me')).status_code == 200
 
 
@@ -334,7 +333,7 @@ async def test_delivery_connects_to_the_address_it_checked_and_names_the_host(mo
         seen.append(request)
         return httpx.Response(204)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        outcome = await dispatcher.send(http, hook, _delivery(hook))
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
     assert outcome['error'] is None
     request = seen[0]
     assert str(request.url) == 'https://93.184.215.14:8443/in/abc?x=1'
@@ -351,15 +350,11 @@ async def test_a_redirect_is_not_followed_and_a_test_delivery_reports_what_came_
         seen.append(request)
         return httpx.Response(302, headers={'Location': 'http://169.254.169.254/latest'})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        outcome = await dispatcher.send(http, hook, _delivery(hook))
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
     assert len(seen) == 1 and outcome['status_code'] == 302 and outcome['error']
     # Through the API: only someone who may change webhooks can test one
-    real = httpx.AsyncClient
-
-    class Fake(real):
-        def __init__(self, *args, **kwargs):
-            super().__init__(transport=httpx.MockTransport(lambda r: httpx.Response(200, text='ok')))
-    monkeypatch.setattr('tbconsole.api.webhooks.httpx.AsyncClient', Fake)
+    monkeypatch.setattr(dispatcher, 'client', lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, text='ok'))))
     await make_user('ana', role='analyst')
     await make_user('root', role='admin')
     headers = await login(client, 'ana')
@@ -374,7 +369,7 @@ async def test_a_disabled_webhook_sends_nothing_already_queued():
     hook = await _hook('https://hooks.example.test/in', enabled=False)
     calls = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(200))) as http:
-        outcome = await dispatcher.send(http, hook, _delivery(hook))
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
     assert calls == [] and outcome['retry'] is False and 'disabled' in outcome['error']
 
 
@@ -386,7 +381,7 @@ async def test_delivery_refuses_an_address_it_may_not_reach_and_does_not_connect
     hook = await _hook('https://hooks.example.test/in')
     calls = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(200))) as http:
-        outcome = await dispatcher.send(http, hook, _delivery(hook))
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
     assert outcome['retry'] is False and 'may not reach' in outcome['error']
     assert calls == []
 
@@ -622,11 +617,15 @@ async def test_run_now_waits_its_turn_behind_a_run_in_progress(client):
         await session.commit()
         rule_id = rule.id
     async with db.sessionmaker()() as holder:
-        await engine.lock_rule(holder, rule_id)
-        busy = await client.post(f'/api/v1/rules/{rule_id}/run', headers=headers)
-        assert busy.status_code == 409
-        await holder.rollback()
+        assert await engine.claim_run(holder, rule_id) is not None
+    busy = await client.post(f'/api/v1/rules/{rule_id}/run', headers=headers)
+    assert busy.status_code == 409
+    async with db.sessionmaker()() as holder:
+        (await holder.get(Rule, rule_id)).running_until = None
+        await holder.commit()
     assert (await client.post(f'/api/v1/rules/{rule_id}/run', headers=headers)).status_code == 200
+    async with db.sessionmaker()() as session:
+        assert (await session.get(Rule, rule_id)).running_until is None, 'the lease is given back'
 
 
 # -- housekeeping ----------------------------------------------------------------------------
@@ -710,3 +709,395 @@ async def test_a_missing_asset_is_a_404_so_a_stale_app_knows_to_reload(tmp_path,
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as c:
         assert (await c.get('/assets/app-1.js')).status_code == 200
         assert (await c.get('/assets/app-0.js')).status_code == 404
+
+
+# -- round two -------------------------------------------------------------------------
+
+async def _client_from(app, host: str):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(host, 1234)),
+                             base_url='http://testserver')
+
+
+async def test_an_address_that_is_not_one_is_not_stored_and_cannot_dodge_the_lockout(app):
+    await make_user('root', role='admin')
+    forged = 'x' * 100
+    async with await _client_from(app, forged) as c:
+        for _ in range(5):
+            response = await c.post('/api/v1/auth/login', json={'username': 'root', 'password': 'nope'})
+            assert response.status_code == 401
+    async with db.sessionmaker()() as session:
+        user = (await session.execute(select(User).where(User.username == 'root'))).scalar_one()
+        assert user.locked_until is not None, 'the failures counted'
+        ips = (await session.execute(select(AuditEvent.ip).where(AuditEvent.action == 'auth.login'))).scalars().all()
+    assert len(ips) == 5 and set(ips) == {None}
+
+
+def test_the_brake_lets_others_at_a_busy_address_through_and_counts_ipv6_by_network():
+    from tbconsole.security import limits
+    limits.reset()
+    for i in range(limits.ADDRESS_LIMIT):
+        limits.failed('203.0.113.7', f'guess-{i}')
+    assert limits.limited('203.0.113.7', 'guess-1'), 'a name it got wrong is held back'
+    assert not limits.limited('203.0.113.7', 'alice'), 'a name it has not tried is not'
+    for _ in range(limits.PAIR_LIMIT):
+        limits.failed('2001:db8::1', 'root')
+    assert limits.limited('2001:db8::ffff', 'root'), 'the same /64'
+    assert not limits.limited('2001:db8:0:1::1', 'root')
+    limits.reset()
+
+
+async def test_one_two_factor_token_makes_one_session(client):
+    secret = pyotp.random_base32()
+    await make_user('root', role='admin', totp_enabled=True, totp_secret_enc=crypto.encrypt(secret))
+    token = (await client.post('/api/v1/auth/login', json={'username': 'root',
+                                                          'password': 'correct horse battery'})).json()['token']
+    totp = pyotp.TOTP(secret)
+    assert (await client.post('/api/v1/auth/mfa', json={'token': token, 'code': totp.now()})).status_code == 200
+    again = totp.at(datetime.now(timezone.utc) + timedelta(seconds=30))
+    assert (await client.post('/api/v1/auth/mfa', json={'token': token, 'code': again})).status_code == 401
+
+
+async def test_a_borrowed_session_cannot_guess_the_password(client):
+    await make_user('ana')
+    headers = await login(client, 'ana')
+    from tbconsole.security import limits
+    for _ in range(limits.PAIR_LIMIT):
+        assert (await client.post('/api/v1/account/mfa/setup', headers=headers,
+                                  json={'password': 'guess'})).status_code == 400
+    assert (await client.post('/api/v1/account/mfa/setup', headers=headers,
+                              json={'password': 'correct horse battery'})).status_code == 429
+
+
+async def test_changing_your_password_ends_every_other_session_and_keeps_yours(client, app):
+    await make_user('ana')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as other:
+        await login(other, 'ana')
+        headers = await login(client, 'ana')
+        response = await client.post('/api/v1/account/password', headers=headers,
+                                     json={'current': 'correct horse battery', 'new': 'A-much-better-passphrase-26'})
+        assert response.status_code == 200
+        assert (await client.get('/api/v1/auth/me')).status_code == 200
+        assert (await other.get('/api/v1/auth/me')).status_code == 401
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(User.password_changed_at))).scalar_one() is not None
+
+
+async def test_a_link_on_another_site_cannot_act_with_the_cookie(client):
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    response = await client.get('/api/v1/entities/profile', params={'field': 'user', 'value': 'ava'},
+                                headers={'Sec-Fetch-Site': 'cross-site'})
+    assert response.status_code == 403
+    assert (await client.get('/api/v1/auth/me', headers={'Sec-Fetch-Site': 'same-origin'})).status_code == 200
+    assert await _audit('entity.view') == []
+
+
+async def test_the_default_port_written_out_is_the_same_origin(client, monkeypatch):
+    from tbconsole.config import get_settings
+    monkeypatch.setattr(get_settings(), 'public_url', 'http://testserver:80')
+    await make_user('ana')
+    response = await client.post('/api/v1/auth/login', headers={'Origin': 'http://testserver'},
+                                 json={'username': 'ana', 'password': 'correct horse battery'})
+    assert response.status_code == 200
+
+
+async def test_create_user_leaves_a_disabled_account_disabled_unless_asked_and_can_revoke_keys(monkeypatch):
+    from tbconsole import __main__ as cli
+    from tbconsole.models import ApiKey
+    from tbconsole.security import apikeys
+    user = await make_user('svc', role='analyst', disabled=True, disabled_reason='admin')
+    async with db.sessionmaker()() as session:
+        _, prefix, digest = apikeys.generate() if hasattr(apikeys, 'generate') else (None, 'abcd1234', b'0' * 32)
+        session.add(ApiKey(user_id=user.id, name='k', prefix=prefix, key_hash=digest, scopes=['findings:read']))
+        await session.commit()
+    monkeypatch.setattr('sys.stdin', io.StringIO('An-entirely-new-passphrase-2026\n'))
+    await cli.create_user(argparse.Namespace(username='svc', role=None, password_stdin=True, reset_mfa=False,
+                                             enable=False, revoke_keys=True))
+    async with db.sessionmaker()() as session:
+        stored = await session.get(User, user.id)
+        assert stored.disabled
+        assert (await session.execute(select(ApiKey.revoked_at))).scalar_one() is not None
+
+
+async def test_reencrypt_moves_every_secret_to_the_current_key(monkeypatch, capsys):
+    from tbconsole import __main__ as cli
+    from tbconsole.config import get_settings
+    settings = get_settings()
+    old = settings.secret_key
+    await make_user('root', totp_enabled=True, totp_secret_enc=crypto.encrypt('TOTPSECRET'))
+    hook = await _hook('https://example.org/hook')
+    monkeypatch.setattr(settings, 'secret_key', 'a-brand-new-secret-key-that-is-long-enough-01')
+    monkeypatch.setattr(settings, 'secret_key_previous', [old])
+    crypto._fernet.cache_clear() if hasattr(crypto._fernet, 'cache_clear') else None
+    assert await cli.reencrypt(argparse.Namespace()) == 0
+    monkeypatch.setattr(settings, 'secret_key_previous', [])
+    crypto._fernet.cache_clear() if hasattr(crypto._fernet, 'cache_clear') else None
+    async with db.sessionmaker()() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        assert crypto.decrypt(user.totp_secret_enc) == 'TOTPSECRET'
+        stored = await session.get(Webhook, hook.id)
+        assert crypto.decrypt(stored.url_enc) == 'https://example.org/hook'
+
+
+async def test_an_admin_can_disable_someone_the_directory_already_had(client):
+    await make_user('root', role='admin')
+    ava = await make_user('ava', source='ldap', role='analyst', disabled=True, disabled_reason='directory')
+    headers = await login(client, 'root')
+    response = await client.patch(f'/api/v1/users/{ava.id}', headers=headers, json={'disabled': True})
+    assert response.status_code == 200
+    async with db.sessionmaker()() as session:
+        assert (await session.get(User, ava.id)).disabled_reason == 'admin'
+
+
+async def test_signing_in_with_another_name_for_the_same_person_finds_their_account(client, directory):
+    # The console keeps the uid; this person signs in with their email address
+    await _save_directory(dict(directory, user_filter='(&(objectClass=person)(|(uid={username})(mail={username})))'))
+    first = await client.post('/api/v1/auth/login', json={'username': 'ava@example.org', 'password': 'ava-pw'})
+    second = await client.post('/api/v1/auth/login', json={'username': 'ava@example.org', 'password': 'ava-pw'})
+    assert first.status_code == 200 and second.status_code == 200
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(func.count()).select_from(User))).scalar_one() == 1
+
+
+async def test_a_directory_that_answers_busy_says_nothing_about_anyone(directory, monkeypatch):
+    from tbconsole.security import ldap
+    original = ldap._answered
+
+    def busy(conn, what, allow=ldap._ANSWERED):
+        conn.result = {'result': 51, 'description': 'busy'}
+        return original(conn, what, allow)
+    monkeypatch.setattr(ldap, '_answered', busy)
+    with pytest.raises(ldap.LdapUnavailable, match='busy'):
+        ldap.recheck(directory, 'svc-pw', 'uid=ava,ou=people,dc=example,dc=org', 'ava')
+
+
+async def test_a_recheck_that_would_revoke_most_people_revokes_nobody(client, directory, monkeypatch):
+    from tbconsole import maintenance
+    await _save_directory(directory)
+    for name in ('p1', 'p2', 'p3', 'p4', 'p5'):
+        user = await make_user(name, source='ldap', role='analyst', ldap_dn=f'uid={name},ou=people,dc=example,dc=org')
+        async with db.sessionmaker()() as session:
+            session.add(UserSession(token_hash=crypto.sha256(name), user_id=user.id,
+                                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                                    last_seen_at=datetime.now(timezone.utc)))
+            await session.commit()
+    counts = await maintenance.recheck_directory()
+    assert counts['held_back'] == 5 and counts['revoked'] == 0
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(func.count()).select_from(User).where(User.disabled))).scalar_one() == 0
+
+
+async def test_a_header_with_space_at_an_end_is_refused_when_saved(client, monkeypatch):
+    monkeypatch.setattr(safety, 'check', lambda url: _noop())
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    for value in ('Bearer TOKEN ', ' Bearer TOKEN', 'a\x7fb'):
+        response = await client.post('/api/v1/webhooks', headers=headers, json={
+            'name': 'x', 'url': 'https://example.org/', 'headers': {'Authorization': value}})
+        assert response.status_code == 400, repr(value)
+    for name in ('Transfer-Encoding', 'Connection', 'TE'):
+        response = await client.post('/api/v1/webhooks', headers=headers, json={
+            'name': 'x', 'url': 'https://example.org/', 'headers': {name: 'x'}})
+        assert response.status_code == 400, name
+
+
+async def _noop():
+    return None
+
+
+async def test_a_request_that_cannot_be_written_records_no_header_text(monkeypatch):
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14'))
+    hook = await _hook('https://hooks.example.test/in')
+
+    def handler(request):
+        raise httpx.LocalProtocolError('Illegal header value b"Bearer SECRET-TOKEN "')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert 'SECRET' not in outcome['error'] and outcome['retry'] is False
+
+
+async def test_a_receiver_that_dawdles_is_cut_off_and_a_huge_answer_is_not_kept(monkeypatch):
+    import asyncio as aio
+    from tbconsole.config import get_settings
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14'))
+    monkeypatch.setattr(dispatcher, 'DEADLINE_SLACK', 0)
+    monkeypatch.setattr(get_settings(), 'webhook_timeout_sec', 0.2)
+    hook = await _hook('https://hooks.example.test/in')
+
+    async def slow(request):
+        await aio.sleep(2)
+        return httpx.Response(200)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow)) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert 'too long' in outcome['error'] and outcome['retry'] is True
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b'x' * 5_000_000))) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert outcome['error'] is None and len(outcome['snippet']) <= 300
+
+
+async def test_deliveries_ignore_proxy_settings_in_the_environment_and_use_a_configured_one(monkeypatch):
+    from tbconsole.config import get_settings
+    assert dispatcher.client()._trust_env is False
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14'))
+    monkeypatch.setattr(get_settings(), 'webhook_proxy', 'http://proxy.example.test:3128')
+    hook = await _hook('https://hooks.example.test/in')
+    seen = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(200))) as http:
+        await dispatcher.send(hook, _delivery(hook), http)
+    # Through a proxy the name goes as it is; the proxy connects
+    assert seen[0].url.host == 'hooks.example.test'
+
+
+async def test_a_second_address_is_tried_when_the_first_will_not_connect(monkeypatch):
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14', '93.184.215.15'))
+    hook = await _hook('https://hooks.example.test/in')
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        if request.url.host == '93.184.215.14':
+            raise httpx.ConnectError('refused')
+        return httpx.Response(204)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert seen == ['93.184.215.14', '93.184.215.15'] and outcome['error'] is None
+
+
+async def test_an_ipv6_host_header_is_bracketed():
+    target = await safety.resolve('https://[2606:4700::1111]:8443/x')
+    assert target.host_header == '[2606:4700::1111]:8443'
+    with pytest.raises(safety.UnsafeUrl):
+        safety.check_shape('https://example.org:0/x')
+
+
+async def test_a_webhooks_read_key_sees_deliveries_but_not_who_they_were_about(client):
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    hook = await _hook('https://example.org/hook')
+    async with db.sessionmaker()() as session:
+        session.add(WebhookDelivery(webhook_id=hook.id, event='finding.created', status='succeeded', payload={
+            'event': 'finding.created', 'finding': {'title': 'Threat seen: ava', 'entity': 'ava'}}))
+        await session.commit()
+    key = (await client.post('/api/v1/api-keys', headers=headers,
+                             json={'name': 'k', 'scopes': ['webhooks:read']})).json()['key']
+    client.cookies.clear()
+    auth = {'Authorization': f'Bearer {key}'}
+    listed = await client.get('/api/v1/webhook-deliveries', headers=auth)
+    assert listed.status_code == 200 and 'ava' not in listed.text
+    one = await client.get(f"/api/v1/webhook-deliveries/{listed.json()[0]['id']}", headers=auth)
+    assert one.status_code == 200 and 'ava' not in one.text
+
+
+def test_google_chat_and_teams_cannot_be_made_to_mention_or_link():
+    from tbconsole.webhooks import formats, signing
+    event = {'event': 'finding.created', 'finding': {
+        'title': 'Seen: <users/all>', 'summary': '[click](https://evil.example) <https://evil|x>', 'severity': 'high',
+        'entity': 'ava', 'status': 'new', 'rule_name': 'r', 'event_count': 1}}
+    chat = formats.render('google_chat', event)
+    readable = [chat['text']] + [str(w) for w in chat['cardsV2'][0]['card']['sections'][0]['widgets']]
+    assert not any('<users/all>' in t or '<https://evil' in t for t in readable)
+    teams = formats.render('teams', event)
+    assert '[click](' not in str(teams)
+    assert signing.verify('s', b'x', None) is False and signing.verify('s', b'x', 't=1,v1=é') is False
+
+
+async def test_the_live_tail_stops_for_someone_signed_out(client, app):
+    from starlette.requests import Request as StarletteRequest
+    from tbconsole.api.events import _still_allowed
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    cookie = client.cookies.get('tbc_session')
+
+    def request():
+        scope = {'type': 'http', 'method': 'GET', 'path': '/api/v1/events/live', 'query_string': b'',
+                 'headers': [(b'cookie', f'tbc_session={cookie}'.encode())], 'client': ('127.0.0.1', 1)}
+        return StarletteRequest(scope)
+    assert await _still_allowed(request()) is True
+    await client.post('/api/v1/auth/logout', headers={'X-CSRF-Token': client.cookies.get('tbc_csrf')})
+    assert await _still_allowed(request()) is False
+
+
+async def test_the_live_tail_cap_holds(client, monkeypatch):
+    from tbconsole.api import events
+    user = await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    monkeypatch.setitem(events._live, str(user.id), events.MAX_LIVE_PER_USER)
+    assert (await client.get('/api/v1/events/live')).status_code == 429
+
+
+async def test_looks_at_people_through_pivots_histograms_lists_and_suggestions_are_audited(client):
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    await client.post('/api/v1/analytics/pivot', headers=headers, json={'rows': 'user'})
+    await client.post('/api/v1/events/search', headers=headers, json={'query': 'user:ava'})
+    await client.post('/api/v1/events/histogram', headers=headers, json={'query': 'user:ava'})
+    await client.get('/api/v1/entities', params={'query': 'user:ava'})
+    await client.get('/api/v1/fields/user/values', params={'prefix': 'a'})
+    await client.get('/api/v1/fields/user/values', params={'prefix': 'av'})
+    assert len(await _audit('analytics.pivot')) == 1
+    assert len(await _audit('events.search')) == 1, 'the histogram of the same search is the same look'
+    assert len(await _audit('entities.list')) == 1
+    assert len(await _audit('events.top')) == 1, 'suggestions are one look, not one per keystroke'
+
+
+async def test_times_out_of_range_and_bodies_that_are_not_json_are_400s_not_500s(client):
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    for body in ({'from': '9999-12-31T23:59:59-01:00'}, {'from': '0001-01-01T00:00:00+01:00'}):
+        assert (await client.post('/api/v1/events/search', headers=headers, json=body)).status_code == 400
+    assert (await client.get('/api/v1/findings', params={'since': '9999-12-31T23:59:59-01:00'})).status_code == 400
+    raw = await client.post('/api/v1/events/search', headers={**headers, 'Content-Type': 'application/json'},
+                            content=b'\xff\xfenot json')
+    assert raw.status_code == 422
+
+
+async def test_the_probes_answer_head_and_readiness_fails_without_the_database(client, monkeypatch):
+    assert (await client.head('/healthz')).status_code == 200
+    assert (await client.head('/readyz')).status_code == 200
+
+    def broken():
+        raise ConnectionRefusedError('no database')
+    monkeypatch.setattr(db, 'sessionmaker', broken)
+    assert (await client.get('/readyz')).status_code == 503
+
+
+def test_a_database_password_needs_a_user_name_to_go_with():
+    from pydantic import ValidationError
+
+    from tbconsole.config import Settings
+    with pytest.raises(ValidationError, match='user name'):
+        Settings(secret_key='k' * 40, database_url='postgresql+asyncpg://db:5432/tbconsole',
+                 database_password='secret')
+
+
+def test_ldap_timeouts_reach_the_socket_as_whole_seconds(monkeypatch):
+    # ldap3 packs receive_timeout with struct 'LL': a float there fails every
+    # sign-in against a real directory, which the in-memory one never shows
+    from tbconsole.security import ldap
+    seen = {}
+
+    class Recording:
+        def __init__(self, *args, **kwargs):
+            seen.update(kwargs)
+            raise ConnectionRefusedError('stop here')
+    monkeypatch.setattr(ldap, 'Connection', Recording)
+    cfg = ldap.config_with_defaults({'enabled': True, 'urls': ['ldaps://dc.example.org'], 'timeout_sec': 5.0})
+    with pytest.raises(ldap.LdapUnavailable):
+        ldap.authenticate(cfg, 'pw', 'ava', 'ava-pw')
+    assert isinstance(seen['receive_timeout'], int)
+
+
+async def test_the_sign_in_check_gives_its_connection_back_before_the_request_goes_on(client):
+    # A live tail or an export would otherwise hold a pooled connection, idle
+    # in a transaction, for as long as it streams
+    from starlette.requests import Request as StarletteRequest
+
+    from tbconsole.deps import optional_principal
+    await make_user('ana')
+    await login(client, 'ana')
+    scope = {'type': 'http', 'method': 'GET', 'path': '/', 'query_string': b'', 'client': ('127.0.0.1', 1),
+             'headers': [(b'cookie', f"tbc_session={client.cookies.get('tbc_session')}".encode())]}
+    async with db.sessionmaker()() as session:
+        principal = await optional_principal(StarletteRequest(scope), session)
+        assert principal is not None and principal.user.username == 'ana'
+        assert not session.in_transaction()

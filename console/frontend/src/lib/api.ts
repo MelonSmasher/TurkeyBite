@@ -43,8 +43,20 @@ export function setUnauthorizedHandler(handler: () => void) {
   onUnauthorized = handler;
 }
 
+// Called when the API says an admin must set up a second factor first, which
+// can become true while the app is open
+let onMfaRequired: (() => void) | null = null;
+export function setMfaRequiredHandler(handler: () => void) {
+  onMfaRequired = handler;
+}
+
 export async function request<T = unknown>(method: string, path: string, body?: unknown,
                                            opts: { signal?: AbortSignal; raw?: boolean } = {}): Promise<T> {
+  // A value from the address bar, decoded, can hold ../ and turn a request for
+  // one thing into a request for another: refuse any path that climbs
+  if (path.split('?')[0].split('/').some((part) => part === '..' || part === '.')) {
+    throw new ApiError(400, 'That address is not valid.');
+  }
   // Days round to this browser's midnight: "today" means today here
   const headers: Record<string, string> = { Accept: 'application/json', 'X-Timezone': ZONE };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -61,6 +73,9 @@ export async function request<T = unknown>(method: string, path: string, body?: 
   }
   if (response.status === 401 && !path.startsWith('/auth/')) {
     onUnauthorized?.();
+  }
+  if (response.status === 403 && response.headers.get('x-tbc-reason') === 'mfa-setup-required') {
+    onMfaRequired?.();
   }
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`;

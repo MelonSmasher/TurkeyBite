@@ -8,10 +8,11 @@
 #
 # Put TLS in front of port 8710 with your usual reverse proxy; the console sets
 # Secure cookies and HSTS, and expects to be reached over https. A proxy on
-# the host reaches the container through Docker's bridge, so the console sees
-# the bridge's gateway, not 127.0.0.1: set TBCONSOLE_FORWARDED_ALLOW_IPS in
-# console.env to that network (172.16.0.0/12 covers Docker's defaults) or the
-# audit log and the sign-in limits see every person as the same address.
+# the host reaches the container through Docker, which hands the connection
+# over from the network's gateway, 172.31.213.1 below: that one address is
+# what console.env.example trusts to say who the person is. If 172.31.213.0/24
+# is in use on your network, choose another subnet here and change the
+# gateway in TBCONSOLE_FORWARDED_ALLOW_IPS to match.
 name: turkeybite-console
 
 services:
@@ -29,6 +30,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    networks: [console]
 
   console:
     build: .
@@ -47,6 +49,14 @@ services:
     volumes:
       # The CA that signed OpenSearch's certificate, if it is not public
       - ./certs:/certs:ro
+    networks: [console]
 
 volumes:
   pgdata:
+
+networks:
+  console:
+    ipam:
+      config:
+        - subnet: 172.31.213.0/24
+          gateway: 172.31.213.1

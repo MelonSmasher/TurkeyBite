@@ -132,6 +132,13 @@ def _assign(rule: Rule, body: RuleBody, params: dict) -> bool:
     return any(getattr(rule, name) != before[name] for name in defaults.DEFINITION_FIELDS)
 
 
+def _restart(rule: Rule) -> None:
+    """A rule switched back on starts from now: the weeks it was off are not
+    windows it missed."""
+    rule.next_run_at = datetime.now(timezone.utc)
+    rule.evaluated_until = None
+
+
 async def _get(db: AsyncSession, rule_id: str) -> Rule:
     rule = await db.get(Rule, parse_uuid(rule_id, 'That rule'))
     if rule is None:
@@ -242,7 +249,7 @@ async def update_rule(rule_id: str, body: RuleBody, request: Request,
     if body.enabled != rule.enabled:
         rule.enabled = body.enabled
         if body.enabled:
-            rule.next_run_at = datetime.now(timezone.utc)
+            _restart(rule)
     audit.record(db, 'rule.update', principal=principal, request=request, target_type='rule',
                  target_id=rule.id, target_label=rule.name)
     await db.commit()
@@ -268,9 +275,9 @@ async def delete_rule(rule_id: str, request: Request,
 async def _toggle(db: AsyncSession, rule_id: str, enabled: bool, principal: Principal,
                   request: Request) -> dict:
     rule = await _get(db, rule_id)
+    if enabled and not rule.enabled:
+        _restart(rule)
     rule.enabled = enabled
-    if enabled:
-        rule.next_run_at = datetime.now(timezone.utc)
     audit.record(db, 'rule.enable' if enabled else 'rule.disable', principal=principal,
                  request=request, target_type='rule', target_id=rule.id, target_label=rule.name)
     await db.commit()
@@ -335,10 +342,17 @@ async def run_now(rule_id: str, request: Request,
                   search: SearchClient = Depends(search_client),
                   db: AsyncSession = Depends(get_session)) -> dict:
     rule = await _get(db, rule_id)
-    if await engine.lock_rule(db, rule.id, wait=False) is None:
+    now = await engine.claim_run(db, rule.id)
+    if now is None:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             'This rule is running right now. Try again in a moment.')
-    outcome = await engine.run_rule(db, search, rule)
+    try:
+        outcome = await engine.run_rule(db, search, rule, now=now)
+    except Exception:
+        await db.rollback()
+        rule.running_until = None
+        await db.commit()
+        raise
     audit.record(db, 'rule.run', principal=principal, request=request, target_type='rule',
                  target_id=rule.id, target_label=rule.name)
     await db.commit()

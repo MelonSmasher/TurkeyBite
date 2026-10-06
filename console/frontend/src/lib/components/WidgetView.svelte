@@ -6,7 +6,7 @@
   import PivotView from '../charts/PivotView.svelte';
   import { pivotLabel } from '../charts/labels';
   import { ago, compact, dateTime, num } from '../format';
-  import { findingText } from '../privacy';
+  import { exploreLink, findingText } from '../privacy';
   import { Query } from '../query.svelte';
   import { fields } from '../stores/fields.svelte';
   import { timeRange } from '../stores/timerange.svelte';
@@ -35,13 +35,13 @@
     : Promise.resolve(null), { refreshMs: 60000 });
 
   const height = $derived(widget.height === 'sm' ? 120 : widget.height === 'lg' ? 360 : 230);
-  const exploreHref = $derived(widget.pivot ? `/explore${qs({ q: widget.pivot.query, from: timeRange.from, to: timeRange.to })}` : '');
+  const exploreHref = $derived(widget.pivot ? exploreLink({ q: widget.pivot.query, from: timeRange.from, to: timeRange.to }) : '');
 
   function hrefFor(key: string, field?: string | null): string | undefined {
     if (!field || field === 'entity' || !widget.pivot) return undefined;
     const def = fields.byName(field);
     const term = `${def?.aliases[0] ?? field}:${/[\s():"]/.test(key) ? `"${key}"` : key}`;
-    return `/explore${qs({ q: widget.pivot.query ? `(${widget.pivot.query}) AND ${term}` : term, from: timeRange.from, to: timeRange.to })}`;
+    return exploreLink({ q: widget.pivot.query ? `(${widget.pivot.query}) AND ${term}` : term, from: timeRange.from, to: timeRange.to });
   }
 
   const table = $derived.by(() => {

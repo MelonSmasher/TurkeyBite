@@ -50,8 +50,8 @@
   const isNew = $derived(!id);
   const meta = new Query((signal) => api.get<Meta>('/rules/meta', { signal }));
   const hooks = new Query((signal) => api.get<Webhook[]>('/webhooks', { signal }), { enabled: () => session.can('webhooks:read') });
-  const loaded = new Query((signal) => (id ? api.get<Rule>(`/rules/${id}`, { signal }) : Promise.resolve(null)));
-  const runs = new Query((signal) => (id ? api.get<{ id: number; started_at: string; status: string; hits: number; created: number; updated: number; duration_ms: number; error: string | null }[]>(`/rules/${id}/runs?limit=12`, { signal }) : Promise.resolve([])));
+  const loaded = new Query((signal) => (id ? api.get<Rule>(`/rules/${encodeURIComponent(id)}`, { signal }) : Promise.resolve(null)));
+  const runs = new Query((signal) => (id ? api.get<{ id: number; started_at: string; status: string; hits: number; created: number; updated: number; duration_ms: number; error: string | null }[]>(`/rules/${encodeURIComponent(id)}/runs?limit=12`, { signal }) : Promise.resolve([])));
 
   let rule = $state<Partial<Rule>>({
     name: '', description: '', category: 'custom', type: 'threshold', query: '', params: { threshold: 1 }, group_by: ['entity'],
@@ -116,7 +116,7 @@
     const payload = body();
     if (enable !== undefined) payload.enabled = enable;
     try {
-      const saved = isNew ? await api.post<Rule>('/rules', payload) : await api.put<Rule>(`/rules/${id}`, payload);
+      const saved = isNew ? await api.post<Rule>('/rules', payload) : await api.put<Rule>(`/rules/${encodeURIComponent(id)}`, payload);
       toasts.success(isNew ? 'Rule created' : 'Rule saved', saved.enabled ? 'It runs within a minute.' : 'It is disabled until you switch it on.');
       if (isNew) navigate(`/rules/${saved.id}`, { replace: true });
       else loaded.reload();
@@ -143,20 +143,20 @@
   async function act(kind: 'reset' | 'clone' | 'delete' | 'run') {
     try {
       if (kind === 'reset') {
-        await api.post(`/rules/${id}/reset`);
+        await api.post(`/rules/${encodeURIComponent(id)}/reset`);
         toasts.success('Back to the shipped definition');
         loaded.reload();
       } else if (kind === 'clone') {
-        const copy = await api.post<Rule>(`/rules/${id}/clone`);
+        const copy = await api.post<Rule>(`/rules/${encodeURIComponent(id)}/clone`);
         navigate(`/rules/${copy.id}`);
       } else if (kind === 'delete') {
         if (!confirm('Delete this rule? Its findings stay.')) return;
-        await api.del(`/rules/${id}`);
+        await api.del(`/rules/${encodeURIComponent(id)}`);
         navigate('/rules');
       } else {
         const unsaved = dirty;
         if (unsaved && !confirm('Run now runs the rule as saved, not as it is in the form. Your changes stay in the form, unsaved. Run the saved rule?')) return;
-        const r = await api.post<{ status: string; hits: number; created: number; error: string | null; reason: string }>(`/rules/${id}/run`);
+        const r = await api.post<{ status: string; hits: number; created: number; error: string | null; reason: string }>(`/rules/${encodeURIComponent(id)}/run`);
         toasts.push({ kind: r.status === 'error' ? 'error' : 'success', title: `Ran: ${r.status}`,
           body: r.error ?? (r.reason || `${r.hits} hits, ${r.created} new findings`) });
         runs.reload();
@@ -175,7 +175,7 @@
   }
 
   const previewTitle = $derived((rule.title_template ?? '').replace('{rule}', rule.name || 'This rule')
-    .replace('{entity}', groupValue ? 'ava.chen' : 'the network').replace('{count}', '12').replace('{value}', '12').replace('{field}', groupValue));
+    .replace('{entity}', groupValue ? 'someone' : 'the network').replace('{count}', '12').replace('{value}', '12').replace('{field}', groupValue));
   const btTimes = $derived(backtest?.series.map((s) => new Date(s.t).getTime()) ?? []);
 </script>
 

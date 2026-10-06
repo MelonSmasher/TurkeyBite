@@ -7,6 +7,15 @@ send them where they need to go.
 
 ![Overview](docs/screenshots/overview-light.png)
 
+More, rendered from the running app with made-up data: [overview, dark](docs/screenshots/overview-dark.png),
+[an event explained](docs/screenshots/explore-event-dark.png), [analytics](docs/screenshots/analytics-light.png),
+[a person's profile](docs/screenshots/entity-profile-dark.png), [the same in privacy mode](docs/screenshots/entity-profile-privacy-light.png),
+[findings](docs/screenshots/findings-light.png), [a finding](docs/screenshots/finding-detail-light.png),
+[rules](docs/screenshots/rules-light.png), [a rule and its backtest](docs/screenshots/rule-editor-backtest-light.png),
+[a dashboard](docs/screenshots/dashboard-security-dark.png), [trends](docs/screenshots/trends-light.png),
+[webhooks](docs/screenshots/webhooks-light.png), [system](docs/screenshots/system-dark.png),
+[the command palette](docs/screenshots/command-palette-dark.png) and [sign-in](docs/screenshots/login-light.png).
+
 It runs on its own server, away from the TurkeyBite cluster. Events stay in
 OpenSearch (or Elasticsearch), which the console only ever reads. The console
 keeps its own records in Postgres: accounts and sessions, API keys, rules and
@@ -42,26 +51,42 @@ Then sign in as the bootstrap admin from `console.env`, change its password,
 turn on its second factor, and remove `TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD`. Put
 TLS in front of port 8710 with your usual reverse proxy; the console sets Secure
 cookies and HSTS and expects https. Behind a proxy, set
-`TBCONSOLE_FORWARDED_ALLOW_IPS` to its address or network so the audit log and
-the sign-in limits see people's addresses rather than the proxy's. With
-`docker-compose.yml` and a proxy on the host, requests reach the container from
-Docker's bridge network, which is what `console.env.example` trusts.
+`TBCONSOLE_FORWARDED_ALLOW_IPS` to the proxy's own address, so the audit log and
+the sign-in limits see people's addresses rather than the proxy's. Trust
+nothing wider: any address listed there may claim to be anyone. With
+`docker-compose.yml` and a proxy on the host, connections arrive from the
+compose network's gateway, `172.31.213.1`, which is what `console.env.example`
+trusts; if that subnet is in use where you are, change it in both files. An
+address that is not an IP address is never stored or trusted.
 
 The image migrates its database at start. Any number of replicas can run:
 migrations and the sync of built-in rules take a Postgres advisory lock in
 turn; the rule scheduler and webhook dispatcher claim their work with
-`SELECT ... FOR UPDATE SKIP LOCKED`, a rule stays locked while it runs, and the
-daily rollups and housekeeping hold a lease, so nothing runs twice. Set
-`TBCONSOLE_RUN_WORKERS=false` on replicas that should only serve.
+`SELECT ... FOR UPDATE SKIP LOCKED`, a running rule holds a lease that lapses
+if its process dies, and the daily rollups and housekeeping hold a lease, so
+nothing runs twice. Set `TBCONSOLE_RUN_WORKERS=false` on replicas that should
+only serve.
 
 Housekeeping runs hourly: it deletes ended sessions, sent or abandoned webhook
 deliveries after `TBCONSOLE_DELIVERY_RETENTION_DAYS`, findings closed for longer
 than `TBCONSOLE_FINDING_RETENTION_DAYS` and audit events older than
 `TBCONSOLE_AUDIT_RETENTION_DAYS` (a year each by default; 0 keeps them). It also
-looks up every directory account that still has a session or an API key, so
-someone removed from the directory, or from every group that grants a role,
-loses access within `TBCONSOLE_LDAP_RECHECK_MINUTES` rather than when their
-session ends, and a changed group changes their role.
+looks up, by its directory entry, every directory account that still has a
+session or an API key, so someone removed from the directory, from every group
+that grants a role, or no longer matched by the sign-in filter (a disabled
+Active Directory account, if the filter says so) loses access within
+`TBCONSOLE_LDAP_RECHECK_MINUTES` rather than when their session ends, and a
+changed group changes their role. A directory that does not answer clearly
+(busy, unreachable, refusing the search) changes nothing, and a recheck that
+would revoke more than a fifth of the accounts it looked at revokes none and
+logs why: that is far likelier a settings mistake than a mass departure.
+Accounts the directory took away are given back when it grants them again;
+an administrator's disabling is not.
+
+To change `TBCONSOLE_SECRET_KEY`, put the old key in
+`TBCONSOLE_SECRET_KEY_PREVIOUS`, restart, run `python -m tbconsole reencrypt`,
+which encrypts every stored secret again under the new key, then remove the
+old one.
 
 ### A read-only account for OpenSearch
 
@@ -99,7 +124,11 @@ for one username from one address hold that pair back for five minutes, and
 admins can require a second factor for local admins. Someone who lost their
 authenticator gets back in with
 `python -m tbconsole create-user NAME --password-stdin --reset-mfa`, which also
-ends their sessions; their role stays as it was unless `--role` is given.
+ends their sessions; their role stays as it was unless `--role` is given, a
+disabled account stays disabled unless `--enable` is, and `--revoke-keys`
+revokes every API key it holds, for a reset after a compromise. Wrong
+passwords given to confirm a change on the account page count against the same
+limits as sign-ins, and a sign-in from another site's page is refused.
 
 ## Rules
 
@@ -188,8 +217,11 @@ outlive the person who made them.
 
 Every delivery carries `X-TurkeyBite-Signature: t=<unix time>,v1=<hex>`, an
 HMAC-SHA256 of the timestamp, a full stop and the exact body, keyed with the
-webhook's secret, and `X-TurkeyBite-Delivery`, which stays the same across
-retries so a receiver can ignore a repeat:
+webhook's secret. The body's `id` stays the same across retries, and is
+covered by the signature, so a receiver can ignore a repeat; the
+`X-TurkeyBite-Delivery` header says the same but is not signed. Deliveries
+ignore proxy settings in the environment; set `TBCONSOLE_WEBHOOK_PROXY` if the
+console must reach receivers through a proxy.
 
 ```python
 import hashlib, hmac, time
@@ -207,13 +239,21 @@ def verify(secret: str, body: bytes, header: str) -> bool:
 - Sessions are opaque tokens in HttpOnly, Secure, SameSite cookies, stored only as
   hashes, ending when idle, when old, when a password changes or an account is
   disabled. Every state-changing request must echo a CSRF token from a second
-  cookie, and a cross-site `Origin` is refused outright.
+  cookie, a cross-site `Origin` is refused outright, and so is any request a
+  browser marks as coming from another site, so a link elsewhere cannot make
+  someone's browser look at a profile in their name.
 - Passwords are Argon2id. API keys are 256 random bits, kept as SHA-256 hashes and
   shown once. Webhook secrets, custom headers and the LDAP bind password are
   encrypted with a key derived from `TBCONSOLE_SECRET_KEY`.
 - Webhooks cannot point at loopback, private, link-local or cloud metadata
-  addresses unless `TBCONSOLE_WEBHOOK_ALLOW_PRIVATE` is on; metadata addresses
-  never. The check runs when a webhook is saved and again before every delivery.
+  addresses unless `TBCONSOLE_WEBHOOK_ALLOW_PRIVATE` is on; link-local and
+  metadata addresses never. The check runs when a webhook is saved and again
+  before every delivery, which then connects to the very address it checked,
+  over a connection of its own, and reads at most the start of the answer.
+- Privacy mode shows people and machines as aliases everywhere a name would
+  appear on screen: lists, charts and their tables, finding titles, queries, the
+  query bar until you click into it, raw events, and the address bar. Exports,
+  copied queries and the audit log keep the real values; they are records.
 - A strict Content-Security-Policy, `X-Frame-Options: DENY`, `no-store` on the
   API, and no inline script anywhere in the app.
 - Sign-ins, failed ones included, every change, every export and every look at a
@@ -226,12 +266,13 @@ cd console
 docker compose -f docker-compose.dev.yml up -d          # Postgres, and an OpenSearch to point at
 
 cd backend
-python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements.lock \
+  && .venv/bin/pip install -r requirements-dev.txt
 export TBCONSOLE_SECRET_KEY=dev-secret-key-for-local-development-only TBCONSOLE_COOKIE_SECURE=false \
        TBCONSOLE_WEBHOOK_ALLOW_PRIVATE=true
 .venv/bin/python -m tbconsole demo seed --yes-replace-everything   # three weeks of made-up events
 .venv/bin/python -m tbconsole serve --port 8710 &
-.venv/bin/python -m tbconsole demo feed --yes-replace-everything & # keeps events arriving
+.venv/bin/python -m tbconsole demo feed --yes-write-events &       # keeps events arriving
 .venv/bin/python -m tbconsole demo sink &                # a receiver for the demo webhooks
 
 cd ../frontend
@@ -254,7 +295,12 @@ screenshots in `docs/screenshots/` from the running app.
 - The sign-in brake per address and username is kept in each process's
   memory; the per-account lockout, which matters more, is in the database and
   holds across replicas.
-- Rules catch up on at most six hours of missed windows after the console has
-  been stopped; anything older is noted on the rule's run, not evaluated.
+- Rules catch up on at most six hours of missed or failed windows; anything
+  older is noted on the rule's run, not evaluated. They read events up to a
+  minute behind now (`TBCONSOLE_RULE_INGEST_DELAY_SEC`), for those still on
+  their way into OpenSearch.
+- A first-seen rule looks at up to 5,000 values in a window and raises at most
+  1,000 findings in one run; a ratio rule ranks the 2,000 busiest groups per
+  field by their share. Each says so on its run when it reaches the limit.
 - The live tail polls OpenSearch every two seconds rather than streaming from it.
 - Single sign-on is LDAP only for now; SAML and OIDC would sit beside it.

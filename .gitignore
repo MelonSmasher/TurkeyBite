@@ -299,13 +299,4 @@ dmypy.json
 # Test virtualenv
 .venv/
 
-# TurkeyBite Console: dependencies and build output
-console/frontend/node_modules/
-console/frontend/dist/
-console/backend/tbconsole/static/
-console/console.env
-console/certs/
-# ...but not its source, which the rules above for Python packaging (lib/)
-# and for each install's own compose file would otherwise leave out
-!console/frontend/src/lib/
-!console/docker-compose.yml
+# The TurkeyBite Console keeps its own rules, in console/.gitignore

@@ -12,6 +12,7 @@
   import Segmented from '../lib/components/Segmented.svelte';
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { dateTime, num } from '../lib/format';
+  import { exploreLink } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { fields } from '../lib/stores/fields.svelte';
@@ -98,7 +99,7 @@
     const def = fields.byName(field);
     const term = `${def?.aliases[0] ?? field}:${/[\s():"]/.test(key) ? `"${key}"` : key}`;
     const q = spec.query ? `(${spec.query}) AND ${term}` : term;
-    return `/explore${qs({ q, from: timeRange.from, to: timeRange.to })}`;
+    return exploreLink({ q, from: timeRange.from, to: timeRange.to });
   }
 
   async function addToDashboard() {
@@ -206,7 +207,7 @@
 
 <ChartCard title={describe} subtitle={result.data ? `${num(result.data.total)} matching events` : ''} refetching={result.refetching} table={tableView}>
   {#snippet actions()}
-    <a class="btn btn-sm" href="/explore{qs({ q: spec.query, from: timeRange.from, to: timeRange.to })}"><ScanSearch size={14} /> See the events</a>
+    <a class="btn btn-sm" href={exploreLink({ q: spec.query, from: timeRange.from, to: timeRange.to })}><ScanSearch size={14} /> See the events</a>
   {/snippet}
   {#if result.error && !result.data}
     <EmptyState title="That question did not run" body={errorText(result.error)} compact />

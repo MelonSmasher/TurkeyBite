@@ -3,6 +3,7 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -46,13 +47,26 @@ def _bearer(request: Request) -> str | None:
     return request.headers.get('x-api-key')
 
 
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """An origin as scheme, host and port, with the default port filled in, so
+    https://x and https://x:443 are the same."""
+    try:
+        parts = urlsplit(url.strip().lower())
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ('http', 'https') or not parts.hostname:
+        return None
+    return parts.scheme, parts.hostname, port or (443 if parts.scheme == 'https' else 80)
+
+
 def origin_ok(request: Request) -> bool:
     """A cross-origin Origin on a cookie-authenticated write is refused outright."""
     origin = request.headers.get('origin')
     if not origin:
         return True
-    allowed = {get_settings().public_url.lower(), str(request.base_url).rstrip('/').lower()}
-    return origin.rstrip('/').lower() in allowed
+    allowed = {_origin(get_settings().public_url), _origin(str(request.base_url))} - {None}
+    return _origin(origin) in allowed
 
 
 async def _from_api_key(db: AsyncSession, request: Request, key: str) -> Principal:
@@ -93,6 +107,11 @@ async def _principal(request: Request, db: AsyncSession) -> Principal | None:
     session = await sessions.lookup(db, token)
     if session is None:
         return None
+    # A link on another site can make the browser send the cookie with a GET;
+    # the app's own requests are same-origin, so refuse the others before they
+    # can, say, plant a profile view in the audit log under someone's name
+    if request.headers.get('sec-fetch-site') in ('cross-site', 'same-site'):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'requests from other sites are refused')
     if request.method not in _SAFE_METHODS and not (sessions.csrf_ok(request)
                                                     and origin_ok(request)):
         raise HTTPException(status.HTTP_403_FORBIDDEN,
@@ -125,8 +144,10 @@ def require(*permissions: str):
     """A dependency that admits only callers holding every one of `permissions`."""
     async def check(principal: Principal = Depends(current_principal)) -> Principal:
         if principal.mfa_setup_required:
+            # Marked, so the app knows to send them to set it up, from any page
             raise HTTPException(status.HTTP_403_FORBIDDEN,
-                                'Set up two-factor authentication on your account first.')
+                                'Set up two-factor authentication on your account first.',
+                                headers={'X-TBC-Reason': 'mfa-setup-required'})
         missing = [p for p in permissions if not principal.can(p)]
         if missing:
             raise HTTPException(status.HTTP_403_FORBIDDEN,

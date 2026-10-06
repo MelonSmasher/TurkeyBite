@@ -29,14 +29,15 @@ def sign(secret: str, body: bytes, timestamp: int | None = None) -> str:
 
 
 def verify(secret: str, body: bytes, header: str, now: int | None = None) -> bool:
-    """What a receiver does; here for the tests and for the docs to quote."""
+    """What a receiver does; here for the tests and for the docs to quote.
+    Anything malformed is simply not a valid signature."""
     try:
         parts = dict(item.split('=', 1) for item in header.split(','))
         timestamp = int(parts['t'])
-    except (ValueError, KeyError):
+        now = int(time.time()) if now is None else now
+        if abs(now - timestamp) > TOLERANCE_SECONDS:
+            return False
+        expected = sign(secret, body, timestamp).split('v1=', 1)[1]
+        return hmac.compare_digest(expected.encode('ascii'), str(parts.get('v1', '')).encode('utf-8'))
+    except (ValueError, KeyError, TypeError, AttributeError):
         return False
-    now = int(time.time()) if now is None else now
-    if abs(now - timestamp) > TOLERANCE_SECONDS:
-        return False
-    expected = sign(secret, body, timestamp).split('v1=', 1)[1]
-    return hmac.compare_digest(expected, parts.get('v1', ''))

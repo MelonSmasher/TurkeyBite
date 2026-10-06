@@ -48,13 +48,20 @@ def _top(aggs: dict, name: str) -> list[dict]:
 
 
 @router.get('/entities')
-async def list_entities(start: str | None = None, end: str | None = None, query: str = '',
+async def list_entities(request: Request, start: str | None = None, end: str | None = None,
+                        query: str = '',
                         sort: str = 'notable', size: int = 50,
                         principal: Principal = Depends(require(rbac.EVENTS_READ)),
                         search: SearchClient = Depends(search_client),
                         db: AsyncSession = Depends(get_session)) -> dict:
     """The people and machines in the events, each with what they did and how risky."""
     tr = time_range(start, end)
+    if query.strip():
+        # Narrowed to some people's events, the list is a look at them
+        if audit.look(db, 'entities.list', principal=principal, request=request,
+                      key=f'{query}|{start}|{end}',
+                      details={'query': query[:2000], **tr.public()}):
+            await db.commit()
     size = max(1, min(size, 200))
     groups = list(F.ENTITY_FIELDS)
     sub = {

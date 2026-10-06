@@ -1,6 +1,7 @@
 <script lang="ts">
   import { X } from '@lucide/svelte';
   import type { Snippet } from 'svelte';
+  import { trap } from './focus';
 
   let { open = $bindable(false), title, subtitle = '', width = 520, onclose, children, footer }: {
     open?: boolean;
@@ -12,58 +13,17 @@
     footer?: Snippet;
   } = $props();
 
-  let panel: HTMLDivElement | undefined = $state();
-  let previous: Element | null = null;
-
   function close() {
     open = false;
     onclose?.();
   }
-
-  function onkeydown(event: KeyboardEvent) {
-    if (!open) return;
-    if (event.key === 'Escape') {
-      event.stopPropagation();
-      close();
-    }
-    if (event.key === 'Tab' && panel) {
-      // Keep focus inside the dialog while it is open
-      const focusable = panel.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-  }
-
-  $effect(() => {
-    if (open) {
-      previous = document.activeElement;
-      queueMicrotask(() => {
-        const target = panel?.querySelector<HTMLElement>('[autofocus], input, select, textarea, button.btn-primary');
-        (target ?? panel)?.focus();
-      });
-    } else if (previous instanceof HTMLElement) {
-      previous.focus();
-      previous = null;
-    }
-  });
 </script>
-
-<svelte:window {onkeydown} />
 
 {#if open}
   <div class="backdrop" role="presentation" onclick={close}></div>
   <div class="wrap" role="presentation">
-    <div bind:this={panel} class="panel" role="dialog" aria-modal="true" aria-label={title}
-         tabindex="-1" style:max-width="{width}px">
+    <div class="panel" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" style:max-width="{width}px"
+         use:trap={{ onescape: close, initial: '[autofocus], input:not([disabled]), select, textarea, button.btn-primary:not([disabled])' }}>
       <header>
         <div class="titles">
           <h2>{title}</h2>

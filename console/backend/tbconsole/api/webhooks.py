@@ -1,9 +1,9 @@
 """Webhooks and their deliveries."""
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
 from ..analysis.ruletypes import SEVERITIES
-from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, require
 from ..models import Webhook, WebhookDelivery
@@ -23,8 +22,15 @@ from .common import delivery_out, parse_uuid, webhook_out
 router = APIRouter(tags=['webhooks'])
 
 SAFE_HEADER = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'
+# The console's own headers, and those that decide how HTTP itself frames and
+# routes the request, which a custom value could only break or smuggle past
 RESERVED_HEADERS = {'content-type', 'content-length', 'host', 'user-agent',
-                    'x-turkeybite-signature', 'x-turkeybite-event', 'x-turkeybite-delivery'}
+                    'x-turkeybite-signature', 'x-turkeybite-event', 'x-turkeybite-delivery',
+                    'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade',
+                    'expect', 'content-encoding', 'proxy-authorization', 'proxy-connection'}
+# A header value as HTTP/1.1 allows it: visible ASCII, with spaces or tabs only
+# between, never at either end
+_HEADER_VALUE = re.compile(r'[\x21-\x7e](?:[\x20-\x7e\t]*[\x21-\x7e])?')
 
 
 class WebhookBody(BaseModel):
@@ -54,11 +60,11 @@ async def _validate(body: WebhookBody) -> None:
     for name, value in (body.headers or {}).items():
         if not name or any(ch not in SAFE_HEADER for ch in name) or name.lower() in RESERVED_HEADERS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f'{name!r} cannot be a custom header')
-        # Header values go on the wire as Latin-1; anything but printable
-        # ASCII is refused here rather than failing every delivery later
-        if len(value) > 4000 or not value.isascii() or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        # Refused here rather than failing every delivery later
+        if len(value) > 4000 or not _HEADER_VALUE.fullmatch(value):
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                f'The value of {name} may only hold printable ASCII')
+                                f'The value of {name} may only hold printable ASCII, with no '
+                                'space at either end')
     try:
         await safety.check(body.url)
     except safety.UnsafeUrl as e:
@@ -194,9 +200,9 @@ async def test_webhook(webhook_id: str, request: Request,
         payload=event_body('test', message=f'{principal.user.username} sent a test from the '
                                            'TurkeyBite Console. If you can read this, the webhook works.'))
     db.add(delivery)
-    await db.flush()
-    async with httpx.AsyncClient(timeout=get_settings().webhook_timeout_sec) as http:
-        outcome = await dispatcher.send(http, hook, delivery)
+    # Committed before sending, so no transaction waits on the receiver
+    await db.commit()
+    outcome = await dispatcher.send(hook, delivery)
     dispatcher.apply(delivery, hook, outcome, datetime.now(timezone.utc))
     # A test is not retried: its result is the answer
     if delivery.status == 'failed':
@@ -206,12 +212,13 @@ async def test_webhook(webhook_id: str, request: Request,
                  target_type='webhook', target_id=hook.id, target_label=hook.name,
                  outcome='success' if delivery.status == 'succeeded' else 'failure')
     await db.commit()
-    return {**delivery_out(delivery, full=True), 'response_snippet': delivery.response_snippet}
+    return {**delivery_out(delivery, full=True, about=principal.can(rbac.FINDINGS_READ)),
+            'response_snippet': delivery.response_snippet}
 
 
 @router.get('/webhooks/{webhook_id}/deliveries')
 async def deliveries(webhook_id: str, state: str | None = None, limit: int = 50,
-                     _: Principal = Depends(require(rbac.WEBHOOKS_READ)),
+                     principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                      db: AsyncSession = Depends(get_session)) -> list[dict]:
     hook = await _get(db, webhook_id)
     stmt = select(WebhookDelivery).where(WebhookDelivery.webhook_id == hook.id)
@@ -219,19 +226,19 @@ async def deliveries(webhook_id: str, state: str | None = None, limit: int = 50,
         stmt = stmt.where(WebhookDelivery.status == state)
     rows = (await db.execute(stmt.order_by(WebhookDelivery.created_at.desc())
                              .limit(max(1, min(limit, 200))))).scalars().all()
-    return [delivery_out(d) for d in rows]
+    return [delivery_out(d, about=principal.can(rbac.FINDINGS_READ)) for d in rows]
 
 
 @router.get('/webhook-deliveries')
 async def all_deliveries(state: str | None = None, limit: int = 50,
-                         _: Principal = Depends(require(rbac.WEBHOOKS_READ)),
+                         principal: Principal = Depends(require(rbac.WEBHOOKS_READ)),
                          db: AsyncSession = Depends(get_session)) -> list[dict]:
     stmt = select(WebhookDelivery)
     if state:
         stmt = stmt.where(WebhookDelivery.status == state)
     rows = (await db.execute(stmt.order_by(WebhookDelivery.created_at.desc())
                              .limit(max(1, min(limit, 200))))).scalars().all()
-    return [delivery_out(d) for d in rows]
+    return [delivery_out(d, about=principal.can(rbac.FINDINGS_READ)) for d in rows]
 
 
 @router.get('/webhook-deliveries/{delivery_id}')
@@ -240,13 +247,16 @@ async def get_delivery(delivery_id: str, principal: Principal = Depends(require(
     delivery = await db.get(WebhookDelivery, parse_uuid(delivery_id, 'That delivery'))
     if delivery is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'That delivery does not exist')
-    out = delivery_out(delivery, full=True)
+    # A delivery's payload describes a finding: who it is about, and what
+    # they did. Seeing it takes findings:read, as the finding itself does
+    about = principal.can(rbac.FINDINGS_READ)
+    out = delivery_out(delivery, full=about, about=about)
     # What the receiver answered can be anything it chose to say, so only
     # those who choose where webhooks point see it
     if principal.can(rbac.WEBHOOKS_WRITE):
         out['response_snippet'] = delivery.response_snippet
     hook = await db.get(Webhook, delivery.webhook_id)
-    if hook is not None:
+    if hook is not None and about:
         out['rendered'] = formats.render(hook.format, delivery.payload)
     return out
 

@@ -158,6 +158,13 @@ class Rule(TimestampMixin, Base):
         ForeignKey('users.id', ondelete='SET NULL'))
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The end of the last window evaluated without error: the next run starts
+    # from here, so a window that failed, or was missed while the console or
+    # the cluster was down, is evaluated later rather than never
+    evaluated_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set while a run is under way, by whichever process claimed it, so no
+    # other starts the same rule; it lapses if that process dies
+    running_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_status: Mapped[str | None] = mapped_column(String(16))
     last_error: Mapped[str | None] = mapped_column(Text)
     last_duration_ms: Mapped[int | None] = mapped_column(Integer)
@@ -278,6 +285,8 @@ class WebhookDelivery(Base):
     __table_args__ = (
         Index('ix_webhook_deliveries_due', 'status', 'next_attempt_at'),
         Index('ix_webhook_deliveries_webhook_created', 'webhook_id', 'created_at'),
+        # A finding's deliveries, and pruning findings, which sets these to null
+        Index('ix_webhook_deliveries_finding_id', 'finding_id'),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)

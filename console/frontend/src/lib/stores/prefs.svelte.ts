@@ -1,8 +1,15 @@
-// Display preferences: theme, accent, density, privacy mode. Kept in local
-// storage so they apply before the first paint, and saved to the account so
-// they follow a person to another browser.
+// Display preferences: theme, accent, density, privacy mode.
+//
+// They belong to the account, and follow a person from browser to browser.
+// How the page looks (theme, accent, density, sidebar) is also kept in this
+// browser, so it applies before the first paint; privacy mode is not, so on a
+// shared computer one person's choice never decides what the next one sees.
+// A change saves only what changed, at once for privacy mode, so a slow save
+// or another tab cannot put an older value back; other tabs of the same
+// person hear about it straight away.
 
 import { api } from '../api';
+import { toasts } from './toasts.svelte';
 
 export type Theme = 'light' | 'dark' | 'system';
 export type Accent = 'iris' | 'ocean' | 'forest' | 'ember' | 'rose' | 'slate';
@@ -19,24 +26,31 @@ export const ACCENTS: { id: Accent; label: string; swatch: string }[] = [
 
 const KEY = 'tbc.prefs';
 
-interface Stored {
+interface Look {
   theme?: Theme;
   accent?: Accent;
   density?: Density;
-  privacy_mode?: boolean;
   sidebar_collapsed?: boolean;
-  timezone?: string;
-  // When these were last changed here, so the newer of this browser's and
-  // the account's preferences wins, whichever arrives last
-  updated_at?: number;
 }
 
-function load(): Stored {
+type Changes = Partial<{ theme: Theme; accent: Accent; density: Density; privacy: boolean; sidebarCollapsed: boolean }>;
+
+function load(): Look {
   try {
     return JSON.parse(localStorage.getItem(KEY) || '{}');
   } catch {
     return {};
   }
+}
+
+function wire(changes: Changes): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (changes.theme !== undefined) out.theme = changes.theme;
+  if (changes.accent !== undefined) out.accent = changes.accent;
+  if (changes.density !== undefined) out.density = changes.density;
+  if (changes.privacy !== undefined) out.privacy_mode = changes.privacy;
+  if (changes.sidebarCollapsed !== undefined) out.sidebar_collapsed = changes.sidebarCollapsed;
+  return out;
 }
 
 class Prefs {
@@ -48,34 +62,40 @@ class Prefs {
   resolvedTheme = $state<'light' | 'dark'>('light');
   #media = matchMedia('(prefers-color-scheme: dark)');
   #saveTimer: ReturnType<typeof setTimeout> | null = null;
-  #updatedAt = 0;
+  #unsaved: Record<string, unknown> = {};
+  #user: string | null = null;
+  #channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('tbc-prefs');
 
   constructor() {
     const stored = load();
     this.theme = stored.theme ?? 'system';
     this.accent = stored.accent ?? 'iris';
     this.density = stored.density ?? 'comfortable';
-    this.privacy = stored.privacy_mode ?? false;
     this.sidebarCollapsed = stored.sidebar_collapsed ?? false;
-    this.#updatedAt = stored.updated_at ?? 0;
     this.#media.addEventListener('change', () => this.apply());
+    this.#channel?.addEventListener('message', (event) => {
+      const { user, changes } = event.data ?? {};
+      if (user && user === this.#user) this.#change(changes as Changes);
+    });
     this.apply();
   }
 
-  /** The account's preferences, unless this browser changed its own since;
-   *  then this browser's are saved to the account instead. */
-  adopt(server: Record<string, unknown>, privacyDefault: boolean) {
-    const serverAt = typeof server.updated_at === 'number' ? server.updated_at : 0;
-    if (this.#updatedAt > serverAt) {
-      this.#save();
-      return;
-    }
+  /** The account's preferences, as the server has them; the organisation's
+   *  privacy default where the person has not chosen. */
+  adopt(server: Record<string, unknown>, privacyDefault: boolean, user: string) {
+    this.#user = user;
     if (server.theme) this.theme = server.theme as Theme;
     if (server.accent) this.accent = server.accent as Accent;
     if (server.density) this.density = server.density as Density;
     if (typeof server.sidebar_collapsed === 'boolean') this.sidebarCollapsed = server.sidebar_collapsed;
-    this.privacy = typeof server.privacy_mode === 'boolean' ? server.privacy_mode : privacyDefault || this.privacy;
-    this.#updatedAt = serverAt;
+    this.privacy = typeof server.privacy_mode === 'boolean' ? server.privacy_mode : privacyDefault;
+    this.apply();
+  }
+
+  /** Forgets whose preferences these are, at sign-out. */
+  forget() {
+    this.#user = null;
+    this.privacy = false;
     this.apply();
   }
 
@@ -88,31 +108,40 @@ class Prefs {
     root.dataset.density = this.density;
     root.classList.toggle('privacy', this.privacy);
     localStorage.setItem(KEY, JSON.stringify({
-      theme: this.theme, accent: this.accent, density: this.density, privacy_mode: this.privacy,
-      sidebar_collapsed: this.sidebarCollapsed, updated_at: this.#updatedAt,
-    } satisfies Stored));
+      theme: this.theme, accent: this.accent, density: this.density, sidebar_collapsed: this.sidebarCollapsed,
+    } satisfies Look));
   }
 
-  #save() {
-    if (this.#saveTimer) clearTimeout(this.#saveTimer);
-    this.#saveTimer = setTimeout(() => {
-      api.put('/account/preferences', {
-        theme: this.theme, accent: this.accent, density: this.density,
-        privacy_mode: this.privacy, sidebar_collapsed: this.sidebarCollapsed, updated_at: this.#updatedAt,
-      }).catch(() => { /* a preference that did not save is not worth an error */ });
-    }, 500);
-  }
-
-  set(changes: Partial<{ theme: Theme; accent: Accent; density: Density; privacy: boolean; sidebarCollapsed: boolean }>,
-      persist = true) {
+  #change(changes: Changes) {
     if (changes.theme) this.theme = changes.theme;
     if (changes.accent) this.accent = changes.accent;
     if (changes.density) this.density = changes.density;
     if (changes.privacy !== undefined) this.privacy = changes.privacy;
     if (changes.sidebarCollapsed !== undefined) this.sidebarCollapsed = changes.sidebarCollapsed;
-    if (persist) this.#updatedAt = Date.now();
     this.apply();
-    if (persist) this.#save();
+  }
+
+  set(changes: Changes, persist = true) {
+    this.#change(changes);
+    if (!persist || !this.#user) return;
+    this.#channel?.postMessage({ user: this.#user, changes });
+    Object.assign(this.#unsaved, wire(changes));
+    if (this.#saveTimer) clearTimeout(this.#saveTimer);
+    // Privacy mode saves at once: a reload a moment later must not show names
+    if (changes.privacy !== undefined) this.#save();
+    else this.#saveTimer = setTimeout(() => this.#save(), 400);
+  }
+
+  #save() {
+    const body = this.#unsaved;
+    this.#unsaved = {};
+    this.#saveTimer = null;
+    if (!Object.keys(body).length) return;
+    api.put('/account/preferences', body).catch(() => {
+      toasts.error('Your preference was not saved',
+        'privacy_mode' in body ? 'Privacy mode applies here, but another browser or a reload may not have it.'
+          : 'It applies here until you reload.');
+    });
   }
 }
 

@@ -36,12 +36,19 @@ SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITIES)}
 MAX_GROUPS = 200                  # groups one terms aggregation returns, and hits kept
 PAGE = 500                        # composite buckets per request
 MAX_PAIRS = 5000                  # first seen: (group, value) pairs looked at
+MAX_NEW = 1000                    # first seen: findings one evaluation may raise
+HISTORY_CHUNK = 500               # first seen: pairs checked against history per request
+RATIO_SCAN = 2000                 # ratio: groups per field ranked by share
 MAX_SILENT_GROUPS = 20000         # silence: groups looked at
 MAX_HISTORY = timedelta(days=90)  # the furthest back any evaluation reads
 
 
 class RuleError(ValueError):
     """A rule definition that cannot be evaluated, in words for its author."""
+
+
+class BudgetSpent(RuleError):
+    """An evaluation asked OpenSearch more than it was allowed to."""
 
 
 @dataclass
@@ -295,8 +302,17 @@ def _span(seconds: float) -> str:
 
 
 class Evaluator:
-    def __init__(self, search: SearchClient):
+    def __init__(self, search: SearchClient, budget: int | None = None):
         self.search = search
+        # How many requests it may still send, for a backtest; None is no limit
+        self.budget = budget
+
+    async def _search(self, body: dict) -> dict:
+        if self.budget is not None:
+            if self.budget <= 0:
+                raise BudgetSpent('This asked OpenSearch too many questions; try a shorter range.')
+            self.budget -= 1
+        return await self.search.search(body)
 
     async def evaluate(self, spec: RuleSpec, now: datetime,
                        recent_since: datetime | None = None,
@@ -317,32 +333,34 @@ class Evaluator:
         return await method(spec, params, window, groups, recent_since)
 
     async def _run(self, query: dict, aggs: dict) -> dict:
-        return await self.search.search({'size': 0, 'track_total_hits': True, 'query': query,
-                                         'aggs': aggs})
+        return await self._search({'size': 0, 'track_total_hits': True, 'query': query,
+                                   'aggs': aggs})
 
     async def _composite(self, query: dict, sources: list[tuple[str, str]], sub: dict | None,
                          limit: int) -> tuple[list[dict], bool]:
         """Every bucket of a composite aggregation, a page at a time, up to
-        `limit`. Returns the buckets and whether there were more."""
+        `limit`. Returns the buckets and whether there were more: it reads one
+        past the limit to know, so a page that ends exactly there is not
+        mistaken for a cut."""
         out: list[dict] = []
         after = None
-        while True:
-            composite: dict = {'size': PAGE, 'sources': [
+        while len(out) <= limit:
+            size = min(PAGE, limit + 1 - len(out))
+            composite: dict = {'size': size, 'sources': [
                 {name: {'terms': {'field': name_field}}} for name, name_field in sources]}
             if after:
                 composite['after'] = after
             agg: dict = {'composite': composite}
             if sub:
                 agg['aggs'] = sub
-            result = await self.search.search({'size': 0, 'query': query, 'aggs': {'c': agg}})
+            result = await self._search({'size': 0, 'query': query, 'aggs': {'c': agg}})
             part = (result.get('aggregations') or {}).get('c') or {}
             buckets = part.get('buckets', [])
             out.extend(buckets)
             after = part.get('after_key')
-            if len(out) >= limit:
-                return out[:limit], len(out) > limit or (bool(after) and len(buckets) == PAGE)
-            if not buckets or not after or len(buckets) < PAGE:
-                return out, False
+            if not buckets or not after or len(buckets) < size:
+                break
+        return out[:limit], len(out) > limit
 
     async def _each_group(self, query: dict, groups: list[str], extra: list[tuple[str, str]],
                           sub: dict | None, limit: int) -> tuple[list[dict], bool]:
@@ -363,8 +381,6 @@ class Evaluator:
                 key = b.get('key') or {}
                 out.append(dict(b, field=name, key=key.get('g'),
                                 values={k: v for k, v in key.items() if k != 'g'}))
-            if len(out) >= limit:
-                return out, True
         return out, truncated
 
     def _grouped(self, result: dict, groups: list[str]) -> list[dict]:
@@ -428,14 +444,16 @@ class Evaluator:
         return Evaluation(hits)
 
     async def _ratio(self, spec, params, window, groups, recent_since) -> Evaluation:
-        sub = dict(_detail_aggs(recent_since))
-        sub['num'] = {'filter': tbql.compile(params['numerator'])}
+        numerator = tbql.compile(params['numerator'])
         query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
-        # The groups with the most events that match, among those with enough
-        result = await self._run(query, self._aggs(groups, sub, order={'num': 'desc'},
-                                                   min_doc_count=params['min_count']))
+        if not groups:
+            sub = dict(_detail_aggs(recent_since))
+            sub['num'] = {'filter': numerator}
+            candidates = self._grouped(await self._run(query, self._aggs(groups, sub)), groups)
+        else:
+            candidates = await self._ratio_groups(query, numerator, params, groups, recent_since)
         hits = []
-        for b in self._grouped(result, groups):
+        for b in candidates:
             count = b.get('doc_count', 0)
             matched = (b.get('num') or {}).get('doc_count', 0)
             if count < params['min_count'] or not count:
@@ -452,7 +470,48 @@ class Evaluator:
                 evidence_query=_evidence_query(spec, b['field'], b['key'], params['numerator']),
                 window=window, top_domains=d['top_domains'], top_categories=d['top_categories'],
                 first=d['first'], last=d['last'], extra={'matched': matched}))
+        hits.sort(key=lambda h: h.value, reverse=True)
         return Evaluation(hits)
+
+    async def _ratio_groups(self, query, numerator, params, groups, recent_since) -> list[dict]:
+        """The groups with the highest share, not the most events: first ranked
+        by share across many groups with OpenSearch working out each share,
+        then the details read for the best of them alone."""
+        share_aggs = {
+            'num': {'filter': numerator},
+            'share': {'bucket_script': {'buckets_path': {'n': 'num>_count', 'c': '_count'},
+                                        'script': 'params.n / params.c'}},
+            'keep': {'bucket_selector': {'buckets_path': {'s': 'share'},
+                                         'script': {'source': 'params.s >= params.r',
+                                                    'params': {'r': params['ratio']}}}},
+            'best': {'bucket_sort': {'sort': [{'share': {'order': 'desc'}}], 'size': MAX_GROUPS}},
+        }
+        ranked = self._grouped(await self._run(query, {
+            # Beyond the usual cap on terms: only the share and its count come back
+            f'g{i}': {'filter': Q.group_filter(groups, i),
+                      'aggs': {'t': {'terms': {'field': name, 'size': RATIO_SCAN,
+                                               'min_doc_count': max(1, params['min_count'])},
+                                     'aggs': share_aggs}}}
+            for i, name in enumerate(groups)}), groups)
+        best = sorted(ranked, key=lambda b: ((b.get('num') or {}).get('doc_count', 0)
+                                             / max(b.get('doc_count', 1), 1)), reverse=True)[:MAX_GROUPS]
+        if not best:
+            return []
+        keys: dict[str, list] = {}
+        for b in best:
+            keys.setdefault(b['field'], []).append(b['key'])
+        sub = dict(_detail_aggs(recent_since))
+        sub['num'] = {'filter': numerator}
+        detail_query = {'bool': {'filter': [query, {'bool': {'should': [
+            {'terms': {f: v}} for f, v in keys.items()], 'minimum_should_match': 1}}]}}
+        aggs = {}
+        for i, name in enumerate(groups):
+            if name not in keys:
+                continue
+            terms = Q.terms_agg(name, len(keys[name]), sub)
+            terms['terms']['include'] = [str(k) for k in keys[name]]
+            aggs[f'g{i}'] = {'filter': Q.group_filter(groups, i), 'aggs': {'t': terms}}
+        return self._grouped(await self._run(detail_query, aggs), groups)
 
     async def _spike(self, spec, params, window, groups, recent_since) -> Evaluation:
         n = params['baseline_windows']
@@ -508,8 +567,8 @@ class Evaluator:
         lookback = TimeRange(window.start - timedelta(days=params['lookback_days']), window.start)
         # Every value is new to a console that has not got the history yet;
         # wait until it has rather than raising a finding for everything
-        oldest = await self.search.search({'size': 0, 'aggs': {'oldest': {'min': {'field': '@timestamp'}}},
-                                           'query': {'match_all': {}}})
+        oldest = await self._search({'size': 0, 'aggs': {'oldest': {'min': {'field': '@timestamp'}}},
+                                     'query': {'match_all': {}}})
         oldest_ms = ((oldest.get('aggregations') or {}).get('oldest') or {}).get('value')
         if oldest_ms is None:
             return Evaluation([], 'skipped', 'there are no events yet')
@@ -526,29 +585,17 @@ class Evaluator:
             return Evaluation([])
         for p in pairs:
             p['value'] = p['values'].get('v')
-        values = sorted({str(p['value']) for p in pairs})
-        past_query = Q.bool_query(lookback, spec.query, exclude=spec.exclusions,
-                                  extra=[{'terms': {target: values}}])
-        if groups:
-            keys = sorted({str(p['key']) for p in pairs if p['field']})
-            past_query['bool']['filter'].append(
-                {'bool': {'should': [{'terms': {g: keys}} for g in groups],
-                          'minimum_should_match': 1}})
-        seen_pairs, _ = await self._each_group(past_query, groups, [('v', target)], None,
-                                               MAX_PAIRS * 20)
-        seen = {(b['field'], str(b['key']) if b['field'] else None, str(b['values'].get('v')))
-                for b in seen_pairs}
+        seen = await self._seen_before(spec, lookback, target, pairs)
         label = F.BY_NAME[target].label.lower()
         target_alias = F.BY_NAME[target].aliases[0] if F.BY_NAME[target].aliases else target
-        fresh = [p for p in pairs
-                 if (p['field'], str(p['key']) if p['field'] else None, str(p['value'])) not in seen]
+        fresh = [p for i, p in enumerate(pairs) if i not in seen]
         fresh.sort(key=lambda p: p.get('doc_count', 0), reverse=True)
         reason = ''
         if truncated:
             reason = f'looked at the first {MAX_PAIRS:,} values in the window'
-        if len(fresh) > MAX_GROUPS:
-            reason = f'{len(fresh):,} values were new; kept the {MAX_GROUPS} busiest'
-            fresh = fresh[:MAX_GROUPS]
+        if len(fresh) > MAX_NEW:
+            reason = f'{len(fresh):,} values were new; kept the {MAX_NEW:,} busiest'
+            fresh = fresh[:MAX_NEW]
         hits = []
         for p in fresh:
             d = _details(p)
@@ -567,17 +614,40 @@ class Evaluator:
                 distinct=str(value)))
         return Evaluation(hits, reason=reason)
 
+    async def _seen_before(self, spec, lookback: TimeRange, target: str, pairs: list[dict]) -> set[int]:
+        """Which of `pairs` occurred in `lookback`, by index. Each pair is its
+        own filter, matched on its own field, so a name is never compared with
+        an address field and no answer can be cut short: the count of requests
+        is fixed by the pairs, not by how much history there is."""
+        base = Q.bool_query(lookback, spec.query, exclude=spec.exclusions)
+        seen: set[int] = set()
+        for start in range(0, len(pairs), HISTORY_CHUNK):
+            chunk = pairs[start:start + HISTORY_CHUNK]
+            filters = {}
+            for n, p in enumerate(chunk, start=start):
+                clause = [{'term': {target: p['value']}}]
+                if p['field']:
+                    clause.append({'term': {p['field']: p['key']}})
+                filters[str(n)] = {'bool': {'filter': clause}}
+            result = await self._search({'size': 0, 'query': base,
+                                         'aggs': {'f': {'filters': {'filters': filters}}}})
+            buckets = ((result.get('aggregations') or {}).get('f') or {}).get('buckets') or {}
+            for key, bucket in buckets.items():
+                if (bucket or {}).get('doc_count', 0) > 0:
+                    seen.add(int(key))
+        return seen
+
     async def _absence(self, spec, params, window, groups, recent_since) -> Evaluation:
         lookback = TimeRange(window.start - timedelta(seconds=params['lookback_seconds']),
                              window.start)
         if not groups:
             query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
-            count = total(await self.search.search({'size': 0, 'track_total_hits': True,
-                                                    'query': query}))
+            count = total(await self._search({'size': 0, 'track_total_hits': True,
+                                              'query': query}))
             if count >= params['threshold']:
                 return Evaluation([])
-            before = await self.search.count(
-                Q.bool_query(lookback, spec.query, exclude=spec.exclusions))
+            before = total(await self._search({'size': 0, 'track_total_hits': True, 'query':
+                                               Q.bool_query(lookback, spec.query, exclude=spec.exclusions)}))
             if before < params['min_baseline']:
                 # Quiet then, quiet now: nothing stopped
                 return Evaluation([])

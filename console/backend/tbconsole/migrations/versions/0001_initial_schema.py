@@ -132,6 +132,8 @@ def upgrade() -> None:
     sa.Column('created_by_id', sa.UUID(), nullable=True),
     sa.Column('next_run_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_run_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('evaluated_until', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('running_until', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_status', sa.String(length=16), nullable=True),
     sa.Column('last_error', sa.Text(), nullable=True),
     sa.Column('last_duration_ms', sa.Integer(), nullable=True),
@@ -294,9 +296,11 @@ def upgrade() -> None:
     )
     op.create_index('ix_webhook_deliveries_due', 'webhook_deliveries', ['status', 'next_attempt_at'], unique=False)
     op.create_index('ix_webhook_deliveries_webhook_created', 'webhook_deliveries', ['webhook_id', 'created_at'], unique=False)
+    op.create_index('ix_webhook_deliveries_finding_id', 'webhook_deliveries', ['finding_id'], unique=False)
 
 
 def downgrade() -> None:
+    op.drop_index('ix_webhook_deliveries_finding_id', table_name='webhook_deliveries')
     op.drop_index('ix_webhook_deliveries_webhook_created', table_name='webhook_deliveries')
     op.drop_index('ix_webhook_deliveries_due', table_name='webhook_deliveries')
     op.drop_table('webhook_deliveries')

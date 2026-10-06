@@ -97,7 +97,8 @@ async def test_a_false_positive_teaches_the_rule_an_exception(client):
     assert exception['query'] == 'user:it-admin' and exception['expires_at']
     async with db.sessionmaker()() as session:
         stored = await session.get(Rule, uuid.UUID(rule['id']))
-        assert stored.modified and stored.exceptions[-1]['query'] == 'user:it-admin'
+        # Exceptions are the rule's own: a built-in rule keeps taking new versions
+        assert not stored.modified and stored.exceptions[-1]['query'] == 'user:it-admin'
         assert (await session.get(Finding, finding.id)).status == 'false_positive'
 
 

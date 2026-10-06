@@ -18,8 +18,8 @@ FROM python:3.13-slim@sha256:3dd7cc108ec1493442514f5c2a871af6af0ec31d768ff6e378a
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin tbconsole
 WORKDIR /app
-COPY backend/requirements.txt backend/requirements.lock ./
-RUN pip install -r requirements.txt -c requirements.lock
+COPY backend/requirements.lock ./
+RUN pip install --require-hashes -r requirements.lock
 COPY backend/alembic.ini ./
 COPY backend/tbconsole ./tbconsole
 # The demo writes made-up events and empties databases; it has no place in

@@ -120,7 +120,12 @@ async def update_user(user_id: str, body: UpdateUser, request: Request,
                                 'mapping in Authentication instead.')
         changes['role'] = [user.role, body.role]
         user.role = body.role
-    if body.disabled is not None and body.disabled != user.disabled:
+    if body.disabled and user.disabled and user.disabled_reason == 'directory':
+        # Already off because of the directory, which could turn it back on;
+        # an admin's decision is one it cannot undo
+        user.disabled_reason = 'admin'
+        changes['disabled'] = True
+    elif body.disabled is not None and body.disabled != user.disabled:
         if body.disabled and user.id == principal.user.id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'You cannot disable yourself.')
         if body.disabled and user.role == 'admin' and not await _other_admins(db, user):

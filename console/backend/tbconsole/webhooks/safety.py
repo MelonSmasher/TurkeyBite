@@ -21,7 +21,7 @@ unwrapped before they are judged.
 import asyncio
 import ipaddress
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit, urlunsplit
 
 from ..config import get_settings
@@ -80,21 +80,36 @@ def check_shape(url: str) -> tuple[str, str, int]:
     if not parts.hostname:
         raise UnsafeUrl('The URL has no host.')
     try:
-        port = parts.port or (443 if parts.scheme == 'https' else 80)
+        port = parts.port
     except ValueError as e:
         raise UnsafeUrl('The port is not a number.') from e
+    if port == 0:
+        raise UnsafeUrl('Port 0 is not a port anything listens on.')
+    port = port or (443 if parts.scheme == 'https' else 80)
     return parts.scheme, parts.hostname, port
 
 
 @dataclass
 class Target:
-    """A checked URL, and the URL that connects to the address that was checked."""
+    """A checked URL, and how to connect to each address that was checked."""
     url: str
     host: str
     host_header: str
     pinned_url: str
     address: str
     tls: bool
+    addresses: list[str] = field(default_factory=list)
+    scheme: str = 'https'
+    port: int = 443
+    path: str = '/'
+    query: str = ''
+
+    def url_for(self, address: str) -> str:
+        """The URL that connects to `address`, one of those checked."""
+        literal = f'[{address}]' if ':' in address else address
+        default = 443 if self.scheme == 'https' else 80
+        netloc = literal if self.port == default else f'{literal}:{self.port}'
+        return urlunsplit((self.scheme, netloc, self.path, self.query, ''))
 
 
 async def resolve(url: str) -> Target:
@@ -118,15 +133,17 @@ async def resolve(url: str) -> Target:
             hint = '' if allow_private else (' Set TBCONSOLE_WEBHOOK_ALLOW_PRIVATE=true to allow '
                                              'receivers on the local network.')
             raise UnsafeUrl(f'{host} resolves to {address}, which webhooks may not reach.{hint}')
-    chosen = addresses[0]
     parts = urlsplit(url.strip())
-    literal = f'[{chosen}]' if chosen.version == 6 else str(chosen)
     default = 443 if scheme == 'https' else 80
-    netloc = literal if port == default else f'{literal}:{port}'
-    host_header = host if port == default else f'{host}:{port}'
-    return Target(url=url, host=host, host_header=host_header,
-                  pinned_url=urlunsplit((scheme, netloc, parts.path or '/', parts.query, '')),
-                  address=str(chosen), tls=scheme == 'https')
+    # An IPv6 literal goes in the Host header in brackets, as in the URL
+    named = f'[{host}]' if ':' in host else host
+    host_header = named if port == default else f'{named}:{port}'
+    unique = list(dict.fromkeys(str(a) for a in addresses))
+    target = Target(url=url, host=host, host_header=host_header, pinned_url='',
+                    address=unique[0], tls=scheme == 'https', addresses=unique, scheme=scheme,
+                    port=port, path=parts.path or '/', query=parts.query)
+    target.pinned_url = target.url_for(unique[0])
+    return target
 
 
 async def check(url: str) -> None:

@@ -1,8 +1,6 @@
 """Reading the audit log."""
 
-from datetime import datetime
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +8,7 @@ from ..db import get_session
 from ..deps import Principal, require
 from ..models import AuditEvent
 from ..security import rbac
-from .common import ts
+from .common import like_escape, moment_param, ts
 
 router = APIRouter(prefix='/audit', tags=['audit'])
 
@@ -23,20 +21,19 @@ async def list_events(action: str | None = None, actor: str | None = None,
                       db: AsyncSession = Depends(get_session)) -> dict:
     stmt = select(AuditEvent)
     if action:
-        stmt = stmt.where(AuditEvent.action.like(action.replace('*', '%')))
+        stmt = stmt.where(AuditEvent.action.like(like_escape(action[:100]).replace('*', '%'), escape='\\'))
     if actor:
-        stmt = stmt.where(AuditEvent.actor_name.ilike(f'%{actor[:100]}%'))
+        stmt = stmt.where(AuditEvent.actor_name.ilike(f'%{like_escape(actor[:100])}%', escape='\\'))
     if outcome:
         stmt = stmt.where(AuditEvent.outcome == outcome)
     if q:
-        like = f'%{q[:200]}%'
-        stmt = stmt.where(or_(AuditEvent.target_label.ilike(like), AuditEvent.target_id.ilike(like),
-                              AuditEvent.actor_name.ilike(like), AuditEvent.action.ilike(like)))
+        like = f'%{like_escape(q[:200])}%'
+        stmt = stmt.where(or_(AuditEvent.target_label.ilike(like, escape='\\'),
+                              AuditEvent.target_id.ilike(like, escape='\\'),
+                              AuditEvent.actor_name.ilike(like, escape='\\'),
+                              AuditEvent.action.ilike(like, escape='\\')))
     if before:
-        try:
-            stmt = stmt.where(AuditEvent.at < datetime.fromisoformat(before.replace('Z', '+00:00')))
-        except ValueError as e:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'before is a time') from e
+        stmt = stmt.where(AuditEvent.at < moment_param(before, 'before'))
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (await db.execute(stmt.order_by(AuditEvent.at.desc(), AuditEvent.id.desc())
                              .limit(max(1, min(limit, 500))))).scalars().all()

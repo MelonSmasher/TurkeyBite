@@ -20,11 +20,9 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => { if (open && e.key === 'Escape') close(); }} />
-
 {#if open}
   <div class="backdrop" role="presentation" onclick={close}></div>
-  <div class="drawer" role="dialog" aria-modal="true" aria-label={title} style:width="min({width}px, 100vw)" use:trap>
+  <div class="drawer" role="dialog" aria-modal="true" aria-label={title} style:width="min({width}px, 100vw)" use:trap={{ onescape: close }}>
     <header>
       <div class="titles">
         {#if header}{@render header()}{:else}

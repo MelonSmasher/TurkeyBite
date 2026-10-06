@@ -1,5 +1,7 @@
 """Local account passwords: Argon2id hashes and the rules a new one must meet."""
 
+import asyncio
+
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
@@ -23,6 +25,16 @@ def verify_password(stored: str | None, password: str) -> bool:
         return _hasher.verify(stored or _DUMMY, password) and stored is not None
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+
+
+async def verify_async(stored: str | None, password: str) -> bool:
+    """verify_password, off the event loop: Argon2 is meant to be slow, and a
+    burst of sign-ins would otherwise stall every other request."""
+    return await asyncio.to_thread(verify_password, stored, password)
+
+
+async def hash_async(password: str) -> str:
+    return await asyncio.to_thread(hash_password, password)
 
 
 def needs_rehash(stored: str) -> bool:

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ShieldAlert } from '@lucide/svelte';
   import type { Component } from 'svelte';
-  import { api, setUnauthorizedHandler } from './lib/api';
+  import { api, setMfaRequiredHandler, setUnauthorizedHandler } from './lib/api';
   import EmptyState from './lib/components/EmptyState.svelte';
   import Toasts from './lib/components/Toasts.svelte';
   import CommandPalette from './lib/layout/CommandPalette.svelte';
@@ -25,6 +25,10 @@
     if (router.route?.public) return;
     const back = encodeURIComponent(location.pathname + location.search);
     location.assign(`/login?next=${back}`);
+  });
+
+  setMfaRequiredHandler(() => {
+    if (!session.me?.mfa_required) session.load();
   });
 
   const ready = session.load().then((me) => {

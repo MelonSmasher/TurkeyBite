@@ -42,6 +42,18 @@
     }
   }
 
+  let resetting = $state(false);
+
+  async function resetPassword() {
+    const u = resetFor;
+    if (!u) return;
+    resetting = true;
+    // The dialog stays until it worked, so a refused password can be changed
+    const ok = await call(() => api.post(`/users/${encodeURIComponent(u.id)}/password`, { password: newPassword }), 'Password set');
+    resetting = false;
+    if (ok) resetFor = null;
+  }
+
   async function create() {
     const ok = await call(() => api.post('/users', { ...form, kind, password: kind === 'local' ? form.password : null,
       email: form.email || null, display_name: form.display_name || null }), kind === 'local' ? 'Account created' : 'Service account created');
@@ -148,7 +160,7 @@
   <input class="input" type="password" bind:value={newPassword} autocomplete="new-password" aria-label="New password" />
   {#snippet footer()}
     <button class="btn" onclick={() => (resetFor = null)}>Cancel</button>
-    <button class="btn btn-primary" disabled={newPassword.length < 12} onclick={async () => { const u = resetFor; resetFor = null; if (u) await call(() => api.post(`/users/${u.id}/password`, { password: newPassword }), 'Password set'); }}>Set password</button>
+    <button class="btn btn-primary" disabled={newPassword.length < 12 || resetting} onclick={resetPassword}>{resetting ? 'Setting…' : 'Set password'}</button>
   {/snippet}
 </Modal>
 

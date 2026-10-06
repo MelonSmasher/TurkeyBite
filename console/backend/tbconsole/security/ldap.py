@@ -18,7 +18,7 @@ import logging
 import ssl
 from dataclasses import dataclass, field
 
-from ldap3 import ALL_ATTRIBUTES, FIRST, SUBTREE, SYNC, Connection, Server, ServerPool, Tls
+from ldap3 import ALL_ATTRIBUTES, BASE, FIRST, SUBTREE, SYNC, Connection, Server, ServerPool, Tls
 from ldap3.core import exceptions as lx
 from ldap3.utils.conv import escape_filter_chars
 
@@ -211,13 +211,37 @@ def _clean_username(username: str) -> str:
     return username
 
 
+# Search results that mean the search worked: success, and the size limit
+# that finding two people for one name hits
+_ANSWERED = (0, 4)
+_NO_SUCH_OBJECT = 32
+
+
+def _answered(conn: Connection, what: str, allow: tuple[int, ...] = _ANSWERED) -> int:
+    """The result code of the last operation, if it is one that means the
+    directory answered. Busy, unavailable, a time limit, refused access: none
+    of those says anything about the person, so they raise rather than read
+    as 'not found', which would revoke everyone at once."""
+    result = conn.result or {}
+    code = int(result.get('result', 0) or 0)
+    if code not in allow:
+        raise LdapUnavailable(f'the directory did not complete the {what}: '
+                              f'{result.get("description") or code} {result.get("message") or ""}'.strip())
+    return code
+
+
+def _attributes(cfg: dict) -> list[str]:
+    return [a for a in (cfg.get('attr_username'), cfg.get('attr_display_name'),
+                        cfg.get('attr_email'), cfg.get('attr_groups')) if a]
+
+
 def _find_user(conn: Connection, cfg: dict, username: str) -> tuple[str, dict]:
     search_filter = (cfg.get('user_filter') or DEFAULTS['user_filter']).replace(
         '{username}', escape_filter_chars(username))
-    attributes = [a for a in (cfg.get('attr_username'), cfg.get('attr_display_name'),
-                              cfg.get('attr_email'), cfg.get('attr_groups')) if a]
+    attributes = _attributes(cfg)
     conn.search(cfg.get('user_base_dn') or '', search_filter, search_scope=SUBTREE,
                 attributes=attributes or ALL_ATTRIBUTES, size_limit=2)
+    _answered(conn, 'search for the account')
     entries = [e for e in conn.response or [] if e.get('type') == 'searchResEntry']
     if len(entries) != 1:
         # None, or an ambiguous filter: refusing is the only safe answer,
@@ -231,6 +255,7 @@ def _groups(conn: Connection, cfg: dict, dn: str, attributes: dict) -> list[str]
     if cfg.get('group_filter') and cfg.get('group_base_dn'):
         search_filter = cfg['group_filter'].replace('{dn}', escape_filter_chars(dn))
         conn.search(cfg['group_base_dn'], search_filter, search_scope=SUBTREE, attributes=[])
+        _answered(conn, 'search for groups')
         groups += [e['dn'] for e in conn.response or [] if e.get('type') == 'searchResEntry']
     seen, unique = set(), []
     for group in groups:
@@ -292,18 +317,35 @@ def _authenticate(cfg: dict, bind_password: str, username: str, password: str) -
     return identity
 
 
-def recheck(cfg: dict, bind_password: str, username: str) -> LdapIdentity | None:
-    """What the directory says about someone now, without their password: None
-    when they are no longer in it, an identity whose role is None when no group
-    grants them access. Raises LdapUnavailable when it cannot say."""
+def recheck(cfg: dict, bind_password: str, dn: str | None, username: str) -> LdapIdentity | None:
+    """What the directory says about an account now, without its password.
+
+    None when it is gone, or no longer matches the sign-in filter (a disabled
+    Active Directory account, if the filter says so); an identity whose role
+    is None when no group grants one. Looked up by its DN, the one thing that
+    does not depend on which attribute people type at sign-in. Raises
+    LdapUnavailable whenever the directory does not give a clear answer."""
     try:
-        username = _clean_username(username)
         service = _service_connection(cfg, bind_password)
         try:
-            try:
-                dn, attributes = _find_user(service, cfg, username)
-            except LdapInvalidCredentials:
-                return None
+            if dn:
+                # The sign-in filter, with any name allowed, applied to this
+                # one entry: it still has to be an account that may sign in
+                search_filter = (cfg.get('user_filter') or DEFAULTS['user_filter']).replace('{username}', '*')
+                service.search(dn, search_filter, search_scope=BASE,
+                               attributes=_attributes(cfg) or ALL_ATTRIBUTES)
+                if _answered(service, 'look-up of the account', _ANSWERED + (_NO_SUCH_OBJECT,)) \
+                        == _NO_SUCH_OBJECT:
+                    return None
+                entries = [e for e in service.response or [] if e.get('type') == 'searchResEntry']
+                if len(entries) != 1:
+                    return None
+                attributes = dict(entries[0].get('attributes') or {})
+            else:
+                try:
+                    dn, attributes = _find_user(service, cfg, _clean_username(username))
+                except LdapInvalidCredentials:
+                    return None
             groups = _groups(service, cfg, dn, attributes)
         finally:
             try:

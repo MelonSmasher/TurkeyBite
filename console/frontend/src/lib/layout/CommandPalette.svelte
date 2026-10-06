@@ -4,8 +4,9 @@
   import { ArrowRight, CornerDownLeft, Eye, Globe, Moon, ScanSearch, ShieldAlert, Sun, User, Wand2 } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import { api } from '../api';
+  import { trap } from '../components/focus';
   import { NAV } from '../nav';
-  import { findingText } from '../privacy';
+  import { entitySegment, exploreLink, findingText } from '../privacy';
   import { navigate } from '../router.svelte';
   import { prefs } from '../stores/prefs.svelte';
   import { session } from '../stores/session.svelte';
@@ -35,18 +36,18 @@
     const out: Item[] = [];
     if (q && session.can('events:read')) {
       out.push({ id: 'search', label: `Search events for “${text.trim()}”`, group: 'Search', icon: ScanSearch,
-                 run: () => navigate(`/explore?q=${encodeURIComponent(text.trim())}`) });
+                 run: () => navigate(exploreLink({ q: text.trim() })) });
       if (looksLikeDomain(q)) {
         out.push({ id: 'domain', label: `Open domain ${q}`, group: 'Search', icon: Globe,
                    run: () => navigate(`/domains/${encodeURIComponent(q)}`) });
       } else if (looksLikeIp(q)) {
         out.push({ id: 'ip', label: `Open client ${q}`, group: 'Search', icon: User,
-                   run: () => navigate(`/entities/bite.client/${encodeURIComponent(q)}`) });
+                   run: () => navigate(`/entities/bite.client/${entitySegment(q)}`) });
       } else if (/^[a-z0-9][a-z0-9._-]+$/.test(q)) {
         out.push({ id: 'user', label: `Open user ${q}`, group: 'Search', icon: User,
-                   run: () => navigate(`/entities/bite.client_user/${encodeURIComponent(q)}`) });
+                   run: () => navigate(`/entities/bite.client_user/${entitySegment(q)}`) });
         out.push({ id: 'host', label: `Open host ${q}`, group: 'Search', icon: User,
-                   run: () => navigate(`/entities/bite.client_hostname_short/${encodeURIComponent(q)}`) });
+                   run: () => navigate(`/entities/bite.client_hostname_short/${entitySegment(q)}`) });
       }
     }
     for (const f of findings) {
@@ -114,7 +115,6 @@
     if (open) {
       text = '';
       active = 0;
-      queueMicrotask(() => input?.focus());
     }
   });
 
@@ -136,8 +136,7 @@
       return;
     }
     if (!open) return;
-    if (event.key === 'Escape') open = false;
-    else if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown') {
       event.preventDefault();
       active = Math.min(items.length - 1, active + 1);
     } else if (event.key === 'ArrowUp') {
@@ -154,7 +153,8 @@
 
 {#if open}
   <div class="backdrop" role="presentation" onclick={() => (open = false)}></div>
-  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette"
+       use:trap={{ onescape: () => (open = false), initial: 'input' }}>
     <div class="search">
       <ScanSearch size={18} />
       <input bind:this={input} bind:value={text} placeholder="Type a page, a person, a domain, or anything to search…"

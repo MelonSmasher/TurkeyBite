@@ -12,7 +12,7 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { ago, dateTime, num, taxon } from '../lib/format';
-  import { findingText } from '../lib/privacy';
+  import { exploreLink, findingText } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
@@ -66,7 +66,7 @@
       </div>
     </div>
     <div class="spacer"></div>
-    <a class="btn" href="/explore{qs({ q: `site:${domain} OR domain:${domain}`, from: timeRange.from, to: timeRange.to })}"><ScanSearch size={15} /> Its events</a>
+    <a class="btn" href={exploreLink({ q: `site:${domain} OR domain:${domain}`, from: timeRange.from, to: timeRange.to })}><ScanSearch size={15} /> Its events</a>
     <TimeRangePicker />
   </header>
 

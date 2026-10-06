@@ -18,7 +18,7 @@
   // Read from what App passes, which belongs to this page's route alone
   let { params }: { params: Record<string, string> } = $props();
   const id = $derived(params.id);
-  const board = new Query((signal) => api.get<Dashboard>(`/dashboards/${id}`, { signal }));
+  const board = new Query((signal) => api.get<Dashboard>(`/dashboards/${encodeURIComponent(id)}`, { signal }));
   let editing = $state(false);
   let draft = $state<Dashboard | null>(null);
   let addOpen = $state(false);
@@ -75,7 +75,7 @@
 
   async function clone() {
     try {
-      const copy = await api.post<Dashboard>(`/dashboards/${id}/clone`);
+      const copy = await api.post<Dashboard>(`/dashboards/${encodeURIComponent(id)}/clone`);
       navigate(`/dashboards/${copy.id}`);
       toasts.success('Your copy is ready to change');
     } catch (e) {
@@ -86,7 +86,7 @@
   async function remove() {
     if (!confirm('Delete this dashboard?')) return;
     try {
-      await api.del(`/dashboards/${id}`);
+      await api.del(`/dashboards/${encodeURIComponent(id)}`);
       navigate('/dashboards');
     } catch (e) {
       toasts.error('Could not delete', errorText(e));

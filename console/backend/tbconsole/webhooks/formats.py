@@ -40,6 +40,20 @@ def _plain(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1] + '…'
 
 
+def _markup(text: str, limit: int) -> str:
+    """Text for Google Chat, whose cards read HTML and whose messages turn
+    <users/all> into a mention and <url|text> into a link."""
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    return _plain(text, limit)
+
+
+def _markdown(text: str, limit: int) -> str:
+    """Text for a Teams card, whose markdown makes [text](url) a link."""
+    for ch in '\\[]()*_`':
+        text = text.replace(ch, '\\' + ch)
+    return _plain(text, limit)
+
+
 def _discord(text: str, limit: int) -> str:
     """Text for a Discord embed, with no masked links."""
     return _plain(text.replace('[', '\\[').replace(']', '\\]'), limit)
@@ -110,13 +124,14 @@ def render(fmt: str, event: dict) -> dict:
 
     if fmt == 'teams':
         body = [
-            {'type': 'TextBlock', 'text': headline, 'weight': 'Bolder', 'size': 'Medium',
+            {'type': 'TextBlock', 'text': _markdown(headline, 300), 'weight': 'Bolder', 'size': 'Medium',
              'wrap': True, 'color': 'Attention' if severity in ('critical', 'high') else 'Default'},
         ]
         if summary:
-            body.append({'type': 'TextBlock', 'text': summary, 'wrap': True})
+            body.append({'type': 'TextBlock', 'text': _markdown(summary, 2000), 'wrap': True})
         if facts:
-            body.append({'type': 'FactSet', 'facts': [{'title': k, 'value': v} for k, v in facts]})
+            body.append({'type': 'FactSet', 'facts': [{'title': k, 'value': _markdown(v, 500)}
+                                                      for k, v in facts[:12]]})
         card = {'$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',
                 'type': 'AdaptiveCard', 'version': '1.4', 'body': body}
         if link:
@@ -136,14 +151,14 @@ def render(fmt: str, event: dict) -> dict:
         return {'username': 'TurkeyBite', 'embeds': [embed], 'allowed_mentions': {'parse': []}}
 
     if fmt == 'google_chat':
-        widgets = [{'decoratedText': {'topLabel': k, 'text': v}} for k, v in facts]
+        widgets = [{'decoratedText': {'topLabel': k, 'text': _markup(v, 500)}} for k, v in facts[:12]]
         if summary:
-            widgets.insert(0, {'textParagraph': {'text': summary}})
+            widgets.insert(0, {'textParagraph': {'text': _markup(summary, 2000)}})
         if link:
             widgets.append({'buttonList': {'buttons': [
                 {'text': 'Open in console', 'onClick': {'openLink': {'url': link}}}]}})
-        return {'text': headline, 'cardsV2': [{'cardId': 'finding', 'card': {
-            'header': {'title': headline[:200], 'subtitle': f'Severity: {severity}'},
+        return {'text': _markup(headline, 1000), 'cardsV2': [{'cardId': 'finding', 'card': {
+            'header': {'title': _plain(headline, 200), 'subtitle': f'Severity: {severity}'},
             'sections': [{'widgets': widgets}]}}]}
 
     raise ValueError(f'unknown webhook format {fmt!r}')

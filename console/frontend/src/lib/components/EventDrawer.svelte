@@ -3,13 +3,14 @@
   import { Braces, CircleCheck, CircleSlash, CircleHelp, Clock, Globe, History, Info, MonitorSmartphone, Scale } from '@lucide/svelte';
   import { api } from '../api';
   import { dateTime, fullTime, taxon } from '../format';
-  import { maskSource } from '../privacy';
+  import { exploreLink, maskSource } from '../privacy';
   import type { Hit } from '../types';
   import DomainLink from './DomainLink.svelte';
   import Drawer from './Drawer.svelte';
   import EntityLink from './EntityLink.svelte';
   import JsonView from './JsonView.svelte';
   import Segmented from './Segmented.svelte';
+  import { quoteValue as quote } from './tbql';
 
   let { hit = $bindable(null), onfilter }: {
     hit: Hit | null;
@@ -60,7 +61,7 @@
     const short: Record<string, string> = { 'bite.client_user': 'user', 'bite.client_hostname_short': 'host',
                                             'bite.client': 'client' };
     const alias = short[entity.field] ?? entity.field;
-    return `/explore?q=${encodeURIComponent(`${alias}:${entity.value}`)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    return exploreLink({ q: `${alias}:${quote(String(entity.value))}`, from, to });
   }
 </script>
 

@@ -51,15 +51,83 @@ def _headers(hook: Webhook, delivery: WebhookDelivery, body: bytes) -> dict:
     return headers
 
 
-async def send(http: httpx.AsyncClient, hook: Webhook, delivery: WebhookDelivery) -> dict:
+SNIPPET_BYTES = 600
+# Beyond the per-read timeout, how long one whole attempt may take
+DEADLINE_SLACK = 5.0
+
+
+def client() -> httpx.AsyncClient:
+    """A client for one delivery. It ignores HTTP_PROXY and the like from the
+    environment, which would send pinned addresses through a proxy that checks
+    certificates against the address; a proxy is used only when
+    TBCONSOLE_WEBHOOK_PROXY names one."""
+    settings = get_settings()
+    return httpx.AsyncClient(timeout=settings.webhook_timeout_sec, trust_env=False,
+                             proxy=settings.webhook_proxy or None, follow_redirects=False)
+
+
+def _words(e: httpx.TransportError) -> tuple[str, bool]:
+    """What a transport error means, and whether to retry, in words of our
+    own: the library's text can quote what was being sent, header values
+    included, and the error is shown to people who may not see those."""
+    if isinstance(e, httpx.TimeoutException):
+        return 'the receiver did not answer in time', True
+    if isinstance(e, httpx.ProxyError):
+        return 'the proxy would not pass it on', True
+    if isinstance(e, httpx.ConnectError):
+        return 'could not connect to the receiver', True
+    if isinstance(e, httpx.RemoteProtocolError):
+        return 'the receiver broke off, or answered in a way HTTP does not allow', True
+    if isinstance(e, httpx.LocalProtocolError):
+        return 'the request could not be written as it stands; check the custom headers', False
+    return f'the connection failed ({type(e).__name__})', True
+
+
+async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, headers: dict,
+                outcome: dict) -> None:
+    proxied = bool(get_settings().webhook_proxy)
+    # Through a proxy the name goes as it is, and the proxy connects; otherwise
+    # each checked address in turn, with the name as Host and TLS server name
+    attempts = [None] if proxied else target.addresses
+    for i, address in enumerate(attempts):
+        url, extensions, sent = target.url, {}, dict(headers)
+        if address is not None:
+            url = target.url_for(address)
+            sent['Host'] = target.host_header
+            if target.tls:
+                extensions = {'sni_hostname': target.host}
+        try:
+            async with http.stream('POST', url, content=body, headers=sent,
+                                   extensions=extensions) as response:
+                outcome['status_code'] = response.status_code
+                # Only the start of the answer is read: a receiver that sends
+                # a gigabyte back does not get the console to hold it
+                chunks, size = [], 0
+                async for chunk in response.aiter_bytes():
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size >= SNIPPET_BYTES:
+                        break
+                outcome['snippet'] = b''.join(chunks)[:SNIPPET_BYTES].decode('utf-8', 'replace')[:300]
+            return
+        except httpx.ConnectError:
+            if i == len(attempts) - 1:
+                raise
+
+
+async def send(hook: Webhook, delivery: WebhookDelivery, http: httpx.AsyncClient | None = None) -> dict:
     """One attempt. Returns what happened, for the delivery row. Never raises.
 
-    Connects to the address the safety check resolved, not to whatever the
-    name resolves to by then, so a name that changes between the check and
-    the request cannot steer the delivery somewhere else.
+    Connects to an address the safety check resolved, not to whatever the name
+    resolves to by then, so a name that changes between the check and the
+    request cannot steer the delivery somewhere else. Each delivery has its own
+    connection, so one verified for a hook's name is never reused for another
+    name that shares its address. The whole attempt has a deadline, so a
+    receiver that answers a byte at a time cannot hold the others up.
     """
     started = time.monotonic()
     outcome: dict = {'status_code': None, 'error': None, 'snippet': None, 'retry': True}
+    own = http is None
     try:
         if not hook.enabled:
             raise _Permanent('the webhook is disabled')
@@ -67,30 +135,33 @@ async def send(http: httpx.AsyncClient, hook: Webhook, delivery: WebhookDelivery
         body = json.dumps(formats.render(hook.format, delivery.payload),
                           separators=(',', ':')).encode('utf-8')
         headers = _headers(hook, delivery, body)
-        headers['Host'] = target.host_header
-        extensions = {'sni_hostname': target.host} if target.tls else {}
-        response = await http.post(target.pinned_url, content=body, headers=headers,
-                                   follow_redirects=False, extensions=extensions)
-        outcome['status_code'] = response.status_code
-        outcome['snippet'] = response.text[:300]
-        if 200 <= response.status_code < 300:
+        http = http or client()
+        await asyncio.wait_for(_post(http, target, body, headers, outcome),
+                               timeout=get_settings().webhook_timeout_sec + DEADLINE_SLACK)
+        code = outcome['status_code']
+        if 200 <= code < 300:
             outcome['retry'] = False
-        elif 400 <= response.status_code < 500 and response.status_code not in (408, 429):
-            outcome['error'] = f'the receiver refused it with HTTP {response.status_code}'
+        elif 400 <= code < 500 and code not in (408, 429):
+            outcome['error'] = f'the receiver refused it with HTTP {code}'
             outcome['retry'] = False
         else:
-            outcome['error'] = f'HTTP {response.status_code}'
+            outcome['error'] = f'HTTP {code}'
     except (safety.UnsafeUrl, SecretUnreadable, _Permanent) as e:
         outcome['error'] = str(e)
         outcome['retry'] = False
+    except (asyncio.TimeoutError, TimeoutError):
+        outcome['error'] = 'the receiver took too long to answer'
     except httpx.TransportError as e:
-        outcome['error'] = f'{type(e).__name__}: {e}'[:300]
+        outcome['error'], outcome['retry'] = _words(e)
     except Exception as e:
         # A header or URL the HTTP library will not send, or anything else
         # unforeseen: recorded and given up on, never left to stall the batch
-        log.warning('webhook %s: delivery %s failed: %r', hook.id, delivery.id, e)
-        outcome['error'] = f'could not be sent: {type(e).__name__}'
+        log.warning('webhook %s: delivery %s failed: %s', hook.id, delivery.id, type(e).__name__)
+        outcome['error'] = f'could not be sent ({type(e).__name__})'
         outcome['retry'] = False
+    finally:
+        if own and http is not None:
+            await http.aclose()
     outcome['duration_ms'] = int((time.monotonic() - started) * 1000)
     return outcome
 
@@ -144,7 +215,7 @@ async def claim(db: AsyncSession, now: datetime) -> list[WebhookDelivery]:
     return list(rows)
 
 
-async def run_once(http: httpx.AsyncClient) -> int:
+async def run_once() -> int:
     """Sends what is due. Returns how many attempts were made."""
     sessions = database.sessionmaker()
     async with sessions() as db:
@@ -156,7 +227,7 @@ async def run_once(http: httpx.AsyncClient) -> int:
         return 0
     # Sent outside any transaction, so a slow receiver holds no lock
     sendable = [d for d in due if d.webhook_id in hooks]
-    results = await asyncio.gather(*[send(http, hooks[d.webhook_id], d) for d in sendable],
+    results = await asyncio.gather(*[send(hooks[d.webhook_id], d) for d in sendable],
                                    return_exceptions=True)
     async with sessions() as db:
         async with db.begin():
@@ -184,14 +255,13 @@ async def redeliver(db: AsyncSession, delivery: WebhookDelivery) -> WebhookDeliv
 class Dispatcher:
     def __init__(self, poll_seconds: float = 2.0):
         self.poll_seconds = poll_seconds
-        self.http = httpx.AsyncClient(timeout=get_settings().webhook_timeout_sec)
         self._task: asyncio.Task | None = None
         self.last_tick: datetime | None = None
 
     async def loop(self) -> None:
         while True:
             try:
-                sent = await run_once(self.http)
+                sent = await run_once()
                 self.last_tick = datetime.now(timezone.utc)
                 if sent:
                     continue
@@ -211,7 +281,6 @@ class Dispatcher:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        await self.http.aclose()
 
 
 async def pending_count() -> int:

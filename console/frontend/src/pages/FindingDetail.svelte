@@ -17,7 +17,7 @@
   import SeverityBadge from '../lib/components/SeverityBadge.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import { ago, dateTime, fullTime, num, RULE_TYPE_LABEL, STATUS_LABEL, taxon } from '../lib/format';
-  import { findingText, maskQuery, who } from '../lib/privacy';
+  import { exploreLink, findingText, maskQuery, who } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/stores/session.svelte';
@@ -35,9 +35,9 @@
   // Read from what App passes, which belongs to this page's route alone
   let { params }: { params: Record<string, string> } = $props();
   const id = $derived(params.id);
-  const finding = new Query((signal) => api.get<Detail>(`/findings/${id}`, { signal }));
+  const finding = new Query((signal) => api.get<Detail>(`/findings/${encodeURIComponent(id)}`, { signal }));
   const f = $derived(finding.data);
-  const people = new Query((signal) => api.get<UserRef[]>(`/findings/${id}/assignable`, { signal }),
+  const people = new Query((signal) => api.get<UserRef[]>(`/findings/${encodeURIComponent(id)}/assignable`, { signal }),
                            { enabled: () => session.can('findings:write') });
   let comment = $state('');
   let selected = $state<Hit | null>(null);
@@ -62,7 +62,7 @@
 
   async function patch(body: Record<string, unknown>, done: string) {
     try {
-      await api.patch(`/findings/${id}`, body);
+      await api.patch(`/findings/${encodeURIComponent(id)}`, body);
       toasts.success(done);
       finding.reload();
     } catch (e) {
@@ -73,7 +73,7 @@
   async function addComment() {
     if (!comment.trim()) return;
     try {
-      await api.post(`/findings/${id}/comments`, { body: comment });
+      await api.post(`/findings/${encodeURIComponent(id)}/comments`, { body: comment });
       comment = '';
       finding.reload();
     } catch (e) {
@@ -83,7 +83,7 @@
 
   async function addException() {
     try {
-      await api.post(`/findings/${id}/exception`, { scope: exceptionScope, note: exceptionNote, expires_days: exceptionDays });
+      await api.post(`/findings/${encodeURIComponent(id)}/exception`, { scope: exceptionScope, note: exceptionNote, expires_days: exceptionDays });
       exceptionOpen = false;
       toasts.success('Exception added', 'The rule will leave this out from its next run, and the finding is marked a false positive.');
       finding.reload();
@@ -167,7 +167,7 @@
       <ChartCard title="The evidence" subtitle="Re-read from OpenSearch now, from the query the rule matched on. Nothing here was copied when it fired."
                  table={evidenceHist.data ? { columns: ['Time', 'Events'], rows: evidenceHist.data.buckets.map((b) => [dateTime(b.t), b.count]) } : null}>
         {#snippet actions()}
-          {#if range}<a class="btn btn-sm" href="/explore{qs({ q: f.evidence.query, from: range.from, to: range.to })}"><ScanSearch size={14} /> Open in Explore</a>{/if}
+          {#if range}<a class="btn btn-sm" href={exploreLink({ q: f.evidence.query, from: range.from, to: range.to })}><ScanSearch size={14} /> Open in Explore</a>{/if}
         {/snippet}
         <div class="query-line">
           <code class="mono">{maskQuery(findingText(f.evidence.query, f)) || '(every event)'}</code>
@@ -182,7 +182,7 @@
             <thead><tr><th>Time</th><th>Name</th><th>Categories</th><th>Type</th></tr></thead>
             <tbody>
               {#each evidence.data.hits as hit (hit.id)}
-                <tr class="clickable" onclick={() => (selected = hit)} use:opens={() => (selected = hit)}>
+                <tr class="clickable" use:opens={() => (selected = hit)}>
                   <td class="nowrap tabular small">{dateTime(hit.source['@timestamp'], true)}</td>
                   <td class="mono small truncate">{hit.source.bite?.requested?.[0]}</td>
                   <td>{#each (hit.source.bite?.contexts ?? []).slice(0, 3) as c (c)}<span class="badge">{c}</span> {/each}</td>

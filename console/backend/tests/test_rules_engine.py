@@ -138,12 +138,18 @@ def keyed(key: dict, count: int) -> dict:
     return {**bucket('', count), 'key': key}
 
 
+def history(counts: dict) -> dict:
+    """The answer to a first-seen rule's history check: a filter per pair."""
+    return {'aggregations': {'f': {'buckets': {str(k): {'doc_count': v} for k, v in counts.items()}}},
+            'hits': {'total': {'value': 0}}}
+
+
 async def test_new_value_reports_only_values_unseen_before(search):
     oldest = (NOW - timedelta(days=60)).timestamp() * 1000
     answers = iter([
         {'aggregations': {'oldest': {'value': oldest}}},
         composite([keyed({'v': 'seen.example'}, 4), keyed({'v': 'new.example'}, 2)], {'v': 'new.example'}),
-        composite([{'key': {'v': 'seen.example'}, 'doc_count': 99}]),
+        history({0: 99, 1: 0}),
     ])
     search.answer = lambda body, index=None: next(answers)
     spec = RuleSpec(name='n', type='new_value', params={'field': 'site', 'lookback_days': 14})
@@ -165,9 +171,10 @@ async def test_absence_fires_only_after_a_normal_period(search):
 
 async def _rule(**extra) -> Rule:
     async with db.sessionmaker()() as session:
-        rule = Rule(name='Threat seen', type='threshold', query='risk:threat', params={'threshold': 1},
-                    group_by=['entity'], severity='high', enabled=True, window_seconds=900, interval_seconds=300,
-                    dedup_seconds=3600, category='threat', **extra)
+        rule = Rule(**{'name': 'Threat seen', 'type': 'threshold', 'query': 'risk:threat',
+                       'params': {'threshold': 1}, 'group_by': ['entity'], 'severity': 'high', 'enabled': True,
+                       'window_seconds': 900, 'interval_seconds': 300, 'dedup_seconds': 3600,
+                       'category': 'threat', **extra})
         session.add(rule)
         await session.commit()
         await session.refresh(rule)
@@ -346,9 +353,11 @@ async def test_distinct_and_ratio_rules_keep_the_groups_they_measure_not_the_bus
     await Evaluator(search).evaluate(RuleSpec(name='r', type='ratio', group_by=['entity'],
                                               params={'min_count': 40}), NOW)
     unique_terms = search.bodies[0]['aggs']['g0']['aggs']['t']['terms']
-    ratio_terms = search.bodies[1]['aggs']['g0']['aggs']['t']['terms']
     assert unique_terms['order'] == {'distinct': 'desc'}
-    assert ratio_terms['order'] == {'num': 'desc'} and ratio_terms['min_doc_count'] == 40
+    # Ratio ranks groups by their share, worked out by OpenSearch, among many
+    scan = search.bodies[1]['aggs']['g0']['aggs']['t']
+    assert scan['terms']['min_doc_count'] == 40 and scan['terms']['size'] > 200
+    assert scan['aggs']['best']['bucket_sort']['sort'] == [{'share': {'order': 'desc'}}]
 
 
 async def test_new_value_pages_through_every_value_not_just_the_busiest(search, monkeypatch):
@@ -359,15 +368,16 @@ async def test_new_value_pages_through_every_value_not_just_the_busiest(search, 
         {'aggregations': {'oldest': {'value': oldest}}},
         composite([keyed({'v': 'a.example'}, 900), keyed({'v': 'b.example'}, 500)], {'v': 'b.example'}),
         composite([keyed({'v': 'rare.example'}, 1)], {'v': 'rare.example'}),
-        composite([{'key': {'v': 'a.example'}, 'doc_count': 9}, {'key': {'v': 'b.example'}, 'doc_count': 9}]),
+        history({0: 9, 1: 9, 2: 0}),
     ])
     search.answer = lambda body, index=None: next(answers)
     spec = RuleSpec(name='n', type='new_value', params={'field': 'site', 'lookback_days': 14})
     hits = (await Evaluator(search).evaluate(spec, NOW)).hits
     assert [h.extra['new_value'] for h in hits] == ['rare.example']
     assert search.bodies[2]['aggs']['c']['composite']['after'] == {'v': 'b.example'}
-    # The history is asked about every value in the window
-    assert sorted(search.bodies[3]['query']['bool']['filter'][-1]['terms']['bite.registrable_domain']) == [
+    # The history is asked about every value in the window, each on its own
+    filters = search.bodies[3]['aggs']['f']['filters']['filters']
+    assert [f['bool']['filter'][0]['term']['bite.registrable_domain'] for f in filters.values()] == [
         'a.example', 'b.example', 'rare.example']
 
 
@@ -375,15 +385,18 @@ async def test_new_value_per_entity_compares_each_entity_with_its_own_history(se
     oldest = (NOW - timedelta(days=60)).timestamp() * 1000
 
     def answer(body, index=None):
-        if 'oldest' in body.get('aggs', {}):
+        aggs = body.get('aggs', {})
+        if 'oldest' in aggs:
             return {'aggregations': {'oldest': {'value': oldest}}}
-        field = _group_field(body)
-        scoped = body['query']['bool']['filter'][0]['bool']['filter']
-        past = scoped[0]['range']['@timestamp']['lt'] < '2026-10-05T11:50'
-        if field != 'bite.client_user':
+        if 'f' in aggs:
+            # Ava has watched video before; Liam has not
+            seen = {}
+            for key, f in aggs['f']['filters']['filters'].items():
+                terms = {k: v for t in f['bool']['filter'] for k, v in t['term'].items()}
+                seen[int(key)] = 50 if terms.get('bite.client_user') == 'ava' else 0
+            return history(seen)
+        if _group_field(body) != 'bite.client_user':
             return composite([])
-        if past:
-            return composite([{'key': {'g': 'ava', 'v': 'video'}, 'doc_count': 50}])
         return composite([keyed({'g': 'ava', 'v': 'video'}, 3), keyed({'g': 'liam', 'v': 'video'}, 2)])
     search.answer = answer
     spec = RuleSpec(name='n', type='new_value', group_by=['entity'],
@@ -391,6 +404,10 @@ async def test_new_value_per_entity_compares_each_entity_with_its_own_history(se
     hits = (await Evaluator(search).evaluate(spec, NOW)).hits
     assert [(h.entity_value, h.distinct) for h in hits] == [('liam', 'video')]
     assert hits[0].entity_field == 'bite.client_user'
+    # Each pair is checked on its own field: a user name never meets the IP field
+    for body in search.bodies:
+        for f in ((body.get('aggs') or {}).get('f') or {}).get('filters', {}).get('filters', {}).values():
+            assert all('bite.client' not in t['term'] for t in f['bool']['filter'])
 
 
 async def test_grouped_silence_looks_at_every_group_that_was_active(search, monkeypatch):
@@ -417,7 +434,7 @@ async def test_grouped_silence_looks_at_every_group_that_was_active(search, monk
 
 
 async def test_a_run_after_downtime_catches_up_on_the_windows_it_missed(search):
-    rule = await _rule(last_run_at=NOW - timedelta(hours=1))
+    rule = await _rule(evaluated_until=NOW - timedelta(hours=1))
     search.answer = lambda body, index=None: grouped('bite.client_user', [])
     outcome = await _run(search, rule.id, NOW)
     ends = [b['query']['bool']['filter'][0]['range']['@timestamp']['lt'] for b in search.bodies]
@@ -430,7 +447,7 @@ async def test_a_run_after_downtime_catches_up_on_the_windows_it_missed(search):
 
 
 async def test_catching_up_is_bounded_and_says_what_it_skipped(search):
-    rule = await _rule(last_run_at=NOW - timedelta(days=2))
+    rule = await _rule(evaluated_until=NOW - timedelta(days=2))
     search.answer = lambda body, index=None: grouped('bite.client_user', [])
     outcome = await _run(search, rule.id, NOW)
     assert len(search.bodies) == engine.CATCH_UP_STEPS + 1
@@ -518,13 +535,18 @@ def test_titles_replace_placeholders_as_text_and_refuse_anything_else():
 
 async def test_a_rule_that_is_running_is_not_run_again_alongside(search):
     rule = await _rule()
-    async with db.sessionmaker()() as holder:
-        assert await engine.lock_rule(holder, rule.id) is not None
-        async with db.sessionmaker()() as other:
-            assert await engine.lock_rule(other, rule.id) is None
-        await holder.commit()
+    async with db.sessionmaker()() as first:
+        assert await engine.claim_run(first, rule.id) is not None
+    async with db.sessionmaker()() as second:
+        assert await engine.claim_run(second, rule.id) is None
+    # No lock is held meanwhile: the rule can still be edited
+    async with db.sessionmaker()() as editor:
+        (await editor.get(Rule, rule.id)).name = 'Renamed while running'
+        await editor.commit()
+    # A run gives the lease back
+    await _run(search, rule.id, NOW)
     async with db.sessionmaker()() as other:
-        assert await engine.lock_rule(other, rule.id) is not None
+        assert await engine.claim_run(other, rule.id) is not None
 
 
 async def test_the_scheduler_logs_a_rule_that_blew_up(search, monkeypatch, caplog):
@@ -544,3 +566,131 @@ async def test_builtin_tags_are_stored_sorted_so_an_unchanged_save_is_no_change(
         await engine.sync_builtin_rules(session)
         for rule in (await session.execute(select(Rule))).scalars():
             assert rule.tags == sorted(rule.tags)
+
+
+# -- round two -------------------------------------------------------------------------
+
+def test_an_answer_some_shards_could_not_give_is_refused():
+    from tbconsole.search.client import SearchRejected, _whole
+    _whole({'_shards': {'total': 3, 'failed': 0}})
+    with pytest.raises(SearchRejected, match='2 of 22 shards'):
+        _whole({'_shards': {'total': 22, 'failed': 2, 'failures': [
+            {'reason': {'type': 'query_shard_exception', 'reason': "'zoe' is not an IP string literal"}}]}})
+
+
+async def test_a_window_that_failed_is_evaluated_by_a_later_run(search):
+    from tbconsole.search.client import SearchUnavailable
+    rule = await _rule(evaluated_until=NOW - timedelta(minutes=45))
+    calls = []
+
+    async def flaky(body, index=None):
+        calls.append(body)
+        if len(calls) == 2:
+            raise SearchUnavailable('the cluster went away')
+        return grouped('bite.client_user', [])
+    search.search = flaky
+    outcome = await _run(search, rule.id, NOW)
+    assert outcome.status == 'error'
+    async with db.sessionmaker()() as session:
+        stored = await session.get(Rule, rule.id)
+        # Only the first window, 11:15 to 11:30, counts as done
+        assert stored.evaluated_until == NOW - timedelta(minutes=30)
+    calls.clear()
+    await _run(search, rule.id, NOW + timedelta(minutes=5))
+    ends = [b['query']['bool']['filter'][0]['range']['@timestamp']['lt'] for b in calls]
+    assert ends[0] == '2026-10-05T11:45:00.000Z'
+
+
+async def test_catching_up_counts_one_occurrence_per_run(search):
+    rule = await _rule()
+    search.answer = lambda body, index=None: grouped('bite.client_user', [bucket('ava', 3)])
+    await _run(search, rule.id, NOW)
+    await _run(search, rule.id, NOW + timedelta(hours=1))  # four windows
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(Finding.occurrences))).scalar_one() == 2
+
+
+async def test_the_end_of_active_hours_is_evaluated_after_they_end(search):
+    schedule = {'days': None, 'start': '08:00', 'end': '16:00', 'timezone': 'UTC'}
+    rule = await _rule(schedule=schedule, evaluated_until=datetime(2026, 10, 5, 15, 55, tzinfo=timezone.utc))
+    search.answer = lambda body, index=None: grouped('bite.client_user', [])
+    await _run(search, rule.id, datetime(2026, 10, 5, 16, 3, tzinfo=timezone.utc))
+    assert [b['query']['bool']['filter'][0]['range']['@timestamp']['lt'] for b in search.bodies] == [
+        '2026-10-05T16:00:00.000Z']
+    search.bodies.clear()
+    await _run(search, rule.id, datetime(2026, 10, 5, 16, 30, tzinfo=timezone.utc))
+    assert search.bodies == [], 'nothing more until the hours start again'
+
+
+def test_active_hours_never_start_after_now_on_the_night_clocks_spring_forward():
+    # 02:30 does not exist in New York on 8 March 2026
+    schedule = {'days': None, 'start': '02:30', 'end': '06:00', 'timezone': 'America/New_York'}
+    now = datetime(2026, 3, 8, 7, 10, tzinfo=timezone.utc)  # 03:10 EDT
+    assert engine.active_since(schedule, now) <= now
+
+
+async def test_a_long_window_is_cut_at_the_start_of_todays_hours(search):
+    schedule = {'days': None, 'start': '08:00', 'end': '16:00', 'timezone': 'UTC'}
+    rule = await _rule(schedule=schedule, window_seconds=86400, interval_seconds=3600)
+    search.answer = lambda body, index=None: grouped('bite.client_user', [])
+    await _run(search, rule.id, datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc))
+    assert search.bodies[0]['query']['bool']['filter'][0]['range']['@timestamp']['gte'] == '2026-10-05T08:00:00.000Z'
+
+
+async def test_a_nul_in_an_entity_is_stored_cleaned_not_fatal(search):
+    rule = await _rule()
+    search.answer = lambda body, index=None: grouped('bite.client_user', [bucket('ava\x00x', 3)])
+    outcome = await _run(search, rule.id, NOW)
+    assert outcome.status == 'ok' and outcome.created == 1
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(Finding.entity_value))).scalar_one() == 'ava�x'
+
+
+def test_a_database_error_is_described_without_its_sql():
+    from sqlalchemy.exc import DataError
+    error = DataError('INSERT INTO findings VALUES (secret stuff)', {'entity': 'ava'}, ValueError('bad'))
+    text = engine._error_text(error)
+    assert 'INSERT' not in text and 'ava' not in text and 'database' in text
+
+
+async def test_ratio_ranks_by_share_not_by_size(search):
+    search.answer = lambda body, index=None: grouped('bite.client', [
+        bucket('big', 5000, num={'doc_count': 3000}),     # 60%
+        bucket('small', 60, num={'doc_count': 57})])      # 95%
+    spec = RuleSpec(name='r', type='ratio', params={'numerator': 'rcode:NXDOMAIN', 'ratio': 0.5, 'min_count': 50},
+                    group_by=['entity'])
+    hits = (await Evaluator(search).evaluate(spec, NOW)).hits
+    assert [h.entity_value for h in hits] == ['small', 'big']
+    # The details are read for the chosen groups alone
+    include = search.bodies[1]['aggs']['g3']['aggs']['t']['terms']['include']
+    assert include == ['small', 'big']
+
+
+async def test_a_backtest_stops_at_its_budget_and_says_where(search, monkeypatch):
+    monkeypatch.setattr(engine, 'BACKTEST_BUDGET', 5)
+    search.answer = lambda body, index=None: grouped('bite.client_user', [])
+    spec = RuleSpec(name='t', type='threshold', params={'threshold': 1}, group_by=['entity'],
+                    interval_seconds=300, window_seconds=900)
+    from tbconsole.search.timerange import TimeRange
+    result = await engine.backtest(search, spec, TimeRange(NOW - timedelta(hours=24), NOW))
+    assert len(search.bodies) == 5 and result['stopped_at']
+
+
+async def test_a_value_with_a_wildcard_is_quoted_in_an_evidence_query():
+    from tbconsole.analysis.ruletypes import _evidence_query
+    assert _evidence_query(RuleSpec(name='x', type='threshold'), 'bite.client_user', '*') == 'user:"*"'
+
+
+async def test_a_new_value_exact_page_is_not_called_truncated(search, monkeypatch):
+    from tbconsole.analysis import ruletypes
+    monkeypatch.setattr(ruletypes, 'MAX_PAIRS', 2)
+    oldest = (NOW - timedelta(days=60)).timestamp() * 1000
+    answers = iter([
+        {'aggregations': {'oldest': {'value': oldest}}},
+        composite([keyed({'v': 'a.example'}, 3), keyed({'v': 'b.example'}, 2)], {'v': 'b.example'}),
+        composite([]),
+        history({0: 1, 1: 1}),
+    ])
+    search.answer = lambda body, index=None: next(answers)
+    result = await Evaluator(search).evaluate(RuleSpec(name='n', type='new_value', params={'field': 'site'}), NOW)
+    assert result.reason == ''

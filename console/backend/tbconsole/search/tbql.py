@@ -515,8 +515,10 @@ def names_someone(text: str) -> bool:
 
 
 def quote(value: str) -> str:
-    """A value written so TBQL reads it back exactly."""
-    if value and re.fullmatch(r'[A-Za-z0-9_.@*?:/\-]+', value) and value.upper() not in (
+    """A value written so TBQL reads it back exactly. A * or ? is quoted too,
+    since bare they are wildcards: an exception for the entity "*" must not
+    match everyone."""
+    if value and re.fullmatch(r'[A-Za-z0-9_.@:/\-]+', value) and value.upper() not in (
             'AND', 'OR', 'NOT'):
         return value
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'

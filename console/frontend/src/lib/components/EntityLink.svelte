@@ -1,7 +1,7 @@
 <script lang="ts">
   // A person or machine, linked to their profile. Masked in privacy mode.
   import { Laptop, Network, Server, User } from '@lucide/svelte';
-  import { who } from '../privacy';
+  import { entitySegment, who } from '../privacy';
   import { prefs } from '../stores/prefs.svelte';
   import { timeRange } from '../stores/timerange.svelte';
 
@@ -19,7 +19,7 @@
   const Icon = $derived(icon);
   const shown = $derived(value ? (prefs.privacy ? who(value) : value) : '–');
   const href = $derived(field && value
-    ? `/entities/${encodeURIComponent(field)}/${encodeURIComponent(value)}?from=${encodeURIComponent(timeRange.from)}&to=${encodeURIComponent(timeRange.to)}`
+    ? `/entities/${encodeURIComponent(field)}/${entitySegment(value)}?from=${encodeURIComponent(timeRange.from)}&to=${encodeURIComponent(timeRange.to)}`
     : null);
 </script>
 

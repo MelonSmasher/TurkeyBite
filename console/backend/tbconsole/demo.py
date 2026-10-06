@@ -714,11 +714,9 @@ async def seed(days: int = 21, per_day: int = 12000, sink: str = 'http://127.0.0
 
     print('Sending the webhooks the findings queued...')
     server = start_sink(sink)
-    import httpx
-    async with httpx.AsyncClient(timeout=5) as http:
-        for _ in range(200):
-            if not await dispatcher.run_once(http):
-                break
+    for _ in range(200):
+        if not await dispatcher.run_once():
+            break
     async with db.sessionmaker()() as session:
         # Failed deliveries would be retried for hours; let a few be dead already
         await session.execute(update(WebhookDelivery).where(WebhookDelivery.status == 'failed')

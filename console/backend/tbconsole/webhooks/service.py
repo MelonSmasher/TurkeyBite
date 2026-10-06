@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..analysis.ruletypes import SEVERITY_RANK
 from ..config import get_settings
 from ..models import Finding, Rule, Webhook, WebhookDelivery
+from ..search import fields as F
 from ..security import crypto
 
 
@@ -36,13 +37,18 @@ def url_of(hook: Webhook) -> str:
 
 
 _URL = re.compile(r'\b[a-z][a-z0-9+.-]*://\S+', re.IGNORECASE)
-_ADDRESS = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\[[0-9a-f:]+\](?::\d+)?', re.IGNORECASE)
+_ADDRESS = re.compile(
+    r'\[[0-9a-z.%]*:[0-9a-z:.%]*\](?::\d+)?'                    # [IPv6]:port
+    r'|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b'                    # IPv4[:port]
+    r'|\b(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?:%\w+)?'           # bare IPv6
+    r'|\b(?:[a-z0-9-]+\.)+[a-z][a-z0-9-]*(?::\d+)?\b',             # host names
+    re.IGNORECASE)
 
 
 def public_error(error: str | None) -> str | None:
-    """A rule's error as it may leave the console: without the addresses of
-    the cluster or anything else on the inside, and short. The whole error is
-    on the rule's page."""
+    """A rule's error as it may leave the console: without the addresses or
+    names of the cluster or anything else on the inside, and short. The whole
+    error is on the rule's page."""
     if not error:
         return error
     text = _ADDRESS.sub('[address]', _URL.sub('[url]', error))
@@ -69,12 +75,22 @@ def finding_body(finding: Finding, redact: bool = False) -> dict:
         'tags': finding.tags,
     }
     if redact:
-        # Who it is about stays in the console, where viewing it is audited
-        entity = finding.entity_value or ''
-        body['entity'] = '[redacted]' if entity else None
-        if entity:
-            body['title'] = body['title'].replace(entity, '[redacted]')
-            body['summary'] = body['summary'].replace(entity, '[redacted]')
+        # Who it is about stays in the console, where viewing it is audited:
+        # the entity, the whole of it when it was stored cut short, and a
+        # first-seen value when that value is itself a person or machine
+        names = [evidence.get('entity_full') or finding.entity_value]
+        detail = evidence.get('detail') or {}
+        target = F.BY_NAME.get(str(detail.get('field') or ''))
+        if target is not None and target.identity and detail.get('new_value') is not None:
+            names.append(str(detail['new_value']))
+        body['entity'] = '[redacted]' if finding.entity_value else None
+        for name in filter(None, names):
+            for key in ('title', 'summary'):
+                body[key] = (body[key] or '').replace(str(name), '[redacted]')
+            if finding.entity_value and finding.entity_value.endswith('…'):
+                prefix = finding.entity_value[:-1]
+                for key in ('title', 'summary'):
+                    body[key] = re.sub(re.escape(prefix) + r'\S*', '[redacted]', body[key] or '')
     return body
 
 

@@ -219,7 +219,7 @@ def verify(secret: str, body: bytes, header: str) -> bool:
       <thead><tr><th>Status</th><th>Event</th><th>About</th><th>Webhook</th><th class="num">Tries</th><th>Answer</th><th>When</th><th></th></tr></thead>
       <tbody>
         {#each deliveries.data ?? [] as d (d.id)}
-          <tr class="clickable" onclick={() => openDelivery(d)} use:opens={() => openDelivery(d)}>
+          <tr class="clickable" use:opens={() => openDelivery(d)}>
             <td><span class="dstate {d.status}">{d.status === 'succeeded' ? 'Delivered' : d.status === 'failed' ? 'Retrying' : d.status === 'dead' ? 'Dead' : 'Queued'}</span></td>
             <td class="mono small">{d.event}</td>
             <td class="truncate about">{d.title ? maskText(d.title, d.entity) : '–'}</td>

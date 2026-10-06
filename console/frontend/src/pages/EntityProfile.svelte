@@ -16,12 +16,13 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { ago, dateTime, num, taxon } from '../lib/format';
-  import { findingText, who } from '../lib/privacy';
+  import { exploreLink, findingText, who } from '../lib/privacy';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { prefs } from '../lib/stores/prefs.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
   import { errorText } from '../lib/stores/toasts.svelte';
+  import { reveal } from '../lib/urlsafe';
   import type { Bucket, Finding, Hit } from '../lib/types';
 
   interface DomainRow { key: string; count: number; risks: string[]; purpose: string | null; last: string }
@@ -38,7 +39,7 @@
   let { params }: { params: Record<string, string> } = $props();
   const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const field = $derived(params.field);
-  const value = $derived(params.value);
+  const value = $derived(reveal(params.value));
   if (!router.query.get('from')) timeRange.sync();
   let selected = $state<Hit | null>(null);
 
@@ -90,7 +91,7 @@
       </div>
     </div>
     <div class="hero-actions">
-      <a class="btn" href="/explore{qs({ q: exploreQuery, from: timeRange.from, to: timeRange.to })}"><ScanSearch size={15} /> Their events</a>
+      <a class="btn" href={exploreLink({ q: exploreQuery, from: timeRange.from, to: timeRange.to })}><ScanSearch size={15} /> Their events</a>
       <TimeRangePicker />
     </div>
   </header>
@@ -163,7 +164,7 @@
       <ChartCard title="What they use it for" subtitle="Events by purpose"
                  table={p ? { columns: ['Purpose', 'Events'], rows: p.purposes.map((x) => [x.key, x.count]) } : null}>
         {#if p}<BarList items={p.purposes.slice(0, 9).map((x) => ({ key: x.key, label: taxon(x.key), value: x.count,
-          href: `/explore${qs({ q: `${exploreQuery} AND purpose:${x.key}`, from: timeRange.from, to: timeRange.to })}` }))} />{/if}
+          href: exploreLink({ q: `${exploreQuery} AND purpose:${x.key}`, from: timeRange.from, to: timeRange.to }) }))} />{/if}
       </ChartCard>
     </div>
 
@@ -198,7 +199,7 @@
               <thead><tr><th>Time</th><th>Name</th><th>Categories</th><th>Risk</th></tr></thead>
               <tbody>
                 {#each p.recent_notable as hit (hit.id)}
-                  <tr class="clickable" onclick={() => (selected = hit)} use:opens={() => (selected = hit)}>
+                  <tr class="clickable" use:opens={() => (selected = hit)}>
                     <td class="nowrap tabular small">{dateTime(hit.source['@timestamp'], true)}</td>
                     <td class="mono small">{hit.source.bite?.requested?.[0]}</td>
                     <td>{#each hit.source.bite?.contexts ?? [] as c (c)}<span class="badge">{c}</span> {/each}</td>

@@ -147,20 +147,27 @@ def create_app() -> FastAPI:
         for error in e.errors():
             where = '.'.join(str(p) for p in error.get('loc', ()) if p not in ('body', 'query'))
             problems.append(f'{where}: {error.get("msg")}' if where else error.get('msg'))
+        # What was sent is not echoed back: it may not be JSON at all, and it
+        # may hold a password
         return JSONResponse({'detail': '; '.join(problems) or 'invalid request',
-                             'errors': [{k: v for k, v in err.items() if k != 'ctx'}
+                             'errors': [{k: v for k, v in err.items() if k not in ('ctx', 'input', 'url')}
                                         for err in e.errors()]}, status_code=422)
 
     app.include_router(api_router)
 
-    @app.get('/healthz', include_in_schema=False)
+    @app.api_route('/healthz', methods=['GET', 'HEAD'], include_in_schema=False)
     async def healthz():
         return {'ok': True}
 
-    @app.get('/readyz', include_in_schema=False)
+    @app.api_route('/readyz', methods=['GET', 'HEAD'], include_in_schema=False)
     async def readyz():
-        async with db.sessionmaker()() as session:
-            await session.execute(text('SELECT 1'))
+        """Ready when the database answers; a 503 otherwise, for a probe to see."""
+        try:
+            async with db.sessionmaker()() as session:
+                await session.execute(text('SELECT 1'))
+        except Exception:
+            return JSONResponse({'ok': False, 'detail': 'the database is not answering'},
+                                status_code=503)
         return {'ok': True}
 
     static = settings.static_dir

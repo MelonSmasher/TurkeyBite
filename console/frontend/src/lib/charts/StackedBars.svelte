@@ -13,7 +13,7 @@
   } = $props();
 
   let width = $state(400);
-  let hover = $state<{ row: string; col: string; v: number } | null>(null);
+  let hover = $state<{ row: string; label: string; col: string; v: number } | null>(null);
   const top = $derived(Math.max(1, ...rows.map((r) => r.value)));
   const shown = $derived(columns.slice(0, 8));
 </script>
@@ -41,7 +41,7 @@
               {@const last = [...segs, { v: rest }].slice(i + 1).every((p) => p.v * scale - 2 <= 0.5)}
               <path d={last ? barPath(x, 0, w, 10, 3) : `M${x},0h${w}v10h${-w}Z`} fill={s.color} role="graphics-symbol"
                     aria-label="{labelFor(s.c)}: {format(s.v)}"
-                    onpointerenter={() => (hover = { row: r.key, col: s.c, v: s.v })} onpointerleave={() => (hover = null)}
+                    onpointerenter={() => (hover = { row: r.key, label: r.label ?? r.key, col: s.c, v: s.v })} onpointerleave={() => (hover = null)}
                     opacity={hover && (hover.row !== r.key || hover.col !== s.c) ? 0.55 : 1} />
             {/if}
           {/each}
@@ -50,7 +50,7 @@
     {/each}
   </div>
   <div class="readout muted">
-    {#if hover}<strong class="tabular">{format(hover.v)}</strong> {labelFor(hover.col)} in {hover.row}{:else}Hover a segment for its value{/if}
+    {#if hover}<strong class="tabular">{format(hover.v)}</strong> {labelFor(hover.col)} in {hover.label}{:else}Hover a segment for its value{/if}
   </div>
 </div>
 

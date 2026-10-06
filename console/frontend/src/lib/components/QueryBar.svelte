@@ -3,6 +3,7 @@
   // server's own check, so a mistake is underlined where it is made.
   import { CircleAlert, CornerDownLeft, Search } from '@lucide/svelte';
   import { api, type QueryError } from '../api';
+  import { identityValueTokens, maskToken } from '../mask';
   import { alias, isIdentityName } from '../privacy';
   import { fields } from '../stores/fields.svelte';
   import { prefs } from '../stores/prefs.svelte';
@@ -39,19 +40,9 @@
   // In privacy mode a value after user:, host: and the like reads as its
   // alias until someone clicks in to edit, when the real text has to show
   const masking = $derived(prefs.privacy && !focused);
-  const masked = $derived.by(() => {
-    const out = new Set<number>();
-    let field: string | null = null;
-    for (const t of tokens) {
-      if (t.kind === 'field') field = t.text.slice(0, -1);
-      else if ((t.kind === 'value' || t.kind === 'quoted') && isIdentityName(field)) out.add(t.start);
-      else if (t.kind !== 'space' && t.kind !== 'compare' && t.kind !== 'paren') field = null;
-    }
-    return out;
-  });
+  const masked = $derived(masking ? identityValueTokens(value) : new Set<number>());
   function display(t: { kind: string; text: string; start: number }): string {
-    if (!masking || !masked.has(t.start)) return t.text;
-    return t.kind === 'quoted' ? `"${alias(t.text.replace(/^"|"$/g, ''))}"` : alias(t.text);
+    return masked.has(t.start) ? maskToken(t) : t.text;
   }
 
   $effect(() => {
@@ -94,8 +85,11 @@
     try {
       const result = await api.get<{ values: { key: string; count?: number }[] }>(
         `/fields/${encodeURIComponent(field)}/values?prefix=${encodeURIComponent(prefix)}`);
+      // In privacy mode the busiest people are suggested by alias; picking
+      // one still puts the real value in the query
+      const hide = prefs.privacy && isIdentityName(field);
       return result.values.slice(0, 9).map((v) => ({
-        insert: /[\s():"]/.test(v.key) ? `"${v.key}"` : v.key, label: v.key,
+        insert: /[\s():"]/.test(v.key) ? `"${v.key}"` : v.key, label: hide ? alias(v.key) : v.key,
         hint: v.count !== undefined ? v.count.toLocaleString() : undefined, kind: 'value' as const,
       }));
     } catch {

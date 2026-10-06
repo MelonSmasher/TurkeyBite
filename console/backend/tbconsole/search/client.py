@@ -103,14 +103,17 @@ class SearchClient:
     # -- the endpoints the console uses ----------------------------------------
 
     async def search(self, body: dict, index: str | None = None) -> dict:
-        return await self.request('POST', f'/{index or self.index}/_search', body,
-                                  params={'ignore_unavailable': 'true',
-                                          'allow_no_indices': 'true'})
+        result = await self.request('POST', f'/{index or self.index}/_search', body,
+                                    params={'ignore_unavailable': 'true',
+                                            'allow_no_indices': 'true'})
+        _whole(result)
+        return result
 
     async def count(self, query: dict, index: str | None = None) -> int:
         result = await self.request('POST', f'/{index or self.index}/_count', {'query': query},
                                     params={'ignore_unavailable': 'true',
                                             'allow_no_indices': 'true'})
+        _whole(result)
         return int(result.get('count', 0))
 
     async def get(self, index: str, doc_id: str) -> dict | None:
@@ -131,6 +134,21 @@ class SearchClient:
                                     params={'format': 'json', 'bytes': 'b',
                                             'h': 'index,health,docs.count,store.size,creation.date'})
         return result if isinstance(result, list) else []
+
+
+def _whole(result: dict) -> None:
+    """Refuses an answer some shards failed to give. OpenSearch still says 200
+    then, with what the other shards found, and a partial count read as a
+    whole one is wrong in the worst way: a rule takes what it did not see for
+    something that is not there, and calls a value new or a source silent."""
+    shards = result.get('_shards') or {}
+    failed = int(shards.get('failed') or 0)
+    if not failed:
+        return
+    reasons = [str(((f.get('reason') or {}).get('reason')) or (f.get('reason') or {}).get('type') or '')
+               for f in shards.get('failures') or [] if isinstance(f, dict)]
+    reason = next((r for r in reasons if r), 'no reason given')
+    raise SearchRejected(400, f'{failed} of {shards.get("total", "?")} shards could not answer: {reason}')
 
 
 def total(result: dict) -> int:
