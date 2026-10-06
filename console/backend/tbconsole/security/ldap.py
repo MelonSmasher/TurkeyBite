@@ -20,6 +20,7 @@ import re
 import ssl
 import time
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
@@ -325,26 +326,35 @@ def _groups(conn: Connection, cfg: dict, dn: str, attributes: dict) -> list[str]
 
 # Directory calls block, so they run in threads: a pool of their own, small,
 # so a directory that hangs ties up four threads, not the ones Argon2 and
-# everything else share. When it keeps failing, calls fail at once for a
-# while rather than queue behind it.
-_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix='ldap')
-_MAX_WAITING = 16
+# everything else share. A call waits its turn for a thread, in order, for as
+# long as a slow directory might reasonably take, so a burst from a few
+# addresses slows the others rather than turns them away. When the directory
+# keeps failing, calls fail at once for a while rather than queue behind it.
+_THREADS = 4
+_POOL = ThreadPoolExecutor(max_workers=_THREADS, thread_name_prefix='ldap')
+_WAIT = 15.0
 _BREAK_AFTER = 3
 _BREAK_FOR = 30.0
+_SLOTS: 'weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]' = weakref.WeakKeyDictionary()
+
+
+def _slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = _SLOTS.get(loop)
+    if slots is None:
+        slots = _SLOTS[loop] = asyncio.Semaphore(_THREADS)
+    return slots
 
 
 class _Breaker:
     def __init__(self):
         self.failures = 0
         self.open_until = 0.0
-        self.waiting = 0
 
     def check(self) -> None:
         if time.monotonic() < self.open_until:
             raise LdapUnavailable('the directory has not been answering; the console will try it '
                                   'again in a few seconds')
-        if self.waiting >= _MAX_WAITING:
-            raise LdapUnavailable('the directory is slow to answer and many sign-ins are waiting')
 
     def record(self, ok: bool) -> None:
         if ok:
@@ -364,7 +374,11 @@ async def call(fn, *args, guarded: bool = True):
     a directory that keeps failing is given a rest: calls fail at once."""
     if guarded:
         _breaker.check()
-    _breaker.waiting += 1
+    slots = _slots()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout=_WAIT)
+    except TimeoutError as e:
+        raise LdapUnavailable('the directory is slow to answer and many sign-ins are waiting') from e
     try:
         result = await asyncio.get_running_loop().run_in_executor(_POOL, partial(fn, *args))
     except LdapUnavailable:
@@ -372,7 +386,7 @@ async def call(fn, *args, guarded: bool = True):
             _breaker.record(False)
         raise
     finally:
-        _breaker.waiting -= 1
+        slots.release()
     if guarded:
         _breaker.record(True)
     return result

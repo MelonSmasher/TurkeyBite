@@ -782,8 +782,8 @@ def test_the_brake_lets_others_at_a_busy_address_through_and_counts_ipv6_by_netw
     assert not limits.limited('203.0.113.7', 'alice'), 'a name it has not tried is not'
     for _ in range(limits.PAIR_LIMIT):
         limits.failed('2001:db8::1', 'root')
-    assert limits.limited('2001:db8::ffff', 'root'), 'the same /64'
-    assert not limits.limited('2001:db8:0:1::1', 'root')
+    assert limits.limited('2001:db8:0:ff::1', 'root'), 'the same /56'
+    assert not limits.limited('2001:db8:0:100::1', 'root')
     limits.reset()
 
 
@@ -1666,8 +1666,41 @@ async def test_through_a_proxy_a_name_only_the_proxy_can_resolve_is_sent_there(m
 
 def test_ipv6_hosts_in_one_site_take_their_turns_together():
     from tbconsole.security import limits
-    # A host rotating through its own /64s is still one site
+    # A host rotating through its own /64s is still one site, for its turns as
+    # for its failures
     assert limits.gate_source('2001:db8:0:1::5') == limits.gate_source('2001:db8:0:ff::9') == '2001:db8::/56'
     assert limits.gate_source('2001:db8:0:100::5') != limits.gate_source('2001:db8::5')
     assert limits.gate_source('203.0.113.9') == '203.0.113.9'
+    assert limits.source('2001:db8:0:ff::9') == '2001:db8::/56'
     assert limits.gate_source(None) == 'unknown'
+
+
+
+async def test_a_few_addresses_flooding_the_directory_do_not_turn_others_away(app, directory, monkeypatch):
+    import asyncio
+    import time as clock
+    from tbconsole.security import ldap, limits
+    await _save_directory(directory)
+    limits.reset()
+    monkeypatch.setattr(ldap, '_breaker', ldap._Breaker())
+    real = ldap.authenticate
+
+    def slow(*args):
+        # A directory a fifth of a second away
+        clock.sleep(0.2)
+        return real(*args)
+    monkeypatch.setattr(ldap, 'authenticate', slow)
+    flooders = [await _client_from(app, f'198.51.100.{30 + i}') for i in range(8)]
+    async with await _client_from(app, '198.51.100.99') as ava:
+        try:
+            junk = [flooders[i % 8].post('/api/v1/auth/login', json={'username': f'junk-{i}', 'password': 'x'})
+                    for i in range(64)]
+            mine = [ava.post('/api/v1/auth/login', json={'username': 'ava', 'password': 'ava-pw'}) for _ in range(3)]
+            answers = await asyncio.gather(*junk, *mine)
+        finally:
+            for c in flooders:
+                await c.aclose()
+    # Each address takes one turn at a time, so ava waits her turn, not a 503
+    assert [a.status_code for a in answers[-3:]] == [200, 200, 200]
+    assert not any(a.status_code == 503 for a in answers)
+    limits.reset()

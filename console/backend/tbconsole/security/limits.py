@@ -8,13 +8,13 @@ trying many usernames is held back, past a looser limit, only on the usernames
 it has already got wrong, so it cannot lock out the others either. A flood
 is bounded by the work it can cause instead: each address has a few sign-ins
 worked on at once, password checks and directory calls, and a queue behind
-them, and past that is turned away at once (admitted); an IPv6 address by
-its /56 here. So a flood from one address waits on itself, and every other
-address is served as before; and once it stops, nothing it did lingers. One
-account's password is checked once at a time, wherever the guesses come from. IPv6 addresses count by their /64,
-since anyone with one has the whole network to rotate through. Names count
-in the form directories compare them in, so width and case variants of one
-name are one name here.
+them, and past that is turned away at once (admitted). So a flood from one
+address waits on itself, and every other address is served as before; and
+once it stops, nothing it did lingers. One account's password is checked once
+at a time, wherever the guesses come from. IPv6 addresses count by their /56,
+the least a site is given, since anyone with one has the whole network to
+rotate through. Names count in the form directories compare them in, so
+width and case variants of one name are one name here.
 """
 
 import asyncio
@@ -39,7 +39,7 @@ def reset() -> None:
 
 
 def source(ip: str | None) -> str:
-    """Who is counted: the address, an IPv6 one by its /64, or one bucket for
+    """Who is counted: the address, an IPv6 one by its /56, or one bucket for
     every request whose address could not be read."""
     if not ip:
         return 'unknown'
@@ -50,7 +50,7 @@ def source(ip: str | None) -> str:
     if address.version == 6:
         if address.ipv4_mapped:
             return str(address.ipv4_mapped)
-        return str(ipaddress.ip_network(f'{address}/64', strict=False))
+        return str(ipaddress.ip_network(f'{address}/56', strict=False))
     return str(address)
 
 
@@ -104,7 +104,12 @@ NAME_QUEUE = 16
 
 class Busy(Exception):
     """An address, or an account, with as many sign-ins under way and
-    waiting as it may have."""
+    waiting as it may have. `kind` says which: 'address', 'directory' or
+    'name'."""
+
+    def __init__(self, kind: str):
+        super().__init__(kind)
+        self.kind = kind
 
 
 class _Gate:
@@ -122,7 +127,7 @@ async def _turn(key: tuple[str, str], turns: int, queue: int):
     if gate is None:
         gate = _gates[key] = _Gate(turns)
     if gate.holding >= turns + queue:
-        raise Busy(key[1])
+        raise Busy(key[0])
     gate.holding += 1
     try:
         async with gate.turns:
@@ -134,13 +139,17 @@ async def _turn(key: tuple[str, str], turns: int, queue: int):
 
 
 def gate_source(ip: str | None) -> str:
-    """Whose turn a sign-in takes: the address, an IPv6 one by its /56, the
-    least a site is given, so a host cannot rotate through its own /64s to
-    take more turns."""
-    who = source(ip)
-    if ':' in who:
-        return str(ipaddress.ip_network(who, strict=False).supernet(new_prefix=56))
-    return who
+    """Whose turn a sign-in takes: who is counted, as for failures."""
+    return source(ip)
+
+
+@asynccontextmanager
+async def directory_turn(ip: str | None):
+    """One directory call at a time from this address: the directory's few
+    threads are shared fairly between addresses rather than taken by those
+    sending most."""
+    async with _turn(('directory', gate_source(ip)), 1, IN_FLIGHT + QUEUE):
+        yield
 
 
 @asynccontextmanager

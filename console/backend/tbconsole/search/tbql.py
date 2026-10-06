@@ -390,56 +390,63 @@ def _unknown_field(name: str) -> str:
 
 
 # OpenSearch's date math: now, or a date and ||, then any steps and roundings
-_MATH_STEPS = r'(?:[+-]\d{1,9}[smhdwMy]|/[smhdwMy])*'
+_MATH_STEPS = r'(?:[+-]\d{0,9}[smhHdwMy]|/[smhHdwMy])*'
 _DATE_MATH = re.compile(r'now' + _MATH_STEPS)
 # The dates OpenSearch reads by default (strict_date_optional_time): ISO 8601
 # as far as it goes, with a T, upper case
 _ISO_DATE = re.compile(r'(?P<y>\d{4})(?:-(?P<mo>\d{2})(?:-(?P<d>\d{2})(?:T(?P<h>\d{2})(?::(?P<mi>\d{2})'
-                       r'(?::(?P<s>\d{2})(?:[.,]\d{1,9})?)?)?(?:Z|[+-](?P<oh>\d{2})(?::?(?P<om>\d{2}))?)?)?)?)?')
-_DATE_STEP = re.compile(r'([+-])(\d+)([smhdwMy])')
+                       r'(?::(?P<s>\d{2})(?:[.,]\d{1,9})?)?)?(?:Z|(?P<sign>[+-])(?P<oh>\d{2})(?::?(?P<om>\d{2}))?)?)?)?)?')
+_DATE_STEP = re.compile(r'([+-])(\d*)([smhHdwMy])')
+
+
+def _anchor(text: str) -> datetime | None:
+    """The instant a date in a query names, or None if it is not one."""
+    if text == 'now':
+        return datetime.now(timezone.utc)
+    if text.isdigit() and len(text) != 4:
+        # Milliseconds since 1970; four digits are a year, as OpenSearch reads them
+        try:
+            return datetime.fromtimestamp(int(text) / 1000, timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    date = _ISO_DATE.fullmatch(text)
+    if not date:
+        return None
+    part = {k: v for k, v in date.groupdict().items() if v is not None}
+    if int(part.get('oh', 0)) * 60 + int(part.get('om', 0)) > 18 * 60:
+        return None  # beyond the ±18:00 a time zone can be
+    try:
+        # Each part in its range: no month 13, no hour 24
+        return datetime(int(part['y']), int(part.get('mo', 1)), int(part.get('d', 1)), int(part.get('h', 0)),
+                        int(part.get('mi', 0)), int(part.get('s', 0)), tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _check_date(value: str, tok: Tok) -> None:
     """Refuses a time OpenSearch would choke on, rather than let it fail
-    there: one that is not a time, a relative time reaching back past 1970,
-    or a year far out. The forms OpenSearch's dates take are date math from
-    now, ISO 8601 as far as it goes (2026, 2026-10, 2026-10-05T09:30Z), and
-    milliseconds since 1970."""
+    there: one that is not a time, or one that, with its date math, falls
+    before 1970 or far ahead. The forms OpenSearch's dates take are now, ISO
+    8601 as far as it goes (2026, 2026-10, 2026-10-05T09:30Z) and milliseconds
+    since 1970, each optionally followed by date math: now-24h, now/d+8h,
+    2026-10-05||-1d."""
     if value == '*':
         return
-    if value.startswith('now'):
-        if not _DATE_MATH.fullmatch(value):
-            raise TbqlError(f'{value!r} is not a time such as now-24h.', tok.pos, tok.length)
-        moment = datetime.now(timezone.utc)
-        for sign, amount, unit in _DATE_STEP.findall(value):
-            try:
-                step = timedelta(seconds=int(amount) * timerange.UNIT_SECONDS[unit])
-                moment = moment - step if sign == '-' else moment + step
-            except OverflowError:
-                moment = datetime.min.replace(tzinfo=timezone.utc)
-                break
-    elif value.isdigit() and len(value) > 4:
-        try:
-            moment = datetime.fromtimestamp(int(value) / 1000, timezone.utc)
-        except (ValueError, OverflowError, OSError) as e:
-            raise TbqlError(f'{value!r} is not a time.', tok.pos, tok.length) from e
+    if value.startswith('now') and '||' not in value:
+        anchor_text, steps = 'now', value[3:]
     else:
-        # A date, and perhaps date math anchored on it: 2026-10-05||-1d
-        anchor, _, steps = value.partition('||')
-        unreadable = TbqlError(f'{value!r} is not a time. Try 2026-10-05, 2026-10-05T09:30 or now-24h.',
-                               tok.pos, tok.length)
-        date = _ISO_DATE.fullmatch(anchor)
-        if not date or ('||' in value and not re.fullmatch(_MATH_STEPS, steps)):
-            raise unreadable
-        part = {k: int(v) for k, v in date.groupdict().items() if v is not None}
+        anchor_text, _, steps = value.partition('||')
+    moment = _anchor(anchor_text)
+    if moment is None or not re.fullmatch(_MATH_STEPS, steps):
+        raise TbqlError(f'{value!r} is not a time. Try 2026-10-05, 2026-10-05T09:30 or now-24h.',
+                        tok.pos, tok.length)
+    for sign, amount, unit in _DATE_STEP.findall(steps):
         try:
-            # Each part in its range: no month 13, no hour 24, no offset of a day
-            moment = datetime(part['y'], part.get('mo', 1), part.get('d', 1), part.get('h', 0),
-                              part.get('mi', 0), part.get('s', 0), tzinfo=timezone.utc)
-        except ValueError as e:
-            raise unreadable from e
-        if part.get('oh', 0) > 23 or part.get('om', 0) > 59:
-            raise unreadable
+            step = timedelta(seconds=int(amount or 1) * timerange.UNIT_SECONDS[unit.lower() if unit == 'H' else unit])
+            moment = moment - step if sign == '-' else moment + step
+        except OverflowError:
+            moment = datetime.min.replace(tzinfo=timezone.utc)
+            break
     if not timerange.EARLIEST <= moment.year <= timerange.LATEST:
         raise TbqlError(f'{value!r} is outside the years {timerange.EARLIEST} to {timerange.LATEST}.',
                         tok.pos, tok.length)

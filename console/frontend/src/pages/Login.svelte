@@ -86,7 +86,7 @@
     <div class="grid-bg"></div>
     <div class="brand-inner">
       <Logo size={72} sub="Console" />
-      <h1>See what your network<br />is really doing.</h1>
+      <p class="headline">See what your network<br />is really doing.</p>
       <p>Search every lookup and visit TurkeyBite records, follow the evidence behind each category,
         and let rules surface what matters before anyone has to go looking.</p>
       <ul>
@@ -98,11 +98,11 @@
     <div class="brand-foot">TurkeyBite Console {config?.version ?? ''}</div>
   </section>
 
-  <section class="form-panel">
+  <main class="form-panel">
     <div class="form-card">
       <div class="org"><Building2 size={15} /> {config?.org_name ?? 'TurkeyBite'}</div>
       {#if !mfaToken}
-        <h2>Sign in</h2>
+        <h1>Sign in</h1>
         <p class="muted lead">
           {#if config?.ldap_enabled}Use your directory account, or a local account if the directory is unavailable.
           {:else}Use your console account.{/if}
@@ -131,7 +131,7 @@
           </div>
         {/if}
       {:else}
-        <h2>Two-step verification</h2>
+        <h1>Two-step verification</h1>
         <p class="muted lead">Enter the six-digit code from your authenticator app.</p>
         <form onsubmit={submitCode} class="stack">
           <input class="input input-lg code" bind:value={code} inputmode="numeric" autocomplete="one-time-code"
@@ -148,7 +148,7 @@
       {/if}
       <MadeBy tone="plain" />
     </div>
-  </section>
+  </main>
 </div>
 
 <style>
@@ -171,7 +171,7 @@
   .brand-inner { position: relative; display: flex; flex-direction: column; gap: 22px; max-width: 520px; margin-top: 8vh; }
   .brand-inner :global(.name) { color: #fff; }
   .brand-inner :global(.sub) { color: rgba(255, 255, 255, 0.65); }
-  h1 { font-size: 2.6rem; line-height: 1.08; letter-spacing: -0.035em; font-weight: 700; }
+  .brand-inner .headline { font-size: 2.6rem; line-height: 1.08; letter-spacing: -0.035em; font-weight: 700; margin: 0; color: #fff; }
   .brand-inner p { color: rgba(255, 255, 255, 0.78); font-size: 1.04rem; line-height: 1.6; }
   ul { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 12px; }
   li { display: flex; align-items: center; gap: 10px; color: rgba(255, 255, 255, 0.88); font-size: 0.96rem; }
@@ -181,7 +181,7 @@
   .form-card { width: min(400px, 100%); display: flex; flex-direction: column; gap: 14px; }
   .org { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; padding: 5px 10px;
     border-radius: 999px; background: var(--surface); border: 1px solid var(--border); font-size: 0.82rem; font-weight: 600; color: var(--text-2); }
-  h2 { font-size: 1.7rem; letter-spacing: -0.03em; margin-top: 6px; }
+  h1 { font-size: 1.7rem; letter-spacing: -0.03em; margin-top: 6px; }
   .lead { margin-top: -6px; margin-bottom: 8px; }
   .input-lg { height: 42px; font-size: 0.98rem; border-radius: 10px; }
   .code { text-align: center; font-size: 1.5rem; letter-spacing: 0.35em; font-family: var(--font-mono); height: 54px; }

@@ -411,7 +411,10 @@ table.table { width: 100%; border-collapse: separate; border-spacing: 0; font-si
 .tbc-tip.shown { pointer-events: auto; }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* Once, at once: a looping animation made short would otherwise restart
+     every frame, and flicker rather than stand still */
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important; }
 }
 @media (forced-colors: active) {
   .btn, .badge, .card { border: 1px solid CanvasText; }

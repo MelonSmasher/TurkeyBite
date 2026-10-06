@@ -132,7 +132,9 @@ async def login(body: LoginBody, request: Request, response: Response,
             return await _sign_in(db, body, request, response, username)
     except limits.Busy as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
-                            'Too many sign-ins are under way from your address. Try again in a '
+                            'Too many sign-ins to this account are under way. Try again in a moment.'
+                            if e.kind == 'name' else
+                            'Too many sign-ins are under way from your network. Try again in a '
                             'moment.') from e
 
 
@@ -174,7 +176,10 @@ async def _sign_in(db: AsyncSession, body: LoginBody, request: Request, response
         await _fail(db, request, username, 'no such local account and LDAP is off')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
     try:
-        identity = await ldap.call(ldap.authenticate, cfg, bind_password, username, body.password)
+        # One directory call at a time per address, so a few addresses cannot
+        # take every turn the directory has
+        async with limits.directory_turn(sessions.client_ip(request)):
+            identity = await ldap.call(ldap.authenticate, cfg, bind_password, username, body.password)
     except ldap.LdapUnavailable as e:
         # Not counted against the name: the directory being away, or the
         # console turning sign-ins away while it is slow, is not a wrong
