@@ -344,9 +344,15 @@ class TurkeyBiteSetup:
                                     "their addresses are left as they are.")
             for host in hosts:
                 # Every host is the same cluster, so has the same admin password.
-                # Anything else on the host, such as verify_certs, is kept.
+                # A host signing in as another account keeps its own password,
+                # which setup never asked for. Anything else on the host, such as
+                # verify_certs, is kept.
                 host.setdefault('username', 'admin')
-                host['password'] = self.opensearch_admin_password
+                if host['username'] == 'admin':
+                    host['password'] = self.opensearch_admin_password
+                else:
+                    self.print_info(f"OpenSearch host {host.get('uri', '')} signs in as "
+                                    f"{host['username']}; its password is left as it is.")
             elastic['hosts'] = hosts
 
         # Syslog
@@ -790,7 +796,8 @@ class TurkeyBiteSetup:
         if not found and target_config.exists():
             config = self.load_yaml(target_config) or {}
             for host in ((config.get('processor') or {}).get('elastic') or {}).get('hosts') or []:
-                if isinstance(host, dict) and host.get('password'):
+                if (isinstance(host, dict) and host.get('password')
+                        and host.get('username', 'admin') == 'admin'):
                     return str(host['password'])
         return found
 

@@ -14,7 +14,9 @@ Either way a refusal has to reach the consumer, which used to acknowledge the
 batch and lose it, so every delivery test here runs under each of those
 settings, and none of them under settings that would never flush early.
 OpenSearch asking for a document to be retried, as it does with a 429, also
-requeues the batch; a document refused for good is logged and acknowledged.
+requeues the batch, as does any refusal about the cluster rather than the
+document: a 401, 403, 404 or 5xx. Only a refusal about the document itself,
+a 400, 409 or 413, is logged and acknowledged.
 
 One bad packet must cost that packet and no more: undecodable JSON, a sieve
 that raises, or an enrichment failure is counted and skipped, and the rest of
@@ -32,6 +34,7 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,11 +42,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from opensearchpy.exceptions import TransportError
+from opensearchpy.serializer import JSONSerializer
+from redis.exceptions import ConnectionError as ValkeyConnectionError
 
 from fakes import FakeRedis
 from libtb import processor as P
-from libtb.consumer import Consumer
+from libtb.consumer import BACKOFF_START, Consumer
 from libtb.processor import Processor
+
+P_REAL_BULK = P.opensearch_helpers.bulk
 from libtb.queue import ListQueue
 from libtb.sieve import Filters
 
@@ -83,16 +90,24 @@ class Cluster(object):
     """OpenSearch as the processor sees it, through index calls and helpers.bulk.
 
     Each host accepts, refuses the connection, rejects documents for good
-    (a 400), or asks for them to be retried (a 429).
+    (`reject`, a 400), asks for them to be retried (`retry`, a 429), or answers
+    with any other status given as a number.
     """
+
+    KINDS = {400: 'mapper_parsing_exception', 401: 'security_exception',
+             403: 'cluster_block_exception', 404: 'index_not_found_exception',
+             409: 'version_conflict_engine_exception', 413: 'content_too_long',
+             429: 'es_rejected_execution_exception', 500: 'exception'}
 
     def __init__(self, test, **answers):
         self.test = test
         self.answers = answers
         self.requests = []
         self.accepted = []
+        self.bulk_kwargs = []
 
-    def bulk(self, client, docs, raise_on_error=False, stats_only=False):
+    def bulk(self, client, docs, raise_on_error=False, stats_only=False, **kwargs):
+        self.bulk_kwargs.append(kwargs)
         return self.answer(client.uri, list(docs), bulk=True)
 
     def answer(self, host, docs, bulk):
@@ -102,9 +117,9 @@ class Cluster(object):
         answer = self.answers.get(host, 'accept')
         if answer == 'refuse':
             raise ConnectionError(f'{host} refused the connection')
-        if answer in ('reject', 'retry'):
-            status, kind = ((400, 'mapper_parsing_exception') if answer == 'reject'
-                            else (429, 'es_rejected_execution_exception'))
+        if answer in ('reject', 'retry') or isinstance(answer, int):
+            status = {'reject': 400, 'retry': 429}.get(answer, answer)
+            kind = self.KINDS.get(status, 'exception')
             if not bulk:
                 raise TransportError(status, kind, {'error': {'type': kind}})
             # The first document refused, the rest taken
@@ -126,6 +141,8 @@ class ConsumerTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.redis = FakeRedis()
         self.queue = ListQueue(self.redis, KEY, 'worker1-01')
+        # The rests a consumer would have served, recorded instead of slept
+        self.rested = []
         self.cluster = Cluster(self)
         # One stand-in client per host, so the fake knows which was asked
         patcher = mock.patch.object(P, 'opensearch_client',
@@ -154,6 +171,7 @@ class ConsumerTest(unittest.TestCase):
                            'browserbeat': {'ignore': {'clients': [], 'users': [],
                                                       'domains': [], 'hosts': []}}})
         # A small timeout, since the fake fails a 0, which in Redis blocks forever
+        kwargs.setdefault('sleep', self.rested.append)
         return Consumer(self.queue, filters, processor, batch_size=kwargs.pop('batch_size', 500),
                         block_seconds=0.01, name='worker1-01', **kwargs)
 
@@ -279,6 +297,64 @@ class ConsumerTest(unittest.TestCase):
                 self.assertIn('OpenSearch rejected a document', err)
                 self.assertEqual((self.waiting(), self.in_flight()), ([], []))
 
+    def test_a_refusal_about_the_cluster_requeues_the_batch(self):
+        # A rotated password, a write block, a missing index, a node failing:
+        # each clears when the cluster does, so the events must wait, not go
+        for status in (401, 403, 404, 500):
+            for name, bulk in EVERY_SETTING.items():
+                with self.subTest(status=status, setting=name):
+                    self.setUp()
+                    _, payloads, _ = self.deliver(
+                        {'http://search-1:9200': status, 'http://search-2:9200': status},
+                        bulk=bulk)
+                    self.assertEqual(self.waiting(), payloads)
+                    self.assertEqual(self.in_flight(), [])
+
+    def test_counting_every_4xx_as_permanent_would_lose_them(self):
+        # The control: the classification this replaced acknowledged a 401
+        old = frozenset(range(400, 500)) - {408, 429}
+        with mock.patch.object(P, 'PERMANENT_STATUSES', old):
+            self.deliver({'http://search-1:9200': 401, 'http://search-2:9200': 401})
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_refusal_about_the_document_is_acknowledged(self):
+        for status in (400, 409, 413):
+            for name, bulk in EVERY_SETTING.items():
+                with self.subTest(status=status, setting=name):
+                    self.setUp()
+                    _, _, err = self.deliver({'http://search-1:9200': status}, bulk=bulk)
+                    self.assertIn('OpenSearch rejected a document', err)
+                    self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_bulk_request_resends_what_a_full_queue_refused(self):
+        # Within the request, so only those documents are sent again. Run
+        # through opensearch-py's own bulk helper, with only the client faked,
+        # so the resend itself is what is checked, not just a setting passed
+        sent = []
+
+        class FullOnce(object):
+            """A client whose write queue is full for the first document once."""
+
+            transport = SimpleNamespace(serializer=JSONSerializer())
+
+            def bulk(self, body, *args, **kwargs):
+                lines = [json.loads(line) for line in body.splitlines() if line.strip()]
+                docs = [lines[n + 1]['bite']['requested'][0] for n in range(0, len(lines), 2)]
+                sent.append(docs)
+                items = [{'index': {'_index': 'tb-index', 'status': 201}} for _ in docs]
+                if len(sent) == 1:
+                    items[0] = {'index': {'_index': 'tb-index', 'status': 429,
+                                          'error': {'type': 'es_rejected_execution_exception'}}}
+                return {'took': 1, 'errors': len(sent) == 1, 'items': items}
+        client = FullOnce()
+        with mock.patch.object(P.opensearch_helpers, 'bulk', P_REAL_BULK), \
+                mock.patch.object(P, 'opensearch_client', return_value=client), \
+                mock.patch.object(P, 'BULK_INITIAL_BACKOFF', 0), mock.patch.object(P, 'BULK_MAX_BACKOFF', 0):
+            consumer, _, err = self.deliver({}, events=3, bulk=BULK_AT_END)
+        self.assertEqual(len(sent), 2, f'sent once, then the refused document again: {err}')
+        self.assertEqual(sent[1], [sent[0][0]], 'only the refused document')
+        self.assertEqual(consumer.stats['requeued'], 0)
+
     def test_each_host_is_tried_before_giving_up(self):
         self.deliver(BOTH_DOWN, events=1)
         self.assertEqual([host for host, _, _ in self.cluster.requests],
@@ -374,6 +450,232 @@ class ConsumerTest(unittest.TestCase):
             consumer.run()
         self.assertEqual(len(self.waiting()), 1)
         self.assertEqual(self.in_flight(), [])
+
+    # -- resting after a batch OpenSearch did not take --------------------
+
+    def failing_cycles(self, consumer, cycles):
+        """The rest due after each of several cycles that all fail, in seconds."""
+        due = []
+        for _ in range(cycles):
+            before = len(self.rested)
+            self.run_once(consumer)
+            due.append(sum(self.rested[before:]))
+        return due
+
+    def test_a_requeued_batch_is_followed_by_a_rest_that_doubles(self):
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = self.consumer(self.processor(BULK_OFF))
+        self.assertEqual(self.failing_cycles(consumer, 8), [1, 2, 4, 8, 16, 32, 60, 60])
+        # Each cycle claimed the requeued batch again and nothing was lost
+        self.assertEqual(len(self.waiting()), 1)
+
+    def test_without_the_rest_an_outage_is_a_tight_loop(self):
+        # The control: what the rest replaces is a cycle that waits for nothing
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = self.consumer(self.processor(BULK_OFF))
+        consumer.rest = lambda: 0
+        self.assertEqual(self.failing_cycles(consumer, 3), [0, 0, 0])
+
+    def test_a_batch_that_is_taken_ends_the_rests(self):
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = self.consumer(self.processor(BULK_OFF))
+        self.failing_cycles(consumer, 2)
+        self.cluster.answers = {}
+        self.assertEqual(self.failing_cycles(consumer, 1), [0])
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('b.example.com'))
+        self.assertEqual(self.failing_cycles(consumer, 1), [1])
+
+    def test_stop_cuts_a_rest_short(self):
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'))
+        consumer = None
+
+        def stop_while_resting(seconds):
+            self.rested.append(seconds)
+            consumer.stop()
+        consumer = self.consumer(self.processor(BULK_OFF), sleep=stop_while_resting)
+        self.failing_cycles(consumer, 3)   # due 1, then 2, then 4 seconds
+        self.assertEqual(self.rested, [0.5])
+
+    def test_an_empty_queue_never_rests(self):
+        consumer = self.consumer()
+        self.run_once(consumer)
+        self.assertEqual(self.rested, [])
+
+    def test_a_long_outage_rests_a_minute_rather_than_overflowing(self):
+        # Uncapped, the 1025th failure in a row would raise
+        self.assertRaises(OverflowError, lambda: BACKOFF_START * 2 ** 1024)
+        consumer = self.consumer()
+        consumer.failures = 5000
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(consumer.rest(), 60)
+
+    # -- Valkey not answering ----------------------------------------------
+
+    def drain(self, consumer):
+        """Runs the consumer until the queue is empty, then stops it. Returns stderr."""
+        real = self.redis.blmove
+
+        def stop_when_empty(*args):
+            item = real(*args)
+            if item is None:
+                consumer.stop()
+            return item
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.redis, 'blmove', stop_when_empty), \
+                redirect_stdout(out), redirect_stderr(err):
+            consumer.run()
+        return err.getvalue()
+
+    def drop_valkey(self, command, times, when=lambda *args: True):
+        """Makes the fake's `command` raise as Valkey going away does, `times` times."""
+        real, failures = getattr(self.redis, command), []
+
+        def flaky(*args):
+            if len(failures) < times and when(*args):
+                failures.append(args)
+                raise ValkeyConnectionError('Error 111 connecting to valkey:6379')
+            return real(*args)
+        patcher = mock.patch.object(self.redis, command, flaky)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_valkey_going_away_is_waited_out_rather_than_fatal(self):
+        self.push(packet('a.example.com'), packet('b.example.com'))
+        self.drop_valkey('blmove', 2)
+        consumer = self.consumer()
+        err = self.drain(consumer)
+        self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com'])
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+        # A second's rest, then two, served in slices; the batch ended them
+        self.assertEqual(sum(self.rested), 3)
+        self.assertEqual(consumer.failures, 0)
+        self.assertIn('Valkey did not answer', err)
+
+    def test_a_name_taken_while_valkey_was_away_stops_it_before_recovery(self):
+        # Its reservation lapsed in the outage, and another process with the
+        # same name took it, and a batch: that batch is the new owner's to
+        # handle, not one stranded here to handle and acknowledge
+        self.queue.reserve()
+        self.drop_valkey('blmove', 1)
+
+        def outage(seconds):
+            if self.in_flight():
+                return
+            self.redis.delete(self.queue.owner_key)
+            other = ListQueue(self.redis, KEY, 'worker1-01')
+            other.reserve()
+            other.push(json.dumps(packet('a.example.com')))
+            other.claim(1, block_seconds=0)
+        consumer = self.consumer(sleep=outage)
+        err = self.drain(consumer)
+        self.assertTrue(consumer.name_lost)
+        self.assertIn('another consumer has taken the name', err)
+        self.assertEqual(self.indexed(), [])
+        self.assertEqual(len(self.in_flight()), 1)
+
+    def test_a_slow_batch_renews_the_name_and_stops_untouched_if_it_was_taken(self):
+        # A batch that outlasts the reservation: renewed as it goes, and if
+        # another took the name meanwhile, neither acknowledged nor requeued,
+        # and what it buffered is not sent, since the new owner has the items
+        from libtb import consumer as C
+        self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
+        self.queue.reserve()
+        renewals = []
+        real = self.queue.renew
+
+        def renew():
+            renewals.append(1)
+            if len(renewals) == 3:
+                self.redis.delete(self.queue.owner_key)
+                ListQueue(self.redis, KEY, 'worker1-01').reserve()
+            return real()
+        with mock.patch.object(C, 'RENEW_SECONDS', 0), mock.patch.object(self.queue, 'renew', renew):
+            consumer = self.consumer()
+            err = self.drain(consumer)
+        self.assertTrue(consumer.name_lost)
+        self.assertIn('another consumer has taken the name', err)
+        self.assertEqual(self.indexed(), [])
+        self.assertEqual(len(self.in_flight()), 3)
+
+    def test_valkey_failing_a_renewal_mid_batch_does_not_send_the_batch_twice(self):
+        # The batch is handled again once Valkey answers; what it had buffered
+        # the first time is dropped, not sent alongside the second copies
+        from libtb import consumer as C
+        self.push(packet('a.example.com'), packet('b.example.com'))
+        self.queue.reserve()
+        renewals = []
+        real = self.queue.renew
+
+        def renew():
+            renewals.append(1)
+            if len(renewals) == 3:
+                raise ValkeyConnectionError('Error 111 connecting to valkey:6379')
+            return real()
+        with mock.patch.object(C, 'RENEW_SECONDS', 0), mock.patch.object(self.queue, 'renew', renew):
+            self.drain(self.consumer())
+        self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com'])
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_a_requeue_valkey_did_not_take_is_handled_before_the_next_claim(self):
+        # OpenSearch refuses a and b, and Valkey goes away as they are put
+        # back, so they are still in flight when it returns. They are handled
+        # again before c is claimed; c's acknowledgement trims from the head
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
+        self.drop_valkey('lmove', 1, when=lambda src, dst, *_: dst == KEY)
+        consumer = self.consumer(self.processor(BULK_OFF), batch_size=2,
+                                 sleep=lambda seconds: self.cluster.answers.clear())
+        self.drain(consumer)
+        self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com', 'c.example.com'])
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_without_handling_it_again_the_next_acknowledgement_loses_it(self):
+        # The control: going straight on to claim c, whose acknowledgement
+        # trims a from the head of the processing list though a was never indexed
+        self.cluster.answers = dict(BOTH_DOWN)
+        self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
+        self.drop_valkey('lmove', 1, when=lambda src, dst, *_: dst == KEY)
+        consumer = self.consumer(self.processor(BULK_OFF), batch_size=2,
+                                 sleep=lambda seconds: self.cluster.answers.clear())
+        real = consumer.settle_stranded
+        consumer.settle_stranded = lambda why: real(why) if 'previous run' in why else None
+        self.drain(consumer)
+        self.assertNotIn('a.example.com', self.indexed())
+        left = [json.loads(raw)['resource'] for raw in self.waiting() + self.in_flight()]
+        self.assertNotIn('a.example.com', left)
+
+    def test_a_lookup_valkey_did_not_answer_costs_no_event(self):
+        # The valkey lookup mode reads the host lists from Valkey as it
+        # enriches, so its going away is not a bad packet to count and drop
+        self.push(packet('a.example.com'))
+        processor = self.processor()
+        lookups = []
+
+        def flaky(searches, **kwargs):
+            lookups.append(searches)
+            if len(lookups) == 1:
+                raise ValkeyConnectionError('Connection reset by peer')
+            return ['news'], {}
+        processor.resolve_contexts = flaky
+        consumer = self.consumer(processor)
+        self.drain(consumer)
+        self.assertEqual(self.indexed(), ['a.example.com'])
+        self.assertEqual(consumer.stats['unreadable'], 0)
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
+    def test_stop_while_valkey_is_away_exits(self):
+        self.drop_valkey('lrange', 1000)
+        consumer = self.consumer(sleep=lambda seconds: consumer.stop())
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()) as out, redirect_stderr(err):
+            consumer.run()
+        self.assertIn('[worker1-01] stopped.', out.getvalue())
+        self.assertIn('Valkey did not answer', err.getvalue())
 
     def test_stop_finishes_the_batch_in_hand_then_exits(self):
         self.push(*[packet(f'{n}.example.com') for n in range(4)])

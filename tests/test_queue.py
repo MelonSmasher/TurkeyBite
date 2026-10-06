@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from fakes import Blocked, FakeRedis
-from libtb.queue import ListQueue, recover_orphans
+from libtb.queue import ListQueue, NotOwner, recover_orphans
 
 KEY = 'turkeybite'
 
@@ -175,6 +175,26 @@ class ListQueueTest(unittest.TestCase):
         self.assertEqual(self.waiting(), items('a', 'b', 'c', 'd', 'e'))
         self.assertEqual(self.in_flight(), [])
 
+    def test_a_requeue_cut_short_leaves_each_item_in_one_place(self):
+        # The connection drops after the first move: what was moved is
+        # waiting, the rest is still in flight for recovery, and nothing is
+        # in both, which pushing copies before trimming could not promise
+        self.push('a', 'b', 'c')
+        claimed = self.queue.claim(3)
+
+        def drops_after_one_write(command, key):
+            if command in ('lpush', 'lmove', 'ltrim'):
+                self.redis.on_command = None
+                raise ConnectionError('Valkey went away')
+        self.redis.on_command = drops_after_one_write
+        with self.assertRaises(ConnectionError):
+            self.queue.requeue(claimed)
+        self.assertEqual(self.waiting(), items('c'))
+        self.assertEqual(self.in_flight(), items('a', 'b'))
+        self.assertEqual(self.queue.requeue(self.queue.recover()), 2)
+        self.assertEqual(self.waiting(), items('a', 'b', 'c'))
+        self.assertEqual(self.in_flight(), [])
+
     def test_requeueing_nothing_changes_nothing(self):
         self.push('a')
         self.queue.claim(1)
@@ -323,3 +343,67 @@ class QueueRecoverCommandTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class OwnershipTest(unittest.TestCase):
+    """One process per consumer name, so no two share a processing list."""
+
+    def setUp(self):
+        self.redis = FakeRedis()
+
+    def test_a_second_consumer_with_the_same_name_cannot_start(self):
+        first, second = ListQueue(self.redis, KEY, 'worker1'), ListQueue(self.redis, KEY, 'worker1')
+        self.assertTrue(first.reserve())
+        self.assertFalse(second.reserve())
+        self.assertTrue(first.renew())
+        first.release()
+        self.assertTrue(second.reserve(), 'free again once released')
+
+    def test_a_consumer_that_lost_its_name_finds_out_at_its_next_batch(self):
+        first, second = ListQueue(self.redis, KEY, 'worker1'), ListQueue(self.redis, KEY, 'worker1')
+        first.reserve()
+        # The reservation lapsed while it hung, and another took the name
+        self.redis.delete(first.owner_key)
+        self.assertTrue(second.reserve())
+        self.assertFalse(first.renew())
+        first.release()
+        self.assertTrue(second.renew(), 'releasing a lost name leaves the new owner alone')
+
+    def test_a_name_that_lapsed_and_nobody_took_is_taken_again(self):
+        # As when Valkey was down for longer than the reservation lasts
+        queue = ListQueue(self.redis, KEY, 'worker1')
+        queue.reserve()
+        self.redis.delete(queue.owner_key)
+        self.assertTrue(queue.renew())
+        self.assertEqual(self.redis.get(queue.owner_key), queue.owner.encode())
+        self.assertFalse(ListQueue(self.redis, KEY, 'worker1').reserve())
+
+    def test_a_consumer_that_lost_its_name_cannot_settle_its_successors_items(self):
+        # It stalled past its reservation after its last check, and another
+        # took the name and claimed: its acknowledgement and requeue change nothing
+        old, new = ListQueue(self.redis, KEY, 'worker1'), ListQueue(self.redis, KEY, 'worker1')
+        old.reserve()
+        self.redis.delete(old.owner_key)
+        new.reserve()
+        new.push(b'a')
+        new.push(b'b')
+        new.claim(2, block_seconds=0)
+        self.assertRaises(NotOwner, old.ack, 2)
+        self.assertRaises(NotOwner, old.requeue, [b'a', b'b'])
+        self.assertEqual(new.in_flight(), 2)
+        # The owner settles as before
+        self.assertEqual(new.requeue([b'b']), 1)
+        new.ack(1)
+        self.assertEqual((new.in_flight(), new.depth()), (0, 1))
+
+    def test_a_sweep_leaves_a_running_consumers_list_alone(self):
+        running = ListQueue(self.redis, KEY, 'host-01')
+        running.reserve()
+        running.push(b'a')
+        running.claim(1, block_seconds=0)
+        dead = ListQueue(self.redis, KEY, 'host-02')
+        dead.push(b'b')
+        dead.claim(1, block_seconds=0)
+        swept, requeued = recover_orphans(self.redis, KEY, prefix='host')
+        self.assertEqual((swept, requeued), (1, 1))
+        self.assertEqual(running.in_flight(), 1)

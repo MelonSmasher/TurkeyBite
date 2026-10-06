@@ -1,5 +1,7 @@
 #! /usr/bin/env python3
 
+import time
+
 import click
 from libtb.util import read_config, pull_host_lists, process_ignorelist, build_domain_index, sync_domain_index, pull_psl
 from libtb.inlet import Inlet
@@ -33,10 +35,11 @@ def check():
     Loads it and validates everything a worker needs: the sieve, the evidence,
     resolver and privacy settings, and each OpenSearch host, including that a
     ca_certs file is there and that the password is not the shipped default.
-    The worker and core containers run this before they start anything, and
-    exit if it fails: under the rq pipeline a worker process never reads the
-    settings itself, so a CA file missing from its container would otherwise
-    only show as events failing to ship.
+    The core container runs this before it starts anything, as does a worker
+    container on the consume pipeline, and each exits if it fails rather than
+    showing a mistake only as events failing to ship. Under the rq pipeline a
+    worker runs the processor each job carries, which the core built from its
+    own config.yaml, so the core's check is the one that covers it.
     """
     try:
         config = read_config()
@@ -80,17 +83,40 @@ def consume(consumer, batch_size, quiet):
         password=queue_conf['password']
     )
     queue = ListQueue(redis, queue_conf['channel'], name)
-    filters = Filters(config['sieve'])
-    processor = Processor(config['processor'], config['redis'])
-    worker = Consumer(
-        queue, filters, processor,
-        batch_size=batch_size or int(bulk.get('size') or 500),
-        name=name,
-        log_events=not quiet
-    )
-    worker.install_signal_handlers()
-    print(f'Consuming {queue_conf["channel"]} as {name}')
-    worker.run()
+    # One process per name: two would share a processing list, and a requeue
+    # by one could take the other's batch
+    # A consumer that died without letting its name go, as a container that
+    # was killed, holds it for OWNER_TTL seconds more: wait that out
+    waited, patience = 0, ListQueue.OWNER_TTL + 10
+    while not queue.reserve():
+        if waited >= patience:
+            click.echo(f'Another consumer is already running as {name}. Give this one a '
+                       f'different --consumer, or stop that one first.', err=True)
+            raise SystemExit(1)
+        if not waited:
+            click.echo(f'Waiting up to {patience} seconds for the name {name}, which another '
+                       f'consumer holds or a stopped one held', err=True)
+        time.sleep(5)
+        waited += 5
+    # Released however this ends, setup failing included, so a restart need
+    # not wait out the reservation
+    try:
+        filters = Filters(config['sieve'])
+        processor = Processor(config['processor'], config['redis'])
+        worker = Consumer(
+            queue, filters, processor,
+            batch_size=batch_size or int(bulk.get('size') or 500),
+            name=name,
+            log_events=not quiet
+        )
+        worker.install_signal_handlers()
+        print(f'Consuming {queue_conf["channel"]} as {name}')
+        worker.run()
+    finally:
+        queue.release()
+    if worker.name_lost:
+        # Not a clean stop, so supervisor starts it again, to wait for the name
+        raise SystemExit(1)
 
 
 @cli.command('queue-recover')

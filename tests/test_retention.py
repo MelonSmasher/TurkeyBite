@@ -449,6 +449,15 @@ class ShortenTest(Setting, unittest.TestCase):
         self.assertIn(R.CONFIRM_COMMAND.format(days=9), self.log())
         self.assertIn('--dry-run', self.log())
 
+    def test_with_only_a_copy_of_a_deleted_policy_it_counts_what_is_old_enough(self):
+        # The copy's period cannot be read, so how many more would go is not
+        # known; how many are old enough for the new period is
+        for days_ago in (5, 20, 40, 60, 89):
+            self.os.index(f'tb-index-2026-x{days_ago:02d}', days_ago, policy=R.POLICY_ID)
+        self.start(9)
+        self.assertIn('4 of the 5 indices it manages are 9 days old or more', self.log())
+        self.assertNotIn('more of the', self.log())
+
     def test_a_dry_run_lists_them(self):
         self.history()
         self.start(9, dry_run=True)
@@ -491,6 +500,22 @@ class ShortenTest(Setting, unittest.TestCase):
         result = self.start(90)
         self.assertEqual(result['action'], R.REFUSED)
         self.assertEqual(self.puts(), [])
+
+    def test_recreating_over_indices_too_young_to_delete_still_needs_confirming(self):
+        # Their copy of the deleted policy may have kept them longer than 90
+        # days, and creating it again would move them onto 90 days unasked
+        self.os.index('tb-index-2026-x20', 20, policy=R.POLICY_ID, initialised=False)
+        result = self.start(90)
+        self.assertEqual(result['action'], R.REFUSED)
+        self.assertEqual(self.puts(), [])
+        self.assertIn('copy of an earlier', self.log())
+
+    def test_confirming_the_recreation_creates_it_and_moves_them(self):
+        # The control for the refusal above
+        self.os.index('tb-index-2026-x20', 20, policy=R.POLICY_ID, initialised=False)
+        result = self.start(90, confirm_days=90)
+        self.assertEqual(result['action'], R.CREATE)
+        self.assertTrue(result['ok'])
 
     def test_nothing_is_attached_while_it_is_refused(self):
         self.history()

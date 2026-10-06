@@ -201,28 +201,41 @@ class DeliveryError(RuntimeError):
     """OpenSearch did not take an event, and it is worth trying again later."""
 
 
-# Per-document statuses in a bulk response that mean try again later rather
-# than never: rejected because a queue was full, or a shard was unavailable
-RETRYABLE_STATUSES = frozenset((429, 502, 503, 504))
+# Statuses that say the document itself is the problem, so sending it again
+# can never succeed: it does not fit the mapping (400), conflicts with a
+# version already there (409), or is too large (413). Every other refusal is
+# about the cluster rather than the document and clears when the cluster
+# does: a full queue (429), a write block or a missing permission (403), a
+# rotated password (401), an index that may not be created (404), a node
+# failing (5xx). Retrying those is the point of acknowledging after the flush.
+PERMANENT_STATUSES = frozenset((400, 409, 413))
+
+# How often opensearch-py resends the documents a bulk request had refused
+# with a 429 before giving up on them, and its first and longest wait. Within
+# the request, so only those documents are resent, rather than the batch being
+# replayed and everything else in it indexed twice.
+BULK_RETRIES = 3
+BULK_INITIAL_BACKOFF = 1
+BULK_MAX_BACKOFF = 8
+
+
+def _statuses(error):
+    """The statuses in one per-document bulk error, {operation: {status, error}}."""
+    if not isinstance(error, dict):
+        return []
+    return [item.get('status') for item in error.values() if isinstance(item, dict)]
 
 
 def retryable_rejection(error):
-    """True when one per-document bulk error says to try again later.
-
-    opensearch-py reports each as {operation: {status, error}}. A mapping
-    error and the like is a 400, permanent, and retrying it would only
-    requeue the same document forever.
-    """
-    if not isinstance(error, dict):
-        return False
-    return any(isinstance(item, dict) and item.get('status') in RETRYABLE_STATUSES
-               for item in error.values())
+    """True when one per-document bulk error may succeed if sent again later."""
+    return any(isinstance(status, int) and status not in PERMANENT_STATUSES
+               for status in _statuses(error))
 
 
 def permanent_refusal(error):
-    """True when OpenSearch refused one document for good: a 4xx other than 408 or 429."""
+    """True when OpenSearch refused one document for good, see PERMANENT_STATUSES."""
     status = getattr(error, 'status_code', None)
-    return isinstance(status, int) and 400 <= status < 500 and status not in (408, 429)
+    return isinstance(status, int) and status in PERMANENT_STATUSES
 
 
 # Documents waiting to be flushed as one bulk request, keyed by pid for the same
@@ -1000,14 +1013,16 @@ class Processor(object):
 
         Returns the number accepted. With raise_on_total_failure, which
         defaults to strict_delivery, the caller is told with DeliveryError
-        when every host refused, or when OpenSearch asked for any document to
-        be retried later, so a consumer that acknowledges after the flush can
-        requeue the batch instead of losing it. The batch is requeued whole,
-        so documents that were indexed in it are indexed again: at-least-once
-        delivery already allows that, and losing the rest does not. A
-        document refused for good, by a mapping error say, is logged and not
-        retried. The RQ path passes nothing and keeps its behaviour, which is
-        to log and drop.
+        when every host refused, or when any document was refused for a
+        reason that may clear, so a consumer that acknowledges after the flush
+        can requeue the batch instead of losing it. Documents refused with a
+        429 are first resent within the request, a few times with a backoff,
+        so a briefly full queue costs those documents a wait rather than the
+        batch a replay. A batch that is requeued is requeued whole, so
+        documents indexed in it are indexed again: at-least-once delivery
+        already allows that, and losing the rest does not. A document refused
+        for good, by a mapping error say, is logged and not retried. The RQ
+        path passes nothing and keeps its behaviour, which is to log and drop.
         """
         if raise_on_total_failure is None:
             raise_on_total_failure = self.strict_delivery
@@ -1020,25 +1035,39 @@ class Processor(object):
         docs = buffer['docs']
         buffer['docs'] = []
         buffer['since'] = time.monotonic()
+        misconfigured = None
         for host in self.config['elastic']['hosts']:
             try:
                 ok, errors = opensearch_helpers.bulk(
-                    opensearch_client(host), docs, raise_on_error=False, stats_only=False)
+                    opensearch_client(host), docs, raise_on_error=False, stats_only=False,
+                    max_retries=BULK_RETRIES, initial_backoff=BULK_INITIAL_BACKOFF,
+                    max_backoff=BULK_MAX_BACKOFF)
             except Exception as e:
                 _report_host_error(host, e, 'bulk sending')
+                if isinstance(e, ConfigurationError):
+                    misconfigured = e
                 continue
-            retry = [error for error in errors or [] if retryable_rejection(error)]
+            retry = []
             for error in errors or []:
-                if error not in retry:
+                if retryable_rejection(error):
+                    retry.append(error)
+                else:
                     print(f"OpenSearch rejected a document: {error}", file=sys.stderr)
             if retry and raise_on_total_failure:
-                raise DeliveryError(f'OpenSearch asked for {len(retry)} of {len(docs)} '
-                                    f'documents to be retried: {retry[0]}')
+                raise DeliveryError(f'OpenSearch refused {len(retry)} of {len(docs)} '
+                                    f'documents for a reason that may clear: {retry[0]}')
             for error in retry:
-                print(f"Dropped a document OpenSearch asked to retry: {error}", file=sys.stderr)
+                print(f"Dropped a document OpenSearch may take later: {error}", file=sys.stderr)
             return ok
         if raise_on_total_failure:
             raise DeliveryError(f'every OpenSearch host refused {len(docs)} documents')
+        if misconfigured is not None:
+            # Kept for the next flush, and the job fails rather than completes:
+            # under the rq pipeline that leaves it with RQ's failed jobs, to be
+            # requeued once this worker's configuration is fixed. ship_bite
+            # takes that job's own document back out
+            buffer['docs'] = docs + buffer['docs']
+            raise misconfigured
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
         return 0
 
@@ -1062,12 +1091,22 @@ class Processor(object):
                 if not buffer['docs'] and not self.strict_delivery:
                     # The consumer flushes, and handles signals, itself
                     _install_flush_hooks(self.flush_bulk)
-                buffer['docs'].append({'_index': self.index_name(), '_source': bite})
-                # Raises DeliveryError for the consumer when this flush fails
-                self.flush_bulk(force=False)
+                doc = {'_index': self.index_name(), '_source': bite}
+                buffer['docs'].append(doc)
+                try:
+                    # Raises DeliveryError for the consumer when this flush fails
+                    self.flush_bulk(force=False)
+                except ConfigurationError:
+                    # This job fails, and RQ keeps it to requeue once the
+                    # configuration is fixed: its document goes with it, so
+                    # the requeue does not index it twice, and the buffer
+                    # holds no more than it did while the fault lasts
+                    buffer['docs'] = [kept for kept in buffer['docs'] if kept is not doc]
+                    raise
             else:
                 index = self.index_name()
                 delivered = refused = False
+                misconfigured = None
                 for host in self.config['elastic']['hosts']:
                     try:
                         opensearch_client(host).index(index=index, body=bite)
@@ -1075,14 +1114,22 @@ class Processor(object):
                         break
                     except Exception as e:
                         if permanent_refusal(e):
-                            # Another host of the same cluster would refuse it too
+                            # The document is the problem, so another host of
+                            # the same cluster would refuse it too
                             print(f"OpenSearch rejected a document: {e}", file=sys.stderr)
                             refused = True
                             break
                         _report_host_error(host, e, 'sending')
+                        if isinstance(e, ConfigurationError):
+                            misconfigured = e
                         continue
                 if not (delivered or refused) and self.strict_delivery:
                     raise DeliveryError('every OpenSearch host failed to take an event')
+                if not (delivered or refused) and misconfigured is not None:
+                    # A host this worker cannot even set up, such as a CA file
+                    # missing from its container: the job fails, so RQ keeps it
+                    # with its failed jobs instead of the event being dropped
+                    raise misconfigured
 
         if self.config['syslog']['enable']:
             try:

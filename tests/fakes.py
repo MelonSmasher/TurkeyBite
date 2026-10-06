@@ -23,6 +23,8 @@ publish is half done, say.
 
 import fnmatch
 
+from libtb.queue import ACK_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
+
 
 def _bytes(value):
     if isinstance(value, bytes):
@@ -58,6 +60,8 @@ class FakeRedis(object):
 
     def __init__(self, scan_repeats=False, decoded_keys=False):
         self.data = {}
+        # Expiries asked for, in seconds; kept, not enforced
+        self.ttls = {}
         self.calls = []
         self.on_command = None
         self.blocked_for = []
@@ -98,10 +102,54 @@ class FakeRedis(object):
             raise TypeError('WRONGTYPE Operation against a key holding the wrong kind of value')
         return value
 
-    def set(self, key, value):
-        self.data[_key(key)] = _bytes(value)
+    def set(self, key, value, nx=False, ex=None):
+        """Set a string; with nx, only if the key is free.
+
+        Expiry is recorded, not enforced: a test that needs a lapsed key
+        deletes it.
+        """
         self._did('set', key)
+        if nx and _key(key) in self.data:
+            return None
+        self.data[_key(key)] = _bytes(value)
+        if ex is not None:
+            self.ttls[_key(key)] = ex
         return True
+
+    def expire(self, key, seconds):
+        """Record an expiry for a key that exists."""
+        self._did('expire', key)
+        if _key(key) not in self.data:
+            return False
+        self.ttls[_key(key)] = seconds
+        return True
+
+    def eval(self, script, numkeys, *keys_and_args):
+        """Run the queue's Lua scripts, in Python."""
+        keys, args = keys_and_args[:numkeys], keys_and_args[numkeys:]
+        self._did('eval', keys[0])
+        held = self.data.get(_key(keys[0]))
+        mine = held == _bytes(args[0])
+        if script == RENEW_SCRIPT:
+            if mine:
+                return int(self.expire(keys[0], int(args[1])))
+            if held is None:
+                self.set(keys[0], args[0], ex=int(args[1]))
+                return 1
+            return 0
+        if script == RELEASE_SCRIPT:
+            return self.delete(keys[0]) if mine else 0
+        if script in (ACK_SCRIPT, REQUEUE_SCRIPT) and not mine:
+            return -1
+        if script == ACK_SCRIPT:
+            self.ltrim(keys[1], int(args[1]), -1)
+            return 1
+        if script == REQUEUE_SCRIPT:
+            moved = 0
+            while moved < int(args[1]) and self.lmove(keys[1], keys[2], 'RIGHT', 'LEFT') is not None:
+                moved += 1
+            return moved
+        raise NotImplementedError('a script the fake does not know')
 
     def delete(self, *keys):
         removed = 0

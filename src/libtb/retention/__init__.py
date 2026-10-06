@@ -478,7 +478,13 @@ def reconcile(cluster, days, prefix, log=print, now=None, confirm_days=None,
     limit = current_days if current_days is not None else math.inf
     result['would_delete'] = [name for name in ours_managed
                               if age(name) is not None and days <= age(name) < limit]
-    shorter = (action == UPDATE and days < limit) or (action == CREATE and result['would_delete'])
+    # Indices still under a policy of this name that has since been deleted run
+    # ISM's own copy of it, whose period cannot be read here. Creating it again
+    # would move them onto `days`, which may be sooner than their copy says, so
+    # it counts as shortening whether or not anything is old enough to go now.
+    orphaned = action == CREATE and bool(ours_managed)
+    shorter = ((action == UPDATE and days < limit)
+               or (action == CREATE and (bool(result['would_delete']) or orphaned)))
 
     version = (ours.get('_seq_no'), ours.get('_primary_term')) if ours else None
     if shorter and confirm_days != days:
@@ -487,12 +493,24 @@ def reconcile(cluster, days, prefix, log=print, now=None, confirm_days=None,
         if confirm_days is not None:
             log(f'Retention: --confirm-days {confirm_days} does not match {DAYS_ENV}='
                 f'{days}, so nothing is changed.')
+        if orphaned:
+            now_in_force = (f'{len(ours_managed)} indices still run a copy of an earlier '
+                            f'{POLICY_ID} that has been deleted, whose period cannot be read, '
+                            f'and {days} days may be shorter.')
+        else:
+            now_in_force = f'{days} is shorter than the {_days(limit)} the policy applies now.'
+        # With the old copy's period unknown, what is known is how many are
+        # old enough for the new one, not how many more it would delete
+        if orphaned:
+            affected = (f'{len(result["would_delete"])} of the {len(ours_managed)} indices it '
+                        f'manages are {days} days old or more, so ISM could delete them at its '
+                        f'next check')
+        else:
+            affected = (f'That would delete {len(result["would_delete"])} more of the '
+                        f'{len(ours_managed)} indices it manages at ISM\'s next check')
         _banner(log,
-                f'RETENTION NOT SHORTENED: {DAYS_ENV} is {days}, shorter than the '
-                f'{_days(limit)} the policy {POLICY_ID} applies now. That would delete '
-                f'{len(result["would_delete"])} more of the {len(ours_managed)} indices it '
-                f'manages at ISM\'s next check, and deleting cannot be undone, so the policy '
-                f'is left as it is.',
+                f'RETENTION NOT SHORTENED: {DAYS_ENV} is {days}. {now_in_force} '
+                f'{affected}, and deleting cannot be undone, so the policy is left as it is.',
                 f'If {days} days is meant, confirm it with: '
                 f'{CONFIRM_COMMAND.format(days=days)}',
                 f'Add --dry-run to list the indices it would delete first.')

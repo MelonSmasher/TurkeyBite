@@ -185,11 +185,53 @@ class TrimUrlTest(unittest.TestCase):
         self.assertEqual(self.host('https:\\\\alice:pw@example.com\\a?q=1'),
                          'https:\\\\example.com')
 
+    def test_a_scheme_browsers_use_without_slashes_is_a_url(self):
+        # about:reader carries the page it wraps, reset token and all
+        self.assertEqual(self.trimmed('about:reader?url=https%3A%2F%2Fmail.example.com%2F'
+                                     'reset%3Ftoken%3Dabc'), 'about:reader')
+        self.assertEqual(self.trimmed('magnet:?xt=urn:btih:abc&dn=secret'), 'magnet:')
+        self.assertEqual(self.trimmed('mailto:x@y.example?body=secret'), 'mailto:x@y.example')
+        self.assertEqual(self.trimmed('chrome://settings/?search=pw'), 'chrome://settings/')
+
+    def test_direction_marks_quotes_and_brackets_do_not_hide_a_url(self):
+        for lead, tail in (('\u200e', ''), ('\u200f', ''), ('\u202a', ''), ('\u2066', ''),
+                           ('"', '"'), ("'", "'"), ('<', '>'), ('(', ')'), ('\u201c', '\u201d')):
+            with self.subTest(lead=lead):
+                self.assertNotIn('secret', self.trimmed(f'{lead}https://h.example/?q=secret{tail}'))
+
+    def test_host_mode_keeps_only_the_scheme_of_a_url_with_no_host(self):
+        # What follows a bare scheme is the payload: an address, a page's data
+        self.assertEqual(self.host('mailto:alice@example.org?body=secret'), 'mailto:')
+        self.assertEqual(self.host('mailto:alice@example.org'), 'mailto:')
+        self.assertEqual(self.host('data:text/html;base64,c2VjcmV0'), 'data:')
+        self.assertEqual(self.host('javascript:alert(document.cookie)'), 'javascript:')
+        self.assertEqual(self.host('about:blank'), 'about:')
+        # Trimmed keeps the address, as it keeps a path, and drops the query
+        self.assertEqual(self.trimmed('mailto:alice@example.org'), 'mailto:alice@example.org')
+        self.assertEqual(self.trimmed('about:blank'), 'about:blank')
+
+    def test_a_file_url_with_one_slash_is_trimmed_too(self):
+        self.assertEqual(self.trimmed('file:/Users/alice/secret.txt?q=secret#f'), 'file:/Users/alice/secret.txt')
+        self.assertEqual(self.host('file:/Users/alice/secret.txt?q=secret'), 'file:/')
+        self.assertEqual(self.trimmed('file:\\Users\\alice?q=secret'), 'file:\\Users\\alice')
+
+    def test_the_partner_of_a_dropped_opening_quote_goes_too(self):
+        self.assertEqual(self.trimmed('"https://example.com/a"'), 'https://example.com/a')
+        self.assertEqual(self.trimmed('<https://example.com/a?q=secret>'), 'https://example.com/a')
+        self.assertEqual(self.trimmed('(https://example.com/a(b))'), 'https://example.com/a(b)')
+        self.assertEqual(self.trimmed('https://example.com/a"'), 'https://example.com/a"')
+
+    def test_a_file_url_has_no_host_to_keep(self):
+        self.assertEqual(self.host('file:///Users/alice/secret.txt?x'), 'file:///')
+        self.assertEqual(self.host('file:///C:/Users/alice/a.txt'), 'file:///')
+        self.assertEqual(self.trimmed('file:///Users/alice/secret.txt?x#y'),
+                         'file:///Users/alice/secret.txt')
+
     def test_strings_that_are_not_urls_are_untouched(self):
         for text in ('hello world', 'www.example.com', 'example.com/?q=1', 'cats?dogs#birds',
                      'malicious:quad9', 'v=spf1 include:_spf.example.com ~all',
-                     'Search for https://example.com/?q=1 here', 'mailto:alice@example.org',
-                     'about:blank', 'symptoms of flu - Google Search', '',
+                     'Search for https://example.com/?q=1 here',
+                     'symptoms of flu - Google Search', '',
                      'httpbin is a service?', 'http: the protocol', '2026-10-04T12:00:00Z',
                      '10.0.0.5', 'localhost:8080/a?b'):
             self.assertEqual(self.trimmed(text), text, text)

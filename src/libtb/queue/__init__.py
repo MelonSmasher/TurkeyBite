@@ -31,7 +31,10 @@ Depth is `LLEN` on the queue, which is the backpressure signal pub/sub could not
 provide at all.
 """
 
+import os
 import re
+import socket
+import uuid
 
 PROCESSING_PREFIX = 'processing:'
 
@@ -97,6 +100,9 @@ def recover_orphans(redis, key, keep_consumers=(), prefix=None, consumers=None):
             shape = generated_names(prefix)
             names = {name for name in names if shape.fullmatch(name[len(base):])}
     names -= {base + consumer for consumer in keep_consumers}
+    # A consumer that holds its name now is running, and its list is its own
+    names = {name for name in names
+             if not redis.get(f'{key}:owner:{name[len(base):]}')}
 
     swept = requeued = 0
     for name in sorted(names):
@@ -107,13 +113,106 @@ def recover_orphans(redis, key, keep_consumers=(), prefix=None, consumers=None):
     return swept, requeued
 
 
+# A consumer's reservation of its name, renewed and released only by the
+# process holding it: compared and changed in one step, in Valkey
+RENEW_SCRIPT = """
+local held = redis.call('GET', KEYS[1])
+if held == ARGV[1] then
+    return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+if not held then
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+    return 1
+end
+return 0
+"""
+RELEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+# Settling a batch, for a consumer that holds its name: done only while it
+# still does, checked in the same step, so one that stalled past its
+# reservation cannot trim or requeue its successor's items. -1 when not.
+ACK_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return -1
+end
+redis.call('LTRIM', KEYS[2], ARGV[2], -1)
+return 1
+"""
+REQUEUE_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return -1
+end
+local moved = 0
+for _ = 1, tonumber(ARGV[2]) do
+    if not redis.call('LMOVE', KEYS[2], KEYS[3], 'RIGHT', 'LEFT') then
+        break
+    end
+    moved = moved + 1
+end
+return moved
+"""
+
+
+class NotOwner(Exception):
+    """Raised when a process no longer holds the consumer name it reserved."""
+
+
 class ListQueue(object):
+
+    # How long a consumer's name stays reserved without being renewed. A
+    # consumer renews it every batch, and a rest is at most a minute
+    OWNER_TTL = 90
 
     def __init__(self, redis, key, consumer):
         self.redis = redis
         self.key = key
         self.consumer = consumer
         self.processing_key = f'{key}:{PROCESSING_PREFIX}{consumer}'
+        self.owner_key = f'{key}:owner:{consumer}'
+        self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}'
+        self.reserved = False
+
+    # -- owning the name --------------------------------------------------
+
+    def reserve(self):
+        """Takes this consumer's name for this process.
+
+        Returns False if another running consumer has it. Two consumers
+        given one name share one processing list, and a requeue, which moves
+        items from the list's tail, could then take the other's items while
+        its own were acknowledged and lost. So a name is held by one process
+        at a time: reserved here, renewed while running, and released at the
+        end, or lapsing OWNER_TTL seconds after a process dies without
+        releasing it.
+        """
+        self.reserved = bool(self.redis.set(self.owner_key, self.owner, nx=True, ex=self.OWNER_TTL))
+        return self.reserved
+
+    def renew(self):
+        """Keeps the name reserved.
+
+        Returns False if another process has it now, and True when it was
+        never reserved, as by a test driving a queue. A reservation that
+        lapsed, while Valkey was down say, and that nobody took, is taken
+        again. Checked and extended in one step, in Valkey, so a reservation
+        that lapses in between cannot be extended for its new owner.
+        """
+        if not self.reserved:
+            return True
+        return bool(self.redis.eval(RENEW_SCRIPT, 1, self.owner_key, self.owner, self.OWNER_TTL))
+
+    def release(self):
+        """Gives the name up, if it is still this process's."""
+        if not self.reserved:
+            return
+        self.redis.eval(RELEASE_SCRIPT, 1, self.owner_key, self.owner)
+        self.reserved = False
 
     # -- producing, used by tests and by any local shim ---------------------
 
@@ -161,9 +260,16 @@ class ListQueue(object):
         """Drops the first `count` claimed items from the processing list.
 
         Only called once those items are durably indexed. LTRIM keeps the range
-        from `count` onwards, so anything claimed after this batch survives.
+        from `count` onwards, so anything claimed after this batch survives. For
+        a consumer that reserved its name, only while it holds it: NotOwner
+        otherwise.
         """
         if count <= 0:
+            return
+        if self.reserved:
+            if self.redis.eval(ACK_SCRIPT, 2, self.owner_key, self.processing_key,
+                               self.owner, count) == -1:
+                raise NotOwner(self.consumer)
             return
         self.redis.ltrim(self.processing_key, count, -1)
 
@@ -171,11 +277,24 @@ class ListQueue(object):
         """Puts items back at the head of the queue, preserving order.
 
         Used when a batch cannot be indexed and should be retried rather than
-        dropped. The processing list is cleared for exactly those items.
+        dropped. One atomic LMOVE per item, from the processing list's tail to
+        the queue's head, so an item is never in both places or in neither:
+        pushing copies and then trimming the originals left the whole batch in
+        both if the connection dropped in between, and a restart replayed it.
+        A consumer claims its next batch only once this one is settled, so the
+        batch is all its processing list holds, and the tail is its end. For a
+        consumer that reserved its name, the moves and the check that it still
+        holds it are one step, and NotOwner says it does not.
+        Returns how many were moved.
         """
-        if not items:
-            return
-        # LPUSH reverses, so push in reverse to restore the original order
-        for payload in reversed(items):
-            self.redis.lpush(self.key, payload)
-        self.ack(len(items))
+        if self.reserved:
+            moved = self.redis.eval(REQUEUE_SCRIPT, 3, self.owner_key, self.processing_key,
+                                    self.key, self.owner, len(items))
+            if moved == -1:
+                raise NotOwner(self.consumer)
+            return moved
+        moved = 0
+        while moved < len(items) and self.redis.lmove(
+                self.processing_key, self.key, 'RIGHT', 'LEFT') is not None:
+            moved += 1
+        return moved
