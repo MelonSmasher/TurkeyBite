@@ -259,11 +259,16 @@ class ShipTimeTest(Workdir):
     def test_with_bulk_on_it_is_reported_once_too(self):
         self.config['processor']['elastic']['bulk'] = {'enable': True, 'size': 1,
                                                         'interval_sec': 0}
+        processor = self.processor()
+        # A document from a job that completed before the fault, waiting to be sent
+        earlier = {'_index': 'bites', '_source': {'resource': 'earlier.example.com'}}
+        P._bulk_buffers[os.getpid()] = {'docs': [earlier], 'since': 0}
         with mock.patch.object(P, '_install_flush_hooks'):
-            logged = self.ship(self.processor(), 3)
-        # Each failed, and the documents wait in the buffer for the next flush
+            logged = self.ship(processor, 3)
+        # Each job failed, to be requeued with its document; the earlier one
+        # waits for the next flush, and nothing else piles up behind it
         self.assertEqual(self.failed, 3)
-        self.assertEqual(len(P._bulk_buffers[os.getpid()]['docs']), 3)
+        self.assertEqual(P._bulk_buffers[os.getpid()]['docs'], [earlier])
         P._bulk_buffers.clear()
         self.assertEqual(logged.count('CONFIGURATION ERROR'), 1)
 

@@ -1,5 +1,7 @@
 #! /usr/bin/env python3
 
+import time
+
 import click
 from libtb.util import read_config, pull_host_lists, process_ignorelist, build_domain_index, sync_domain_index, pull_psl
 from libtb.inlet import Inlet
@@ -83,12 +85,19 @@ def consume(consumer, batch_size, quiet):
     queue = ListQueue(redis, queue_conf['channel'], name)
     # One process per name: two would share a processing list, and a requeue
     # by one could take the other's batch
-    if not queue.reserve():
-        click.echo(f'Another consumer is already running as {name}. Give this one a '
-                   f'different --consumer, or stop that one first. A name held by a '
-                   f'consumer that died is free again {ListQueue.OWNER_TTL} seconds later.',
-                   err=True)
-        raise SystemExit(1)
+    # A consumer that died without letting its name go, as a container that
+    # was killed, holds it for OWNER_TTL seconds more: wait that out
+    waited, patience = 0, ListQueue.OWNER_TTL + 10
+    while not queue.reserve():
+        if waited >= patience:
+            click.echo(f'Another consumer is already running as {name}. Give this one a '
+                       f'different --consumer, or stop that one first.', err=True)
+            raise SystemExit(1)
+        if not waited:
+            click.echo(f'Waiting up to {patience} seconds for the name {name}, which another '
+                       f'consumer holds or a stopped one held', err=True)
+        time.sleep(5)
+        waited += 5
     filters = Filters(config['sieve'])
     processor = Processor(config['processor'], config['redis'])
     worker = Consumer(
@@ -103,6 +112,9 @@ def consume(consumer, batch_size, quiet):
         worker.run()
     finally:
         queue.release()
+    if worker.name_lost:
+        # Not a clean stop, so supervisor starts it again, to wait for the name
+        raise SystemExit(1)
 
 
 @cli.command('queue-recover')

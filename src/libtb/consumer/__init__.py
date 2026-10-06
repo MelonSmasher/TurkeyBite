@@ -90,6 +90,8 @@ class Consumer(object):
         self.sleep = sleep
         self.failures = 0
         self.running = True
+        # Set when another process took this consumer's name, so it stopped
+        self.name_lost = False
         self.stats = {'claimed': 0, 'kept': 0, 'dropped': 0, 'unreadable': 0,
                       'indexed': 0, 'requeued': 0, 'batches': 0}
 
@@ -216,17 +218,18 @@ class Consumer(object):
         last_report = time.monotonic()
         while True:
             try:
+                # Before the processing list is touched, recovery included:
+                # another process that has this consumer's name has the list
+                if not self.queue.renew():
+                    print(f'[{self.name}] stopping: another consumer has taken the name '
+                          f'{self.name}', file=sys.stderr)
+                    self.name_lost = True
+                    self.running = False
+                    break
                 if recovering:
                     self.settle_stranded(recovering)
                     recovering = None
                 if not self.running:
-                    break
-                if not self.queue.renew():
-                    # Another process has this consumer's name, so its
-                    # processing list is no longer this one's alone
-                    print(f'[{self.name}] stopping: another consumer has taken the name '
-                          f'{self.name}', file=sys.stderr)
-                    self.running = False
                     break
                 self.run_once()
                 now = time.monotonic()

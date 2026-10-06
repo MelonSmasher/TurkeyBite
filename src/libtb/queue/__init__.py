@@ -113,6 +113,27 @@ def recover_orphans(redis, key, keep_consumers=(), prefix=None, consumers=None):
     return swept, requeued
 
 
+# A consumer's reservation of its name, renewed and released only by the
+# process holding it: compared and changed in one step, in Valkey
+RENEW_SCRIPT = """
+local held = redis.call('GET', KEYS[1])
+if held == ARGV[1] then
+    return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+if not held then
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+    return 1
+end
+return 0
+"""
+RELEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
 class ListQueue(object):
 
     # How long a consumer's name stays reserved without being renewed. A
@@ -133,12 +154,13 @@ class ListQueue(object):
     def reserve(self):
         """Takes this consumer's name for this process.
 
-        Returns False if another running consumer has it. Two consumers given one name share one processing list, and a
-        requeue, which moves items from the list's tail, could then take the
-        other's items while its own were acknowledged and lost. So a name is
-        held by one process at a time: reserved here, renewed while running,
-        and released at the end, or lapsing OWNER_TTL seconds after a process
-        dies without releasing it.
+        Returns False if another running consumer has it. Two consumers
+        given one name share one processing list, and a requeue, which moves
+        items from the list's tail, could then take the other's items while
+        its own were acknowledged and lost. So a name is held by one process
+        at a time: reserved here, renewed while running, and released at the
+        end, or lapsing OWNER_TTL seconds after a process dies without
+        releasing it.
         """
         self.reserved = bool(self.redis.set(self.owner_key, self.owner, nx=True, ex=self.OWNER_TTL))
         return self.reserved
@@ -146,22 +168,21 @@ class ListQueue(object):
     def renew(self):
         """Keeps the name reserved.
 
-        Returns False if it is no longer this process's, and True when it was
-        never reserved, as by a test driving a queue.
+        Returns False if another process has it now, and True when it was
+        never reserved, as by a test driving a queue. A reservation that
+        lapsed, while Valkey was down say, and that nobody took, is taken
+        again. Checked and extended in one step, in Valkey, so a reservation
+        that lapses in between cannot be extended for its new owner.
         """
         if not self.reserved:
             return True
-        held = self.redis.get(self.owner_key)
-        if held is None or (held.decode() if isinstance(held, bytes) else held) != self.owner:
-            return False
-        return bool(self.redis.expire(self.owner_key, self.OWNER_TTL))
+        return bool(self.redis.eval(RENEW_SCRIPT, 1, self.owner_key, self.owner, self.OWNER_TTL))
 
     def release(self):
+        """Gives the name up, if it is still this process's."""
         if not self.reserved:
             return
-        held = self.redis.get(self.owner_key)
-        if held is not None and (held.decode() if isinstance(held, bytes) else held) == self.owner:
-            self.redis.delete(self.owner_key)
+        self.redis.eval(RELEASE_SCRIPT, 1, self.owner_key, self.owner)
         self.reserved = False
 
     # -- producing, used by tests and by any local shim ---------------------

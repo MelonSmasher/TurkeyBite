@@ -1064,7 +1064,8 @@ class Processor(object):
         if misconfigured is not None:
             # Kept for the next flush, and the job fails rather than completes:
             # under the rq pipeline that leaves it with RQ's failed jobs, to be
-            # requeued once this worker's configuration is fixed
+            # requeued once this worker's configuration is fixed. ship_bite
+            # takes that job's own document back out
             buffer['docs'] = docs + buffer['docs']
             raise misconfigured
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
@@ -1090,9 +1091,18 @@ class Processor(object):
                 if not buffer['docs'] and not self.strict_delivery:
                     # The consumer flushes, and handles signals, itself
                     _install_flush_hooks(self.flush_bulk)
-                buffer['docs'].append({'_index': self.index_name(), '_source': bite})
-                # Raises DeliveryError for the consumer when this flush fails
-                self.flush_bulk(force=False)
+                doc = {'_index': self.index_name(), '_source': bite}
+                buffer['docs'].append(doc)
+                try:
+                    # Raises DeliveryError for the consumer when this flush fails
+                    self.flush_bulk(force=False)
+                except ConfigurationError:
+                    # This job fails, and RQ keeps it to requeue once the
+                    # configuration is fixed: its document goes with it, so
+                    # the requeue does not index it twice, and the buffer
+                    # holds no more than it did while the fault lasts
+                    buffer['docs'] = [kept for kept in buffer['docs'] if kept is not doc]
+                    raise
             else:
                 index = self.index_name()
                 delivered = refused = False

@@ -369,6 +369,15 @@ class OwnershipTest(unittest.TestCase):
         first.release()
         self.assertTrue(second.renew(), 'releasing a lost name leaves the new owner alone')
 
+    def test_a_name_that_lapsed_and_nobody_took_is_taken_again(self):
+        # As when Valkey was down for longer than the reservation lasts
+        queue = ListQueue(self.redis, KEY, 'worker1')
+        queue.reserve()
+        self.redis.delete(queue.owner_key)
+        self.assertTrue(queue.renew())
+        self.assertEqual(self.redis.get(queue.owner_key), queue.owner.encode())
+        self.assertFalse(ListQueue(self.redis, KEY, 'worker1').reserve())
+
     def test_a_sweep_leaves_a_running_consumers_list_alone(self):
         running = ListQueue(self.redis, KEY, 'host-01')
         running.reserve()

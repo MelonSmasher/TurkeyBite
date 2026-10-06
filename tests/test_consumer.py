@@ -556,6 +556,28 @@ class ConsumerTest(unittest.TestCase):
         self.assertEqual(consumer.failures, 0)
         self.assertIn('Valkey did not answer', err)
 
+    def test_a_name_taken_while_valkey_was_away_stops_it_before_recovery(self):
+        # Its reservation lapsed in the outage, and another process with the
+        # same name took it, and a batch: that batch is the new owner's to
+        # handle, not one stranded here to handle and acknowledge
+        self.queue.reserve()
+        self.drop_valkey('blmove', 1)
+
+        def outage(seconds):
+            if self.in_flight():
+                return
+            self.redis.delete(self.queue.owner_key)
+            other = ListQueue(self.redis, KEY, 'worker1-01')
+            other.reserve()
+            other.push(json.dumps(packet('a.example.com')))
+            other.claim(1, block_seconds=0)
+        consumer = self.consumer(sleep=outage)
+        err = self.drain(consumer)
+        self.assertTrue(consumer.name_lost)
+        self.assertIn('another consumer has taken the name', err)
+        self.assertEqual(self.indexed(), [])
+        self.assertEqual(len(self.in_flight()), 1)
+
     def test_a_requeue_valkey_did_not_take_is_handled_before_the_next_claim(self):
         # OpenSearch refuses a and b, and Valkey goes away as they are put
         # back, so they are still in flight when it returns. They are handled
