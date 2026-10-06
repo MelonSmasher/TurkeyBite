@@ -81,21 +81,29 @@ async def recheck_directory(now: datetime | None = None) -> dict:
         active_session = select(UserSession.user_id).where(UserSession.expires_at > now)
         usable_key = select(ApiKey.user_id).where(
             ApiKey.revoked_at.is_(None), or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now))
-        accounts = [(u.id, u.username, u.ldap_dn) for u in (await db.execute(select(User).where(
+        accounts = [(u.id, u.username, u.ldap_dn, u.disabled) for u in (await db.execute(select(User).where(
             User.source == 'ldap',
             or_(User.disabled_reason == 'directory',
                 and_(User.disabled.is_(False),
                      or_(User.id.in_(active_session), User.id.in_(usable_key))))))).scalars()]
     verdicts = []
-    for user_id, username, dn in accounts:
-        verdicts.append((user_id, await asyncio.to_thread(ldap.recheck, cfg, secret, dn, username)))
+    enabled = 0
+    losing = 0
+    for user_id, username, dn, disabled in accounts:
+        identity = await asyncio.to_thread(ldap.recheck, cfg, secret, dn, username)
+        verdicts.append((user_id, identity))
+        # The cap weighs what this run would take away from accounts that have
+        # access now; those the directory already took away are neither news
+        # nor part of the whole
+        if not disabled:
+            enabled += 1
+            losing += identity is None or identity.role is None
     counts['checked'] = len(verdicts)
-    losing = [v for v in verdicts if v[1] is None or v[1].role is None]
-    hold_back = len(losing) > REVOKE_FLOOR and len(losing) > REVOKE_SHARE * len(verdicts)
+    hold_back = losing > REVOKE_FLOOR and losing > REVOKE_SHARE * enabled
     if hold_back:
         log.warning('directory recheck would revoke %s of %s accounts; revoking none. '
-                    'Check the LDAP settings.', len(losing), len(verdicts))
-        counts['held_back'] = len(losing)
+                    'Check the LDAP settings.', losing, enabled)
+        counts['held_back'] = losing
     for user_id, identity in verdicts:
         async with database.sessionmaker()() as db:
             user = await db.get(User, user_id)

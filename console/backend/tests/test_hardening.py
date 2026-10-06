@@ -887,6 +887,31 @@ async def test_a_recheck_that_would_revoke_most_people_revokes_nobody(client, di
         assert (await session.execute(select(func.count()).select_from(User).where(User.disabled))).scalar_one() == 0
 
 
+async def test_accounts_revoked_before_do_not_hold_back_the_next_revocation(client, directory):
+    # Five people the directory already took away, still looked at in case it
+    # gives them back, must not count as five more revocations every hour
+    from tbconsole import maintenance
+    await _save_directory(directory)
+    for name in ('p1', 'p2', 'p3', 'p4', 'p5'):
+        await make_user(name, source='ldap', role='analyst', disabled=True, disabled_reason='directory',
+                        ldap_dn=f'uid={name},ou=people,dc=example,dc=org')
+    await login(client, 'ava', 'ava-pw')
+    await make_user('bob', source='ldap', role='analyst', ldap_dn='uid=bob,ou=people,dc=example,dc=org')
+    async with db.sessionmaker()() as session:
+        bob = (await session.execute(select(User).where(User.username == 'bob'))).scalar_one()
+        session.add(UserSession(token_hash=crypto.sha256('bob'), user_id=bob.id,
+                                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                                last_seen_at=datetime.now(timezone.utc)))
+        await session.commit()
+    # Bob is in no group that grants a role: one of two active accounts loses
+    # access, which is a revocation, not a mass one
+    counts = await maintenance.recheck_directory()
+    assert counts['held_back'] == 0 and counts['revoked'] == 1
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(User.disabled).where(User.username == 'bob'))).scalar_one()
+        assert not (await session.execute(select(User.disabled).where(User.username == 'ava'))).scalar_one()
+
+
 async def test_a_header_with_space_at_an_end_is_refused_when_saved(client, monkeypatch):
     monkeypatch.setattr(safety, 'check', lambda url: _noop())
     await make_user('root', role='admin')
