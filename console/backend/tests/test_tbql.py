@@ -138,9 +138,13 @@ def test_times_opensearch_would_choke_on_are_refused():
             compile_(query)
     for query in ('@timestamp:>now-1d+2h', '@timestamp:<now/d', '@timestamp:2026-10-05', '@timestamp:[2026-01 TO *]',
                   '@timestamp:>now/d+8h', '@timestamp:>now-1d/d+8h', '@timestamp:>1791300000000',
-                  '@timestamp:>2026-10-05T09:30:00Z', '@timestamp:2026'):
+                  '@timestamp:>2026-10-05T09:30:00Z', '@timestamp:2026', '@timestamp:>2026-10-05||-1d',
+                  '@timestamp:>2026-10-05||/d+8h', '@timestamp:>"2026-10-05T09:30+02:00"'):
         compile_(query)
+    # Forms Python reads but OpenSearch does not, and dates that are no date
     for query in ('@timestamp:2026-13-45', '@timestamp:>yesterday', '@timestamp:>99999999999999999999',
-                  '@timestamp:>999999999999999'):
+                  '@timestamp:>999999999999999', '@timestamp:>"2026-10-05 09:30"', '@timestamp:>2026-W40',
+                  '@timestamp:>2026-10-05T24:00', '@timestamp:>2026-10-05t09:30', '@timestamp:>2026-02-30',
+                  '@timestamp:>"2026-10-05T09:75+02:00"', '@timestamp:>2026-10-05||yesterday'):
         with pytest.raises(TbqlError):
             compile_(query)

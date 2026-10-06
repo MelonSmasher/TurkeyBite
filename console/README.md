@@ -125,11 +125,15 @@ passwords or codes lock a local account for fifteen minutes
 for one username from one address hold that pair back for five minutes, an
 address with a hundred failures in five minutes is held back for the names it
 has failed with but never for one it has not tried, and admins can require a
-second factor for local admins. Each address has two sign-ins checked at a
-time and a queue of 64 behind them, past which it is told to try again in a
-moment, so a flood from one address waits on itself while every other
-address signs in as usual; the directory being unreachable never counts
-against anyone's name. Someone who lost their
+second factor for local admins. Each address (an IPv6 one by its /56) has two
+sign-ins checked at a time and a queue of 64 behind them, past which it is
+told to try again in a moment, so a flood from one address waits on itself
+while every other address signs in as usual. People who share the flooding
+address, behind one NAT, wait with it while it lasts: telling them apart by
+whether their account exists would tell an attacker which accounts do. Each
+account's password is checked once at a time, so guesses sent together still
+stop at the lockout, and the directory being unreachable never counts against
+anyone's name. Someone who lost their
 authenticator gets back in with
 `python -m tbconsole create-user NAME --password-stdin --reset-mfa`, which also
 ends their sessions; their role stays as it was unless `--role` is given, a

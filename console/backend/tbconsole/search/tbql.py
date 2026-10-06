@@ -389,8 +389,13 @@ def _unknown_field(name: str) -> str:
     return f'There is no field called {name!r}.{hint}'
 
 
-# OpenSearch's date math: now, then any steps and roundings, in any order
-_DATE_MATH = re.compile(r'now(?:[+-]\d{1,9}[smhdwMy]|/[smhdwMy])*')
+# OpenSearch's date math: now, or a date and ||, then any steps and roundings
+_MATH_STEPS = r'(?:[+-]\d{1,9}[smhdwMy]|/[smhdwMy])*'
+_DATE_MATH = re.compile(r'now' + _MATH_STEPS)
+# The dates OpenSearch reads by default (strict_date_optional_time): ISO 8601
+# as far as it goes, with a T, upper case
+_ISO_DATE = re.compile(r'(?P<y>\d{4})(?:-(?P<mo>\d{2})(?:-(?P<d>\d{2})(?:T(?P<h>\d{2})(?::(?P<mi>\d{2})'
+                       r'(?::(?P<s>\d{2})(?:[.,]\d{1,9})?)?)?(?:Z|[+-](?P<oh>\d{2})(?::?(?P<om>\d{2}))?)?)?)?)?')
 _DATE_STEP = re.compile(r'([+-])(\d+)([smhdwMy])')
 
 
@@ -413,21 +418,28 @@ def _check_date(value: str, tok: Tok) -> None:
             except OverflowError:
                 moment = datetime.min.replace(tzinfo=timezone.utc)
                 break
-    elif value.isdigit():
+    elif value.isdigit() and len(value) > 4:
         try:
             moment = datetime.fromtimestamp(int(value) / 1000, timezone.utc)
         except (ValueError, OverflowError, OSError) as e:
             raise TbqlError(f'{value!r} is not a time.', tok.pos, tok.length) from e
     else:
-        partial = re.fullmatch(r'(\d{4})(?:-(\d{2}))?', value)
+        # A date, and perhaps date math anchored on it: 2026-10-05||-1d
+        anchor, _, steps = value.partition('||')
+        unreadable = TbqlError(f'{value!r} is not a time. Try 2026-10-05, 2026-10-05T09:30 or now-24h.',
+                               tok.pos, tok.length)
+        date = _ISO_DATE.fullmatch(anchor)
+        if not date or ('||' in value and not re.fullmatch(_MATH_STEPS, steps)):
+            raise unreadable
+        part = {k: int(v) for k, v in date.groupdict().items() if v is not None}
         try:
-            if partial:
-                moment = datetime(int(partial[1]), int(partial[2] or 1), 1, tzinfo=timezone.utc)
-            else:
-                moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            # Each part in its range: no month 13, no hour 24, no offset of a day
+            moment = datetime(part['y'], part.get('mo', 1), part.get('d', 1), part.get('h', 0),
+                              part.get('mi', 0), part.get('s', 0), tzinfo=timezone.utc)
         except ValueError as e:
-            raise TbqlError(f'{value!r} is not a time. Try 2026-10-05, 2026-10-05T09:30 or now-24h.',
-                            tok.pos, tok.length) from e
+            raise unreadable from e
+        if part.get('oh', 0) > 23 or part.get('om', 0) > 59:
+            raise unreadable
     if not timerange.EARLIEST <= moment.year <= timerange.LATEST:
         raise TbqlError(f'{value!r} is outside the years {timerange.EARLIEST} to {timerange.LATEST}.',
                         tok.pos, tok.length)

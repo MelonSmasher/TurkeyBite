@@ -230,9 +230,6 @@ def _clean_username(username: str) -> str:
     return username
 
 
-# Groups read from the directory per page
-GROUP_PAGE = 500
-
 # Search results that mean the search worked: success, and the size limit
 # that finding two people for one name hits
 _ANSWERED = (0, 4)
@@ -304,13 +301,20 @@ def _groups(conn: Connection, cfg: dict, dn: str, attributes: dict) -> list[str]
     groups = _all(attributes, cfg.get('attr_groups') or '')
     if cfg.get('group_filter') and cfg.get('group_base_dn'):
         search_filter = cfg['group_filter'].replace('{dn}', escape_filter_chars(dn))
-        # A page at a time, so a directory's size limit cannot cut the list
-        # short; and a list it cut short anyway is not an answer, since the
-        # group that grants someone's role may be the one left off
-        entries = conn.extend.standard.paged_search(cfg['group_base_dn'], search_filter, search_scope=SUBTREE,
-                                                    attributes=[], paged_size=GROUP_PAGE, generator=False)
-        _answered(conn, 'search for groups', allow=(0,))
-        groups += [e['dn'] for e in entries or [] if e.get('type') == 'searchResEntry']
+        base = cfg['group_base_dn'].strip().lower()
+        # Each group mapped to a role is asked whether this person is in it:
+        # a few small answers, where a list of every group they are in could
+        # be cut short by the directory's size limits, and the group that
+        # grants their role be the one left off
+        for mapping in cfg.get('role_mappings') or []:
+            group = str(mapping.get('group') or '').strip()
+            if not group or not group.lower().endswith(base):
+                continue
+            conn.search(group, search_filter, search_scope=BASE, attributes=[])
+            # 32: the mapped group does not exist, so no one is in it
+            if _answered(conn, 'search for groups', allow=(0, 32)) == 0 and any(
+                    e.get('type') == 'searchResEntry' for e in conn.response or []):
+                groups.append(group)
     seen, unique = set(), []
     for group in groups:
         if group.lower() not in seen:

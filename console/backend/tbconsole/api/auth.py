@@ -11,7 +11,7 @@ account for fifteen minutes, and an address that fails often is slowed down.
 """
 
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
@@ -23,7 +23,7 @@ from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, current_principal, optional_principal, origin_ok
 from ..models import User, UserSession
-from ..security import crypto, ldap, limits, passwords, sessions, totp
+from ..security import crypto, ldap, limits, lockout, passwords, sessions, totp
 from .common import user_out
 
 router = APIRouter(prefix='/auth', tags=['auth'])
@@ -83,13 +83,8 @@ async def _finish(db: AsyncSession, user: User, request: Request, response: Resp
 async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
                 user: User | None = None) -> None:
     limits.failed(sessions.client_ip(request), username)
-    settings = get_settings()
     if user is not None and user.source == 'local':
-        user.failed_logins += 1
-        if user.failed_logins >= settings.login_max_failures:
-            user.locked_until = datetime.now(timezone.utc) + timedelta(
-                minutes=settings.login_lockout_minutes)
-            user.failed_logins = 0
+        if await lockout.count_failure(db, user.id):
             reason += '; account locked'
         # The count is committed on its own first, so nothing about the audit
         # row can undo it
@@ -133,7 +128,7 @@ async def login(body: LoginBody, request: Request, response: Response,
     # A few at a time from one address, before anything costly, the database
     # included: a flood from one address queues behind itself
     try:
-        async with limits.admitted(sessions.client_ip(request)):
+        async with limits.admitted(sessions.client_ip(request), username):
             return await _sign_in(db, body, request, response, username)
     except limits.Busy as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,

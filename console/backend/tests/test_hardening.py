@@ -1506,6 +1506,55 @@ async def test_one_address_flooding_sign_in_waits_on_itself_and_others_get_in(ap
     limits.reset()
 
 
+async def test_guesses_sent_together_from_several_addresses_still_lock_the_account(app, monkeypatch):
+    import asyncio
+    from tbconsole.config import get_settings
+    from tbconsole.security import limits, passwords
+    await make_user('ana')
+    limits.reset()
+    real, checked = passwords.verify_password, []
+
+    def counting(stored, password):
+        if stored is not None:
+            checked.append(password)
+        return real(stored, password)
+    monkeypatch.setattr(passwords, 'verify_password', counting)
+    clients = [await _client_from(app, f'198.51.100.{i}') for i in (21, 22, 23)]
+    try:
+        answers = await asyncio.gather(*[
+            clients[i % 3].post('/api/v1/auth/login', json={'username': 'ana', 'password': f'guess-{i}'})
+            for i in range(30)])
+    finally:
+        for c in clients:
+            await c.aclose()
+    # Checked one at a time: the lock the fifth set holds for the rest
+    assert len(checked) == get_settings().login_max_failures
+    assert all(a.status_code in (401, 429) for a in answers)
+    async with db.sessionmaker()() as session:
+        user = (await session.execute(select(User).where(User.username == 'ana'))).scalar_one()
+        assert user.locked_until is not None
+    limits.reset()
+
+
+async def test_guesses_on_the_account_page_sent_together_lock_it_too(client, monkeypatch):
+    import asyncio
+    from tbconsole.config import get_settings
+    from tbconsole.security import passwords
+    await make_user('ana')
+    headers = await login(client, 'ana')
+    real, checked = passwords.verify_password, []
+
+    def counting(stored, password):
+        checked.append(password)
+        return real(stored, password)
+    monkeypatch.setattr(passwords, 'verify_password', counting)
+    await asyncio.gather(*[client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': f'g{i}'})
+                           for i in range(15)])
+    assert len(checked) == get_settings().login_max_failures
+    right = await client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': 'correct horse battery'})
+    assert right.status_code == 429
+
+
 async def test_no_database_connection_is_held_while_a_password_is_checked(client, monkeypatch):
     from tbconsole import db as database
     from tbconsole.security import passwords
@@ -1558,24 +1607,37 @@ async def test_wrong_passwords_on_the_account_page_lock_the_account(client):
 
 
 
-def test_a_list_of_groups_the_directory_cut_short_is_not_an_answer():
-    from types import SimpleNamespace
+def test_groups_are_read_by_asking_each_mapped_group_not_by_listing_them_all():
+    # Someone in a thousand groups, with a directory whose size limit would cut
+    # the list: only the groups mapped to roles are asked about, one by one
     from tbconsole.security import ldap
 
-    class Cut:
-        """A connection whose directory stopped at its size limit."""
-        def __init__(self):
-            self.result = {}
-            self.extend = SimpleNamespace(standard=SimpleNamespace(paged_search=self.paged_search))
+    class Directory:
+        def __init__(self, codes):
+            self.codes, self.asked, self.result, self.response = codes, [], {}, []
 
-        def paged_search(self, *args, **kwargs):
-            self.result = {'result': 4, 'description': 'sizeLimitExceeded'}
-            return [{'type': 'searchResEntry', 'dn': 'cn=students,ou=groups,dc=example,dc=org'}]
-    conn = Cut()
-    cfg = {'group_filter': '(member={dn})', 'group_base_dn': 'ou=groups,dc=example,dc=org', 'attr_groups': ''}
-    with pytest.raises(ldap.LdapUnavailable, match='sizeLimitExceeded'):
-        ldap._groups(conn, cfg, 'uid=ava,ou=people,dc=example,dc=org', {})
-
+        def search(self, base, search_filter, search_scope=None, attributes=None):
+            self.asked.append((base, search_filter, search_scope))
+            code = self.codes.get(base, 0)
+            self.result = {'result': code, 'description': {0: 'success', 32: 'noSuchObject', 51: 'busy'}[code]}
+            member = code == 0 and base.startswith('cn=it-security')
+            self.response = [{'type': 'searchResEntry', 'dn': base}] if member else []
+    cfg = {'group_filter': '(member={dn})', 'group_base_dn': 'ou=groups,dc=example,dc=org', 'attr_groups': '',
+           'role_mappings': [{'group': 'cn=it-security,ou=groups,dc=example,dc=org', 'role': 'admin'},
+                             {'group': 'cn=staff,ou=groups,dc=example,dc=org', 'role': 'viewer'},
+                             {'group': 'cn=gone,ou=groups,dc=example,dc=org', 'role': 'analyst'},
+                             {'group': 'cn=elsewhere,dc=other,dc=org', 'role': 'admin'}]}
+    directory = Directory({'cn=gone,ou=groups,dc=example,dc=org': 32})
+    groups = ldap._groups(directory, cfg, 'uid=max,ou=people,dc=example,dc=org', {})
+    assert groups == ['cn=it-security,ou=groups,dc=example,dc=org']
+    assert [a[0] for a in directory.asked] == ['cn=it-security,ou=groups,dc=example,dc=org',
+                                               'cn=staff,ou=groups,dc=example,dc=org',
+                                               'cn=gone,ou=groups,dc=example,dc=org']
+    assert {a[1] for a in directory.asked} == {'(member=uid=max,ou=people,dc=example,dc=org)'}
+    # A directory too busy to say is not an answer
+    with pytest.raises(ldap.LdapUnavailable, match='busy'):
+        ldap._groups(Directory({'cn=staff,ou=groups,dc=example,dc=org': 51}), cfg,
+                     'uid=max,ou=people,dc=example,dc=org', {})
 
 
 async def test_through_a_proxy_a_name_only_the_proxy_can_resolve_is_sent_there(monkeypatch):
@@ -1599,3 +1661,13 @@ async def test_through_a_proxy_a_name_only_the_proxy_can_resolve_is_sent_there(m
     monkeypatch.setattr(safety, 'asyncio', _Asyncio('169.254.169.254'))
     with pytest.raises(safety.UnsafeUrl, match='may not reach'):
         await safety.resolve('https://hooks.example.test/in')
+
+
+
+def test_ipv6_hosts_in_one_site_take_their_turns_together():
+    from tbconsole.security import limits
+    # A host rotating through its own /64s is still one site
+    assert limits.gate_source('2001:db8:0:1::5') == limits.gate_source('2001:db8:0:ff::9') == '2001:db8::/56'
+    assert limits.gate_source('2001:db8:0:100::5') != limits.gate_source('2001:db8::5')
+    assert limits.gate_source('203.0.113.9') == '203.0.113.9'
+    assert limits.gate_source(None) == 'unknown'

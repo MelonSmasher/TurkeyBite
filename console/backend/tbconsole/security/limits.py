@@ -8,9 +8,10 @@ trying many usernames is held back, past a looser limit, only on the usernames
 it has already got wrong, so it cannot lock out the others either. A flood
 is bounded by the work it can cause instead: each address has a few sign-ins
 worked on at once, password checks and directory calls, and a queue behind
-them, and past that is turned away at once (admitted). So a flood from one
-address waits on itself, and every other address is served as before; and
-once it stops, nothing it did lingers. IPv6 addresses count by their /64,
+them, and past that is turned away at once (admitted); an IPv6 address by
+its /56 here. So a flood from one address waits on itself, and every other
+address is served as before; and once it stops, nothing it did lingers. One
+account's password is checked once at a time, wherever the guesses come from. IPv6 addresses count by their /64,
 since anyone with one has the whole network to rotate through. Names count
 in the form directories compare them in, so width and case variants of one
 name are one name here.
@@ -96,35 +97,59 @@ def failed(ip: str | None, username: str) -> None:
 # waiting hold nothing but their place: no database connection, no thread
 IN_FLIGHT = 2
 QUEUE = 64
+# And per account, one password at a time, so guesses sent together are
+# checked in turn, each seeing the lockout the one before may have set
+NAME_QUEUE = 16
 
 
 class Busy(Exception):
-    """An address with as many sign-ins under way and waiting as it may have."""
+    """An address, or an account, with as many sign-ins under way and
+    waiting as it may have."""
 
 
 class _Gate:
-    def __init__(self):
-        self.turns = asyncio.Semaphore(IN_FLIGHT)
+    def __init__(self, turns: int):
+        self.turns = asyncio.Semaphore(turns)
         self.holding = 0
 
 
-_gates: dict[str, _Gate] = {}
+_gates: dict[tuple[str, str], _Gate] = {}
 
 
 @asynccontextmanager
-async def admitted(ip: str | None):
-    """A turn for one sign-in from this address, or Busy at once."""
-    who = source(ip)
-    gate = _gates.get(who)
+async def _turn(key: tuple[str, str], turns: int, queue: int):
+    gate = _gates.get(key)
     if gate is None:
-        gate = _gates[who] = _Gate()
-    if gate.holding >= IN_FLIGHT + QUEUE:
-        raise Busy(who)
+        gate = _gates[key] = _Gate(turns)
+    if gate.holding >= turns + queue:
+        raise Busy(key[1])
     gate.holding += 1
     try:
         async with gate.turns:
             yield
     finally:
         gate.holding -= 1
-        if not gate.holding and _gates.get(who) is gate:
-            del _gates[who]
+        if not gate.holding and _gates.get(key) is gate:
+            del _gates[key]
+
+
+def gate_source(ip: str | None) -> str:
+    """Whose turn a sign-in takes: the address, an IPv6 one by its /56, the
+    least a site is given, so a host cannot rotate through its own /64s to
+    take more turns."""
+    who = source(ip)
+    if ':' in who:
+        return str(ipaddress.ip_network(who, strict=False).supernet(new_prefix=56))
+    return who
+
+
+@asynccontextmanager
+async def admitted(ip: str | None, username: str | None = None):
+    """A turn for one sign-in from this address, and for this account when
+    it is named, or Busy at once."""
+    async with _turn(('address', gate_source(ip)), IN_FLIGHT, QUEUE):
+        if username is None:
+            yield
+        else:
+            async with _turn(('name', name(username)), 1, NAME_QUEUE):
+                yield

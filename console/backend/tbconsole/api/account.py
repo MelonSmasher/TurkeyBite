@@ -1,6 +1,6 @@
 """A person's own account: profile, preferences, password, second factor, sessions."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
@@ -9,11 +9,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
-from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, session_principal
 from ..models import User, UserSession
-from ..security import crypto, limits, passwords, sessions, totp
+from ..security import crypto, limits, lockout, passwords, sessions, totp
 from .common import parse_uuid, ts, user_out
 
 router = APIRouter(prefix='/account', tags=['account'])
@@ -112,27 +111,30 @@ async def _check_password(db: AsyncSession, request: Request, principal: Princip
     session left open on someone's desk is not a way to guess it: wrong answers
     count against the same brake as sign-ins."""
     ip = sessions.client_ip(request)
-    # Locked, the answer is the same whatever the password, before it is
-    # even checked: otherwise the lock would still say when a guess was right
-    if limits.limited(ip, user.username) or (user.locked_until
-                                             and user.locked_until > datetime.now(timezone.utc)):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
-                            'Too many wrong passwords. Wait a few minutes and try again.')
+    locked = HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                           'Too many wrong passwords. Wait a few minutes and try again.')
+    if limits.limited(ip, user.username):
+        raise locked
     try:
-        async with limits.admitted(ip):
+        # One check at a time for the account, wherever the guesses come from
+        async with limits.admitted(ip, user.username):
+            # Locked, the answer is the same whatever the password, before it
+            # is even checked: otherwise the lock would still say when a guess
+            # was right. Read now, after any guess before this one
+            until = (await db.execute(select(User.locked_until).where(User.id == user.id))).scalar_one()
+            await db.commit()
+            if until and until > datetime.now(timezone.utc):
+                raise locked
             right = await passwords.verify_async(user.password_hash, password)
+            if not right:
+                limits.failed(ip, user.username)
+                # And against the account's lockout, as at sign-in
+                await lockout.count_failure(db, user.id)
+                await db.commit()
     except limits.Busy as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
-                            'Too many checks are under way from your address. Try again in a '
-                            'moment.') from e
+                            'Too many checks are under way. Try again in a moment.') from e
     if not right:
-        limits.failed(ip, user.username)
-        # And against the account's lockout, as at sign-in
-        settings = get_settings()
-        user.failed_logins += 1
-        if user.failed_logins >= settings.login_max_failures:
-            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.login_lockout_minutes)
-            user.failed_logins = 0
         audit.record(db, action, principal=principal, request=request,
                      outcome='failure', details={'reason': 'wrong password'})
         await db.commit()
