@@ -134,6 +134,35 @@ return 0
 """
 
 
+# Settling a batch, for a consumer that holds its name: done only while it
+# still does, checked in the same step, so one that stalled past its
+# reservation cannot trim or requeue its successor's items. -1 when not.
+ACK_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return -1
+end
+redis.call('LTRIM', KEYS[2], ARGV[2], -1)
+return 1
+"""
+REQUEUE_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return -1
+end
+local moved = 0
+for _ = 1, tonumber(ARGV[2]) do
+    if not redis.call('LMOVE', KEYS[2], KEYS[3], 'RIGHT', 'LEFT') then
+        break
+    end
+    moved = moved + 1
+end
+return moved
+"""
+
+
+class NotOwner(Exception):
+    """This process no longer holds the consumer's name it reserved."""
+
+
 class ListQueue(object):
 
     # How long a consumer's name stays reserved without being renewed. A
@@ -231,9 +260,16 @@ class ListQueue(object):
         """Drops the first `count` claimed items from the processing list.
 
         Only called once those items are durably indexed. LTRIM keeps the range
-        from `count` onwards, so anything claimed after this batch survives.
+        from `count` onwards, so anything claimed after this batch survives. For
+        a consumer that reserved its name, only while it holds it: NotOwner
+        otherwise.
         """
         if count <= 0:
+            return
+        if self.reserved:
+            if self.redis.eval(ACK_SCRIPT, 2, self.owner_key, self.processing_key,
+                               self.owner, count) == -1:
+                raise NotOwner(self.consumer)
             return
         self.redis.ltrim(self.processing_key, count, -1)
 
@@ -246,9 +282,17 @@ class ListQueue(object):
         pushing copies and then trimming the originals left the whole batch in
         both if the connection dropped in between, and a restart replayed it.
         A consumer claims its next batch only once this one is settled, so the
-        batch is all its processing list holds, and the tail is its end.
+        batch is all its processing list holds, and the tail is its end. For a
+        consumer that reserved its name, the moves and the check that it still
+        holds it are one step, and NotOwner says it does not.
         Returns how many were moved.
         """
+        if self.reserved:
+            moved = self.redis.eval(REQUEUE_SCRIPT, 3, self.owner_key, self.processing_key,
+                                    self.key, self.owner, len(items))
+            if moved == -1:
+                raise NotOwner(self.consumer)
+            return moved
         moved = 0
         while moved < len(items) and self.redis.lmove(
                 self.processing_key, self.key, 'RIGHT', 'LEFT') is not None:

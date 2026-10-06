@@ -602,6 +602,25 @@ class ConsumerTest(unittest.TestCase):
         self.assertEqual(self.indexed(), [])
         self.assertEqual(len(self.in_flight()), 3)
 
+    def test_valkey_failing_a_renewal_mid_batch_does_not_send_the_batch_twice(self):
+        # The batch is handled again once Valkey answers; what it had buffered
+        # the first time is dropped, not sent alongside the second copies
+        from libtb import consumer as C
+        self.push(packet('a.example.com'), packet('b.example.com'))
+        self.queue.reserve()
+        renewals = []
+        real = self.queue.renew
+
+        def renew():
+            renewals.append(1)
+            if len(renewals) == 3:
+                raise ValkeyConnectionError('Error 111 connecting to valkey:6379')
+            return real()
+        with mock.patch.object(C, 'RENEW_SECONDS', 0), mock.patch.object(self.queue, 'renew', renew):
+            self.drain(self.consumer())
+        self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com'])
+        self.assertEqual((self.waiting(), self.in_flight()), ([], []))
+
     def test_a_requeue_valkey_did_not_take_is_handled_before_the_next_claim(self):
         # OpenSearch refuses a and b, and Valkey goes away as they are put
         # back, so they are still in flight when it returns. They are handled

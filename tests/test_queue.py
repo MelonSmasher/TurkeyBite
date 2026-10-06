@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from fakes import Blocked, FakeRedis
-from libtb.queue import ListQueue, recover_orphans
+from libtb.queue import ListQueue, NotOwner, recover_orphans
 
 KEY = 'turkeybite'
 
@@ -377,6 +377,24 @@ class OwnershipTest(unittest.TestCase):
         self.assertTrue(queue.renew())
         self.assertEqual(self.redis.get(queue.owner_key), queue.owner.encode())
         self.assertFalse(ListQueue(self.redis, KEY, 'worker1').reserve())
+
+    def test_a_consumer_that_lost_its_name_cannot_settle_its_successors_items(self):
+        # It stalled past its reservation after its last check, and another
+        # took the name and claimed: its acknowledgement and requeue change nothing
+        old, new = ListQueue(self.redis, KEY, 'worker1'), ListQueue(self.redis, KEY, 'worker1')
+        old.reserve()
+        self.redis.delete(old.owner_key)
+        new.reserve()
+        new.push(b'a')
+        new.push(b'b')
+        new.claim(2, block_seconds=0)
+        self.assertRaises(NotOwner, old.ack, 2)
+        self.assertRaises(NotOwner, old.requeue, [b'a', b'b'])
+        self.assertEqual(new.in_flight(), 2)
+        # The owner settles as before
+        self.assertEqual(new.requeue([b'b']), 1)
+        new.ack(1)
+        self.assertEqual((new.in_flight(), new.depth()), (0, 1))
 
     def test_a_sweep_leaves_a_running_consumers_list_alone(self):
         running = ListQueue(self.redis, KEY, 'host-01')

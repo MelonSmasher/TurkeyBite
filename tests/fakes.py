@@ -23,7 +23,7 @@ publish is half done, say.
 
 import fnmatch
 
-from libtb.queue import RELEASE_SCRIPT, RENEW_SCRIPT
+from libtb.queue import ACK_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
 
 
 def _bytes(value):
@@ -139,6 +139,16 @@ class FakeRedis(object):
             return 0
         if script == RELEASE_SCRIPT:
             return self.delete(keys[0]) if mine else 0
+        if script in (ACK_SCRIPT, REQUEUE_SCRIPT) and not mine:
+            return -1
+        if script == ACK_SCRIPT:
+            self.ltrim(keys[1], int(args[1]), -1)
+            return 1
+        if script == REQUEUE_SCRIPT:
+            moved = 0
+            while moved < int(args[1]) and self.lmove(keys[1], keys[2], 'RIGHT', 'LEFT') is not None:
+                moved += 1
+            return moved
         raise NotImplementedError('a script the fake does not know')
 
     def delete(self, *keys):

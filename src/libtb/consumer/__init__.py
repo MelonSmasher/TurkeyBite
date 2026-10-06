@@ -55,6 +55,7 @@ from redis.exceptions import TimeoutError as ValkeyTimeoutError
 
 from libtb.inlet import describe
 from libtb.processor import DeliveryError
+from libtb.queue import NotOwner
 
 # The rest after a batch OpenSearch did not take: the first, the longest, and
 # the slice it is served in, which is how quickly stop() is honoured during one
@@ -124,7 +125,13 @@ class Consumer(object):
         renewed = time.monotonic()
         for raw in items:
             if time.monotonic() - renewed >= RENEW_SECONDS:
-                self.hold_name()
+                try:
+                    self.hold_name()
+                except VALKEY_ERRORS:
+                    # The batch is handled again from the start once Valkey
+                    # answers: what it buffered goes, or it would be sent twice
+                    self.processor.discard_bulk()
+                    raise
                 renewed = time.monotonic()
             try:
                 data = json.loads(raw.decode('utf-8') if isinstance(raw, bytes) else raw)
@@ -209,6 +216,14 @@ class Consumer(object):
         another's, whose items an acknowledgement or a requeue would take.
         """
         self.hold_name()
+        try:
+            self._settle(items, acked)
+        except NotOwner as e:
+            # Lost between the check above and the change, in a stall
+            raise NameLost(self.name) from e
+
+    def _settle(self, items, acked):
+        """Acknowledges or requeues, as settle() says."""
         if acked is None:
             self.queue.requeue(items)
             self.stats['requeued'] += len(items)
