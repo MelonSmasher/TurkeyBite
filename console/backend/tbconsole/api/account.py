@@ -1,16 +1,18 @@
 """A person's own account: profile, preferences, password, second factor, sessions."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, type_coerce, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
+from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, session_principal
-from ..models import UserSession
+from ..models import User, UserSession
 from ..security import crypto, limits, passwords, sessions, totp
 from .common import parse_uuid, ts, user_out
 
@@ -34,6 +36,10 @@ class PreferencesBody(BaseModel):
     privacy_mode: bool | None = None
     sidebar_collapsed: bool | None = None
     columns: list[str] | None = None
+    # Whose preferences the tab saving them thinks these are: a tab left open
+    # from before someone else signed in on this browser must not save its
+    # person's choices onto theirs
+    user_id: str | None = Field(None, max_length=64)
 
 
 class PasswordBody(BaseModel):
@@ -78,9 +84,10 @@ async def update_profile(body: ProfileBody, request: Request,
 async def update_preferences(body: PreferencesBody,
                              principal: Principal = Depends(session_principal),
                              db: AsyncSession = Depends(get_session)) -> dict:
-    user = await db.merge(principal.user)
-    prefs = dict(user.preferences or {})
-    data = body.model_dump(exclude_none=True)
+    if body.user_id is not None and body.user_id != str(principal.user.id):
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'Someone else has signed in on this browser since this page was opened; reload it.')
+    data = body.model_dump(exclude_none=True, exclude={'user_id'})
     if data.get('theme') and data['theme'] not in THEMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'theme is one of {", ".join(THEMES)}')
     if data.get('accent') and data['accent'] not in ACCENTS:
@@ -88,13 +95,15 @@ async def update_preferences(body: PreferencesBody,
     if data.get('density') and data['density'] not in DENSITIES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f'density is one of {", ".join(DENSITIES)}')
-    # Only what was sent changes: a tab that changes the theme cannot put back
-    # a privacy setting another tab has since changed
-    prefs.pop('updated_at', None)
-    prefs.update(data)
-    user.preferences = prefs
+    # Only what was sent changes, merged in the database in one statement: a
+    # tab that changes the theme cannot put back a privacy setting another
+    # tab has since changed, even when the two saves arrive together
+    merged = (await db.execute(
+        update(User).where(User.id == principal.user.id)
+        .values(preferences=User.preferences.op('-')('updated_at').op('||')(type_coerce(data, JSONB)))
+        .returning(User.preferences))).scalar_one()
     await db.commit()
-    return prefs
+    return merged
 
 
 async def _check_password(db: AsyncSession, request: Request, principal: Principal, user,
@@ -108,10 +117,19 @@ async def _check_password(db: AsyncSession, request: Request, principal: Princip
                             'Too many wrong passwords. Wait a few minutes and try again.')
     if not await passwords.verify_async(user.password_hash, password):
         limits.failed(ip, user.username)
+        # And against the account's lockout, as at sign-in
+        settings = get_settings()
+        user.failed_logins += 1
+        if user.failed_logins >= settings.login_max_failures:
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.login_lockout_minutes)
+            user.failed_logins = 0
         audit.record(db, action, principal=principal, request=request,
                      outcome='failure', details={'reason': 'wrong password'})
         await db.commit()
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The password is not right.')
+    if user.locked_until and user.locked_until > datetime.now(timezone.utc):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            'Too many wrong passwords. Wait a few minutes and try again.')
 
 
 @router.post('/password')

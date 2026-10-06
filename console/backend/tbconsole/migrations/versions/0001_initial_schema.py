@@ -55,6 +55,7 @@ def upgrade() -> None:
     sa.Column('role', sa.String(length=16), nullable=False),
     sa.Column('password_hash', sa.String(length=255), nullable=True),
     sa.Column('ldap_dn', sa.String(length=1000), nullable=True),
+    sa.Column('ldap_guid', sa.String(length=64), nullable=True),
     sa.Column('disabled', sa.Boolean(), nullable=False),
     sa.Column('disabled_reason', sa.String(length=16), nullable=True),
     sa.Column('directory_checked_at', sa.DateTime(timezone=True), nullable=True),
@@ -71,6 +72,8 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id', name=op.f('pk_users'))
     )
     op.create_index('uq_users_username_lower', 'users', [sa.literal_column('lower(username)')], unique=True)
+    op.create_index('uq_users_ldap_guid', 'users', ['ldap_guid'], unique=True, postgresql_where=sa.text('ldap_guid IS NOT NULL'))
+    op.create_index('uq_users_ldap_dn_lower', 'users', [sa.literal_column('lower(ldap_dn)')], unique=True, postgresql_where=sa.text('ldap_dn IS NOT NULL'))
     op.create_table('api_keys',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -134,6 +137,7 @@ def upgrade() -> None:
     sa.Column('last_run_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('evaluated_until', sa.DateTime(timezone=True), nullable=True),
     sa.Column('running_until', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('state', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column('last_status', sa.String(length=16), nullable=True),
     sa.Column('last_error', sa.Text(), nullable=True),
     sa.Column('last_duration_ms', sa.Integer(), nullable=True),
@@ -326,6 +330,8 @@ def downgrade() -> None:
     op.drop_table('dashboards')
     op.drop_index(op.f('ix_api_keys_user_id'), table_name='api_keys')
     op.drop_table('api_keys')
+    op.drop_index('uq_users_ldap_dn_lower', table_name='users', postgresql_where=sa.text('ldap_dn IS NOT NULL'))
+    op.drop_index('uq_users_ldap_guid', table_name='users', postgresql_where=sa.text('ldap_guid IS NOT NULL'))
     op.drop_index('uq_users_username_lower', table_name='users')
     op.drop_table('users')
     op.drop_table('leases')

@@ -18,6 +18,7 @@ from ..db import get_session
 from ..deps import Principal, require
 from ..models import Finding, FindingActivity, Rule, User, WebhookDelivery
 from ..search import queries as Q
+from ..search import tbql
 from ..search.tbql import quote
 from ..security import rbac
 from ..webhooks import service as hooks
@@ -161,6 +162,10 @@ def _entity(finding: Finding) -> str | None:
     return (finding.evidence or {}).get('entity_full') or finding.entity_value
 
 
+# As many as a rule's own form takes
+MAX_EXCEPTIONS = 200
+
+
 class Reopened(Exception):
     """Reopening would make a second open finding for the same rule and entity."""
 
@@ -280,15 +285,15 @@ async def update_finding(finding_id: str, body: FindingPatch, request: Request,
     finding = await _get(db, finding_id)
     try:
         changes = await _apply(db, finding, body, principal, request)
+        await _announce(db, finding, changes)
+        await db.commit()
     except Reopened as e:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f'F-{e.number} is already open for the same rule and entity; '
                             'work on that one instead.') from e
-    await _announce(db, finding, changes)
-    try:
-        await db.commit()
     except IntegrityError as e:
-        # The rule opened a new finding for the same thing a moment ago
+        # The rule opened a new finding for the same thing a moment ago: met
+        # at the commit, or at any query before it that flushed the change
         await db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT,
                             'The rule has just opened a newer finding for the same thing; '
@@ -305,16 +310,16 @@ async def bulk_update(body: BulkBody, request: Request,
     findings = (await db.execute(select(Finding).where(Finding.id.in_(ids))
                                  .order_by(Finding.number))).scalars().all()
     changed, skipped = 0, []
-    for finding in findings:
-        try:
-            changes = await _apply(db, finding, body, principal, request)
-        except Reopened:
-            skipped.append(finding.number)
-            continue
-        if changes:
-            changed += 1
-            await _announce(db, finding, changes)
     try:
+        for finding in findings:
+            try:
+                changes = await _apply(db, finding, body, principal, request)
+            except Reopened:
+                skipped.append(finding.number)
+                continue
+            if changes:
+                changed += 1
+                await _announce(db, finding, changes)
         await db.commit()
     except IntegrityError as e:
         await db.rollback()
@@ -346,21 +351,36 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
                         db: AsyncSession = Depends(get_session)) -> dict:
     """Marks a finding a false positive and teaches its rule not to raise it again."""
     finding = await _get(db, finding_id)
-    rule = await db.get(Rule, finding.rule_id) if finding.rule_id else None
+    rule = await db.get(Rule, finding.rule_id, with_for_update=True) if finding.rule_id else None
     if rule is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The rule that raised this is gone.')
+    if len(rule.exceptions or []) >= MAX_EXCEPTIONS:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f'{rule.name} already has {MAX_EXCEPTIONS} exceptions, the most a rule can '
+                            'have. Remove some on the rule first.')
     parts = []
     if body.scope in ('entity', 'entity_domain'):
         if not finding.entity_field or finding.entity_value is None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 'This finding is not about one person or machine.')
-        parts.append(Q.entity_term(finding.entity_field, _entity(finding)))
+        entity = _entity(finding)
+        if '\ufffd' in entity:
+            # Stored without the characters it came with, a NUL say, which
+            # Postgres cannot keep: it would never match them
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                'This finding\'s value has characters an exception cannot match.')
+        parts.append(Q.entity_term(finding.entity_field, entity))
     if body.scope in ('entity_domain', 'domain'):
         domains = [d['key'] for d in (finding.evidence or {}).get('top_domains', [])][:5]
         if not domains:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'This finding names no domain.')
         parts.append('domain:(' + ' OR '.join(quote(d) for d in domains) + ')')
     query = ' AND '.join(parts)
+    try:
+        tbql.compile(query)
+    except tbql.TbqlError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f'An exception for this finding would not work: {e.message}') from e
     now = datetime.now(timezone.utc)
     exception = {'id': str(uuid.uuid4()), 'query': query, 'note': body.note,
                  'created_by': principal.user.username, 'created_at': ts(now),

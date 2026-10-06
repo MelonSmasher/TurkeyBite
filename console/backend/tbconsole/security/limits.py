@@ -5,19 +5,22 @@ Failures are counted per address and username, so one person guessing cannot
 lock out everyone who shares their address: a school behind one NAT, or
 every user at once when a proxy's address is all the console sees. An address
 trying many usernames is held back, past a looser limit, only on the usernames
-it has already got wrong, so it cannot lock out the others either, and past a
-much higher one on everything, as a brake on a flood. IPv6 addresses count
-by their /64, since anyone with one has the whole network to rotate through.
+it has already got wrong, so it cannot lock out the others either. A flood
+is bounded by the work it can cause instead: password checks wait their turn
+(passwords.verify_async), so a flood slows itself, not everyone else's first
+try. IPv6 addresses count by their /64, since anyone with one has the whole
+network to rotate through. Names count in the form directories compare
+them in, so width and case variants of one name are one name here.
 """
 
 import ipaddress
 import time
+import unicodedata
 from collections import defaultdict, deque
 
 WINDOW = 300
 PAIR_LIMIT = 10
 ADDRESS_LIMIT = 100
-FLOOD_LIMIT = 1000
 _MAX_TRACKED = 20000
 _SWEEP_EVERY = 30.0
 
@@ -57,13 +60,19 @@ def _recent(key: tuple[str, str]) -> int:
     return len(window)
 
 
+def name(username: str) -> str:
+    """A name as it is counted: NFKC, case folded, and never empty, so a blank
+    one is not mistaken for the address's own count."""
+    return unicodedata.normalize('NFKC', username or '').casefold().strip() or '\x00blank'
+
+
 def limited(ip: str | None, username: str) -> bool:
     who = source(ip)
-    pair = _recent((who, username.lower()))
+    pair = _recent((who, name(username)))
     if pair >= PAIR_LIMIT:
         return True
-    from_address = _recent((who, ''))
-    return (from_address >= ADDRESS_LIMIT and pair > 0) or from_address >= FLOOD_LIMIT
+    # Never refuses a name this address has not got wrong
+    return pair > 0 and _recent((who, '')) >= ADDRESS_LIMIT
 
 
 def failed(ip: str | None, username: str) -> None:
@@ -74,5 +83,5 @@ def failed(ip: str | None, username: str) -> None:
         for key in list(_failures):
             _recent(key)
     who = source(ip)
-    _failures[(who, username.lower())].append(now)
+    _failures[(who, name(username))].append(now)
     _failures[(who, '')].append(now)

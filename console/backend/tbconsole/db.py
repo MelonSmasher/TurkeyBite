@@ -29,8 +29,12 @@ _sessions: async_sessionmaker[AsyncSession] | None = None
 def engine() -> AsyncEngine:
     global _engine, _sessions
     if _engine is None:
+        # A database that does not answer is given up on in ten seconds, to
+        # connect and to lend a pooled connection, not the minute or more
+        # the drivers would wait
         _engine = create_async_engine(get_settings().database_url, pool_pre_ping=True,
-                                      pool_size=10, max_overflow=10)
+                                      pool_size=10, max_overflow=10, pool_timeout=10,
+                                      connect_args={'timeout': 10})
         _sessions = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 

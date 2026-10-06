@@ -11,25 +11,39 @@
 
   let open = $state(false);
   let root: HTMLDivElement | undefined = $state();
+  let pop: HTMLDivElement | undefined = $state();
+  // What opened the menu, to give focus back to when it closes
+  let opener: HTMLElement | null = null;
 
   function toggle() {
+    if (!open) opener = document.activeElement as HTMLElement | null;
     open = !open;
   }
+
+  /** Closes the menu. Focus goes back to what opened it, unless it has moved
+   *  on somewhere else, so a dialog opened from the menu returns it there. */
   function close() {
+    if (!open) return;
+    const inside = !!pop && pop.contains(document.activeElement);
     open = false;
+    if ((inside || document.activeElement === document.body) && opener?.isConnected) opener.focus();
   }
 
   function onwindowclick(event: MouseEvent) {
-    if (open && root && !root.contains(event.target as Node)) close();
+    if (open && root && !root.contains(event.target as Node)) {
+      // Clicked elsewhere: focus stays where that put it
+      opener = null;
+      open = false;
+    }
   }
 </script>
 
-<svelte:window onclick={onwindowclick} onkeydown={(e) => { if (e.key === 'Escape') close(); }} />
+<svelte:window onclick={onwindowclick} onkeydown={(e) => { if (e.key === 'Escape' && open) close(); }} />
 
 <div class="menu" bind:this={root}>
   {@render trigger({ toggle, open })}
   {#if open}
-    <div class="pop" class:start={align === 'start'} role="menu" aria-label={label} style:width="{width}px">
+    <div class="pop" class:start={align === 'start'} role="group" aria-label={label} style:width="{width}px" bind:this={pop}>
       {@render children({ close })}
     </div>
   {/if}

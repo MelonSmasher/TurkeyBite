@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 7 * 86400, 'M': 30 * 86400, 'y': 365 * 86400}
+# Seconds per unit of a relative time, as TBQL's date math also counts them
+UNIT_SECONDS = _UNITS
 _RELATIVE = re.compile(r'^now(?:([+-])(\d+)([smhdwMy]))?(?:/([smhdwMy]))?$')
 
 # Histogram bucket sizes, smallest first, and their OpenSearch names

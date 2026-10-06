@@ -1,12 +1,13 @@
 """The application: API, background workers, and the built frontend."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from sqlalchemy import func, select, text
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -28,8 +29,11 @@ from .webhooks.dispatcher import Dispatcher
 
 log = logging.getLogger('tbconsole')
 
-# The Swagger UI loads its script and styles from a CDN, so its page alone
-# is allowed them
+# How long the readiness probe waits on the database
+READY_TIMEOUT = 5.0
+
+# The Swagger UI loads its script and styles from a CDN, so its page alone,
+# when TBCONSOLE_API_DOCS turns it on, is allowed them
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
@@ -42,7 +46,7 @@ class SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         use_zone(request.headers.get('x-timezone'))
         response: Response = await call_next(request)
-        docs = request.url.path in ('/api/docs', '/api/docs/oauth2-redirect')
+        docs = get_settings().api_docs and request.url.path in ('/api/docs', '/api/docs/oauth2-redirect')
         response.headers.setdefault('Content-Security-Policy', DOCS_CSP if docs else CSP)
         response.headers.setdefault('X-Content-Type-Options', 'nosniff')
         response.headers.setdefault('X-Frame-Options', 'DENY')
@@ -114,7 +118,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title='TurkeyBite Console', version=__version__, lifespan=lifespan,
-                  docs_url='/api/docs', redoc_url=None, openapi_url='/api/openapi.json',
+                  docs_url='/api/docs' if settings.api_docs else None, redoc_url=None,
+                  openapi_url='/api/openapi.json',
                   description='Search, analytics, findings and alerting for TurkeyBite. '
                               'Authenticate with `Authorization: Bearer tbc_...`.')
     app.add_middleware(SecurityHeaders)
@@ -161,10 +166,13 @@ def create_app() -> FastAPI:
 
     @app.api_route('/readyz', methods=['GET', 'HEAD'], include_in_schema=False)
     async def readyz():
-        """Ready when the database answers; a 503 otherwise, for a probe to see."""
-        try:
+        """Ready when the database answers, within a few seconds; a 503
+        otherwise, for a probe to see before its own timeout gives up."""
+        async def ask():
             async with db.sessionmaker()() as session:
                 await session.execute(text('SELECT 1'))
+        try:
+            await asyncio.wait_for(ask(), timeout=READY_TIMEOUT)
         except Exception:
             return JSONResponse({'ok': False, 'detail': 'the database is not answering'},
                                 status_code=503)
@@ -174,8 +182,9 @@ def create_app() -> FastAPI:
     if static and Path(static).is_dir() and (Path(static) / 'index.html').is_file():
         root = Path(static).resolve()
 
+
         @app.api_route('/{path:path}', methods=['GET', 'HEAD'], include_in_schema=False)
-        async def spa(path: str):
+        async def spa(path: str, request: Request):
             if path.startswith('api/'):
                 return JSONResponse({'detail': 'Not Found'}, status_code=404)
             candidate = (root / path).resolve()
@@ -189,5 +198,14 @@ def create_app() -> FastAPI:
                     # Vite puts a content hash in every asset's name
                     headers['Cache-Control'] = 'public, max-age=31536000, immutable'
                 return FileResponse(candidate, headers=headers)
-            return FileResponse(root / 'index.html', headers={'Cache-Control': 'no-cache'})
+            # Read each time, small as it is, so a new build is served at once
+            index = (root / 'index.html').read_text(encoding='utf-8')
+            if request.headers.get('sec-fetch-site') in ('cross-site', 'same-site'):
+                # Marks a page opened from a link on another site, so the app
+                # asks before it looks anyone up: otherwise such a link could
+                # put a look at someone in the audit log under the name of
+                # whoever followed it
+                return HTMLResponse(index.replace('</head>', '<meta name="tbc-arrival" content="elsewhere"></head>', 1),
+                                    headers={'Cache-Control': 'no-store'})
+            return HTMLResponse(index, headers={'Cache-Control': 'no-cache'})
     return app

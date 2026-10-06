@@ -7,10 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Setting
 
+# The ranges a page may open on: the app's own presets
+DEFAULT_RANGES = ('now-15m', 'now-1h', 'now-4h', 'now-24h', 'now/d', 'now-7d', 'now-14d', 'now-30d')
+
 GENERAL_DEFAULTS = {
     'org_name': 'TurkeyBite',
     # Shown on the sign-in page, for an acceptable-use notice
     'login_banner': '',
+    # The time range pages open on, until someone picks another
     'default_range': 'now-24h',
     # Local admins must have a second factor before they can do anything else
     'require_mfa_for_local_admins': False,

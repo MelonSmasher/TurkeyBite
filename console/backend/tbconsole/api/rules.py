@@ -342,16 +342,16 @@ async def run_now(rule_id: str, request: Request,
                   search: SearchClient = Depends(search_client),
                   db: AsyncSession = Depends(get_session)) -> dict:
     rule = await _get(db, rule_id)
-    now = await engine.claim_run(db, rule.id)
-    if now is None:
+    claimed = await engine.claim_run(db, rule.id)
+    if claimed is None:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             'This rule is running right now. Try again in a moment.')
+    now, lease = claimed
     try:
-        outcome = await engine.run_rule(db, search, rule, now=now)
-    except Exception:
+        outcome = await engine.run_rule(db, search, rule, now=now, lease=lease)
+    except BaseException:
         await db.rollback()
-        rule.running_until = None
-        await db.commit()
+        await engine.release_run(rule.id, lease)
         raise
     audit.record(db, 'rule.run', principal=principal, request=request, target_type='rule',
                  target_id=rule.id, target_label=rule.name)

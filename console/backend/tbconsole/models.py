@@ -40,7 +40,13 @@ class TimestampMixin:
 
 class User(TimestampMixin, Base):
     __tablename__ = 'users'
-    __table_args__ = (Index('uq_users_username_lower', func.lower(text('username')), unique=True),)
+    __table_args__ = (
+        Index('uq_users_username_lower', func.lower(text('username')), unique=True),
+        # One console account per directory entry, however it is named
+        Index('uq_users_ldap_guid', 'ldap_guid', unique=True, postgresql_where=text('ldap_guid IS NOT NULL')),
+        Index('uq_users_ldap_dn_lower', func.lower(text('ldap_dn')), unique=True,
+              postgresql_where=text('ldap_dn IS NOT NULL')),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(String(150), nullable=False)
@@ -51,6 +57,8 @@ class User(TimestampMixin, Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default='viewer')
     password_hash: Mapped[str | None] = mapped_column(String(255))
     ldap_dn: Mapped[str | None] = mapped_column(String(1000))
+    # The entry's entryUUID or objectGUID, which outlasts renames and moves
+    ldap_guid: Mapped[str | None] = mapped_column(String(64))
     disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # admin, or directory when the directory stopped granting access; only the
     # directory's own disabling is undone by the directory granting it again
@@ -165,6 +173,9 @@ class Rule(TimestampMixin, Base):
     # Set while a run is under way, by whichever process claimed it, so no
     # other starts the same rule; it lapses if that process dies
     running_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What the engine carries from one run to the next, such as where a
+    # first-seen rule that could not look at every value got to
+    state: Mapped[dict | None] = mapped_column(JSONB)
     last_status: Mapped[str | None] = mapped_column(String(16))
     last_error: Mapped[str | None] = mapped_column(Text)
     last_duration_ms: Mapped[int | None] = mapped_column(Integer)

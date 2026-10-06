@@ -27,6 +27,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, time as clock, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -54,6 +55,8 @@ CATCH_UP_STEPS = 12
 ENTITY_MAX = 400
 # How long a claimed run may take before another process may start it
 RUN_LEASE = timedelta(minutes=15)
+# A run stops evaluating after this, to record what it did within its lease
+RUN_DEADLINE = timedelta(minutes=9)
 # pg_advisory_xact_lock key for syncing built-in rules and dashboards
 SYNC_LOCK = 0x7462_0001
 
@@ -81,61 +84,91 @@ def _bounds(schedule: dict) -> tuple[int, int]:
     return _minutes(schedule.get('start') or '00:00'), _minutes(schedule.get('end') or '24:00')
 
 
+def _wall(day, minute: int, zone: ZoneInfo) -> datetime:
+    """The instant a local wall-clock time names, in UTC: the first, when the
+    clocks go back and it happens twice. A time the clocks skip, such as 02:30
+    on the night they spring forward, names the moment they jump past it."""
+    nominal = datetime.combine(day, clock(0, 0)) + timedelta(minutes=minute)
+    candidates = [nominal.replace(tzinfo=zone, fold=fold).astimezone(timezone.utc) for fold in (0, 1)]
+    for moment in sorted(candidates):
+        if moment.astimezone(zone).replace(tzinfo=None) == nominal:
+            return moment
+    lo, hi = sorted(candidates)
+    while hi - lo > timedelta(seconds=1):
+        middle = lo + (hi - lo) / 2
+        if middle.astimezone(zone).replace(tzinfo=None) >= nominal:
+            hi = middle
+        else:
+            lo = middle
+    return hi.replace(microsecond=0) if hi.microsecond else hi
+
+
+def _periods(schedule: dict, around: datetime):
+    """The active periods that could hold `around`: each (start, end) in UTC,
+    from the one that began the day before to the one that begins the day
+    after. A period belongs to the day it starts on. 08:00 to 16:00 lasts
+    eight hours; 22:00 to 06:00 runs over midnight; a start equal to its end,
+    or 00:00 to 24:00, is a whole day."""
+    zone = _zone(schedule)
+    lo, hi = _bounds(schedule)
+    length = (hi - lo) % (24 * 60) or 24 * 60
+    days = schedule.get('days')
+    today = around.astimezone(zone).date()
+    for offset in (-1, 0, 1):
+        day = today + timedelta(days=offset)
+        if days is not None and day.weekday() not in days:
+            continue
+        yield _wall(day, lo, zone), _wall(day, lo + length, zone)
+
+
+def _period(schedule: dict, now: datetime) -> tuple[datetime, datetime] | None:
+    for start, end in _periods(schedule, now):
+        if start <= now < end:
+            return start, end
+    return None
+
+
 def in_schedule(schedule: dict | None, now: datetime) -> bool:
     """Whether `now` falls in a rule's active hours. No schedule means always."""
     if not schedule:
         return True
-    local = now.astimezone(_zone(schedule))
-    days = schedule.get('days')
-    minute = local.hour * 60 + local.minute
-    lo, hi = _bounds(schedule)
-    if lo == hi:
-        inside, day = True, local.weekday()
-    elif lo < hi:
-        inside, day = lo <= minute < hi, local.weekday()
-    else:
-        # Wraps midnight: 22:00 to 06:00 belongs to the day it started on
-        inside = minute >= lo or minute < hi
-        day = local.weekday() if minute >= lo else (local.weekday() - 1) % 7
-    return inside and (days is None or day in days)
+    return _period(schedule, now) is not None
 
 
 def active_since(schedule: dict | None, now: datetime) -> datetime | None:
     """When the active hours that `now` falls in began, so a window can be cut
-    there rather than reach into the hours before. None without a schedule,
-    or for one that never pauses."""
-    if not schedule or not in_schedule(schedule, now):
+    there rather than reach into the hours before. Periods that run on into
+    one another, such as whole days back to back, count as one. None without
+    a schedule, or for one that never pauses."""
+    if not schedule:
         return None
-    lo, hi = _bounds(schedule)
-    if lo == hi:
+    current = _period(schedule, now)
+    if current is None:
         return None
-    zone = _zone(schedule)
-    local = now.astimezone(zone)
-    day = local.date()
-    if lo > hi and local.hour * 60 + local.minute < lo:
-        day -= timedelta(days=1)
-    begin = datetime.combine(day, clock(lo // 60, lo % 60), tzinfo=zone).astimezone(timezone.utc)
-    # A start inside the hour a clock skips (02:30 on the night it springs
-    # forward) reads as later than it is; never begin after now
-    return min(begin, now)
+    start = current[0]
+    for _ in range(8):
+        before = _period(schedule, start - timedelta(seconds=1))
+        if before is None or before[1] != start:
+            return min(start, now)
+        start = before[0]
+    return None
 
 
 def active_until(schedule: dict | None, now: datetime) -> datetime | None:
-    """When the active hours that `now` falls in end. None as for active_since."""
-    if not schedule or not in_schedule(schedule, now):
+    """When the active hours that `now` falls in end, joined periods counted
+    as one. None as for active_since."""
+    if not schedule:
         return None
-    lo, hi = _bounds(schedule)
-    if lo == hi:
+    current = _period(schedule, now)
+    if current is None:
         return None
-    zone = _zone(schedule)
-    local = now.astimezone(zone)
-    day = local.date()
-    if lo > hi and local.hour * 60 + local.minute >= lo:
-        day += timedelta(days=1)
-    if hi >= 24 * 60:
-        day, hi = day + timedelta(days=1), 0
-    end = datetime.combine(day, clock(hi // 60, hi % 60), tzinfo=zone).astimezone(timezone.utc)
-    return max(end, now)
+    end = current[1]
+    for _ in range(8):
+        after = _period(schedule, end)
+        if after is None or after[0] != end:
+            return max(end, now)
+        end = after[1]
+    return None
 
 
 def _clean(value):
@@ -302,10 +335,12 @@ def plan(rule: Rule, end: datetime) -> tuple[list[datetime], str]:
     """The window ends to evaluate this run, oldest first, and a note on any
     that were given up.
 
-    Windows tile forward from where the rule last got to, so none is skipped
-    and none evaluated twice. Within a window's length of that, one window
-    ending now, as usual. Outside the rule's active hours nothing is evaluated,
-    except the last stretch of hours that ended since it last ran."""
+    Within a window's length of where the rule last got to, one window ending
+    now, as usual. Further behind, whole windows tile forward from there, so
+    none is skipped and none is evaluated twice; what is left over, less than
+    a window, waits for the next run. Outside the rule's active hours nothing
+    is evaluated, except the last stretch of hours that ended since it last
+    ran."""
     step = timedelta(seconds=rule.window_seconds)
     last = rule.evaluated_until
     note = ''
@@ -314,19 +349,20 @@ def plan(rule: Rule, end: datetime) -> tuple[list[datetime], str]:
     if last is None or end - last <= step:
         candidates = [end]
     else:
-        if end - last > CATCH_UP:
-            note = f'{_hours(end - CATCH_UP - last)} before the last {_hours(CATCH_UP)} were not checked'
-            last = end - CATCH_UP
+        origin = last
+        # Never further back than catch-up reaches, or than one window, for
+        # a window longer than that
+        last = max(last, end - max(CATCH_UP, step))
         candidates = []
         moment = last + step
-        while moment < end:
+        while moment <= end:
             candidates.append(moment)
             moment += step
         if len(candidates) > CATCH_UP_STEPS:
-            skipped = candidates[-CATCH_UP_STEPS - 1] - last
-            note = note or f'{_hours(skipped)} of missed windows were not checked'
             candidates = candidates[-CATCH_UP_STEPS:]
-        candidates.append(end)
+        uncovered = candidates[0] - step - origin
+        if uncovered > timedelta(0):
+            note = f'{_hours(uncovered)} of missed windows were not checked'
     if not rule.schedule:
         return candidates, note
     moments: list[datetime] = []
@@ -361,19 +397,26 @@ def _error_text(e: Exception) -> str:
 
 
 async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: datetime | None = None,
-                   persist: bool = True) -> RunOutcome:
+                   persist: bool = True, lease: datetime | None = None) -> RunOutcome:
     """Evaluates one rule's due windows and records what they found.
 
     Every window is evaluated before anything is written, so no transaction
     is open while OpenSearch is asked; the windows that succeeded are then
-    recorded together, and the rule's mark moves to the end of the last."""
+    recorded together, and the rule's mark moves to the end of the last.
+
+    With `lease`, the claim this run holds: before writing, the rule is read
+    again under a lock, and if its lease is no longer this one, because the
+    run outlived it and another took over, nothing is written. A run stops
+    evaluating well before its lease ends, and records what it got done."""
     now = now or datetime.now(timezone.utc)
     started = time.monotonic()
     end = now - timedelta(seconds=get_settings().rule_ingest_delay_sec)
     moments, note = plan(rule, end)
     window = timedelta(seconds=rule.window_seconds)
+    was_enabled = rule.enabled
     outcome = RunOutcome('ok', reason=note)
     done: list[tuple[datetime, Evaluation]] = []
+    state = dict(rule.state or {})
     if not moments:
         outcome = RunOutcome('skipped', reason='outside its active hours'
                              if rule.schedule and not in_schedule(rule.schedule, end) else 'nothing new to look at')
@@ -382,11 +425,15 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
         spec = spec_of(rule)
         previous = rule.evaluated_until
         for moment in moments:
+            if time.monotonic() - started > RUN_DEADLINE.total_seconds():
+                outcome.reason = '; '.join(r for r in (outcome.reason, 'stopped early to finish within '
+                                                       'its lease; the rest is evaluated next run') if r)
+                break
             recent_since = previous if previous is not None and previous < moment \
                 and moment - previous <= window else None
             start = active_since(rule.schedule, moment - timedelta(seconds=1)) if rule.schedule else None
             try:
-                evaluation = await evaluator.evaluate(spec, moment, recent_since, start)
+                evaluation = await evaluator.evaluate(spec, moment, recent_since, start, state=state)
             except (RuleError, SearchError) as e:
                 outcome.status, outcome.error = 'error', str(e)
                 break
@@ -395,6 +442,8 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
                 outcome.status, outcome.error = 'error', _error_text(e)
                 break
             done.append((moment, evaluation))
+            if evaluation.state is not None:
+                state = evaluation.state
             previous = moment
         for _, evaluation in done:
             outcome.hits += len(evaluation.hits)
@@ -405,6 +454,20 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
     outcome.duration_ms = int((time.monotonic() - started) * 1000)
     if not persist:
         return outcome
+    # The rule as it is now, locked for the few writes that follow: it may
+    # have been edited, switched off, deleted, or claimed by another run
+    current = (await db.execute(select(Rule).where(Rule.id == rule.id).with_for_update()
+                                .execution_options(populate_existing=True))).scalar_one_or_none()
+    if current is None:
+        return RunOutcome('skipped', reason='the rule was deleted during the run')
+    rule = current
+    if lease is not None and rule.running_until != lease:
+        log.warning('rule %s: a run outlived its lease and another took over; its results are '
+                    'not recorded', rule.id)
+        return RunOutcome('skipped', reason='another run took over')
+    if was_enabled and not rule.enabled:
+        rule.running_until = None
+        return RunOutcome('skipped', reason='switched off during the run')
     touched: set = set()
     failed = 0
     for moment, evaluation in done:
@@ -413,7 +476,10 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
             outcome.created += created
             outcome.updated += updated
             failed += lost
-        rule.evaluated_until = moment
+        # Only ever forward: a mark never goes back over windows already done
+        rule.evaluated_until = max(rule.evaluated_until or moment, moment)
+    if done:
+        rule.state = state
     if not moments and outcome.status == 'skipped':
         # Nothing in these hours is the rule's to look at
         rule.evaluated_until = max(rule.evaluated_until or end, end)
@@ -560,17 +626,27 @@ def update_available(rule: Rule) -> bool:
 
 # -- the scheduler ---------------------------------------------------------------------
 
-async def claim_run(db: AsyncSession, rule_id: uuid.UUID) -> datetime | None:
+async def claim_run(db: AsyncSession, rule_id: uuid.UUID) -> tuple[datetime, datetime] | None:
     """Takes the lease to run a rule, and commits it. Returns the database's
-    time, which the run uses as now, or None when the rule is running
-    elsewhere. Database time, so replicas with different clocks agree."""
+    time, which the run uses as now, and the lease, which the run shows when
+    it writes; None when the rule is running elsewhere. Database time, so
+    replicas with different clocks agree."""
     row = (await db.execute(
         update(Rule).where(Rule.id == rule_id,
                            or_(Rule.running_until.is_(None), Rule.running_until < func.now()))
         .values(running_until=func.now() + RUN_LEASE)
-        .returning(func.now()))).first()
+        .returning(func.now(), Rule.running_until))).first()
     await db.commit()
-    return row[0] if row else None
+    return (row[0], row[1]) if row else None
+
+
+async def release_run(rule_id: uuid.UUID, lease: datetime) -> None:
+    """Gives a lease back, if it is still this run's, after a run that ended
+    without recording, so the rule need not wait out the lease."""
+    async with database.sessionmaker()() as db:
+        await db.execute(update(Rule).where(Rule.id == rule_id, Rule.running_until == lease)
+                         .values(running_until=None))
+        await db.commit()
 
 
 async def claim_due(db: AsyncSession, now: datetime, limit: int = 10) -> list[Rule]:
@@ -579,62 +655,90 @@ async def claim_due(db: AsyncSession, now: datetime, limit: int = 10) -> list[Ru
                            or_(Rule.running_until.is_(None), Rule.running_until < now))
         .order_by(Rule.next_run_at).limit(limit).with_for_update(skip_locked=True))).scalars().all()
     for rule in rules:
-        rule.next_run_at = now + timedelta(seconds=rule.interval_seconds)
+        # On the rule's own beat, so that a tick arriving a few seconds late
+        # does not push every run after it later too
+        interval = timedelta(seconds=rule.interval_seconds)
+        beat = rule.next_run_at + interval
+        rule.next_run_at = beat if beat > now else now + interval
     return list(rules)
 
 
 class Scheduler:
+    """Runs due rules, side by side: each in a task of its own, so one slow
+    rule holds up nothing but itself."""
+
     def __init__(self, search: SearchClient, poll_seconds: float = 5.0, concurrency: int = 4):
         self.search = search
         self.poll_seconds = poll_seconds
-        self.semaphore = asyncio.Semaphore(concurrency)
+        self.concurrency = concurrency
+        self.tasks: set[asyncio.Task] = set()
         self._task: asyncio.Task | None = None
         self.last_tick: datetime | None = None
 
     async def _run_one(self, rule_id: uuid.UUID) -> None:
-        async with self.semaphore:
-            async with database.sessionmaker()() as db:
-                now = await claim_run(db, rule_id)
-                if now is None:
-                    return
+        async with database.sessionmaker()() as db:
+            claimed = await claim_run(db, rule_id)
+            if claimed is None:
+                return
+            now, lease = claimed
+            try:
                 rule = await db.get(Rule, rule_id)
                 if rule is None or not rule.enabled:
-                    if rule is not None:
-                        rule.running_until = None
-                    await db.commit()
+                    await release_run(rule_id, lease)
                     return
                 # Nothing is held while OpenSearch is asked
                 await db.commit()
-                try:
-                    await run_rule(db, self.search, rule, now=now)
-                    await prune_runs(db, rule.id)
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    await db.execute(update(Rule).where(Rule.id == rule_id).values(running_until=None))
-                    await db.commit()
-                    raise
+                await run_rule(db, self.search, rule, now=now, lease=lease)
+                await prune_runs(db, rule.id)
+                await db.commit()
+            except asyncio.CancelledError:
+                # Given back even when the run was cancelled, so the rule
+                # does not wait out the lease; in a task of its own, since
+                # this one is being stopped
+                asyncio.ensure_future(release_run(rule_id, lease))
+                raise
+            except Exception:
+                await db.rollback()
+                await release_run(rule_id, lease)
+                raise
+
+    def _finished(self, rule_id: uuid.UUID, task: asyncio.Task) -> None:
+        self.tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.error('running rule %s failed', rule_id, exc_info=error)
 
     async def tick(self) -> int:
+        """Starts the rules that are due, as many as there are free places.
+        Returns how many it started."""
+        free = self.concurrency - len(self.tasks)
+        if free <= 0:
+            return 0
         async with database.sessionmaker()() as db:
             async with db.begin():
                 # The database's clock, so replicas agree on what is due
                 now = (await db.execute(select(func.now()))).scalar_one()
-                due = await claim_due(db, now)
+                due = await claim_due(db, now, limit=free)
                 ids = [r.id for r in due]
-        if ids:
-            results = await asyncio.gather(*[self._run_one(i) for i in ids], return_exceptions=True)
-            for rule_id, result in zip(ids, results):
-                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-                    log.error('running rule %s failed', rule_id, exc_info=result)
+        for rule_id in ids:
+            task = asyncio.create_task(self._run_one(rule_id), name=f'rule-{rule_id}')
+            self.tasks.add(task)
+            task.add_done_callback(partial(self._finished, rule_id))
         self.last_tick = datetime.now(timezone.utc)
         return len(ids)
+
+    async def drain(self) -> None:
+        """Waits for the runs under way, for tests and for stopping."""
+        if self.tasks:
+            await asyncio.gather(*list(self.tasks), return_exceptions=True)
 
     async def loop(self) -> None:
         while True:
             try:
-                ran = await self.tick()
-                if ran:
+                started = await self.tick()
+                if started and len(self.tasks) < self.concurrency:
                     continue
             except asyncio.CancelledError:
                 raise
@@ -652,3 +756,6 @@ class Scheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        for task in list(self.tasks):
+            task.cancel()
+        await self.drain()

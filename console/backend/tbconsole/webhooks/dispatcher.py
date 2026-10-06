@@ -12,9 +12,11 @@ only be sent again by hand.
 import asyncio
 import json
 import logging
+import ssl
 import time
 from datetime import datetime, timedelta, timezone
 
+import certifi
 import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,17 +54,34 @@ def _headers(hook: Webhook, delivery: WebhookDelivery, body: bytes) -> dict:
 
 
 SNIPPET_BYTES = 600
-# Beyond the per-read timeout, how long one whole attempt may take
+# Beyond the per-read timeout, how long one whole attempt may take, the name's
+# lookup included
 DEADLINE_SLACK = 5.0
+# Addresses of a name tried in turn, and the least time each has to connect
+MAX_ADDRESSES = 4
+MIN_CONNECT = 2.0
+
+
+def _trust() -> ssl.SSLContext | bool:
+    """The certificates a receiver's may be signed by: the usual public ones,
+    and those in TBCONSOLE_WEBHOOK_CA_CERTS, for a receiver on the LAN with
+    an internal CA."""
+    extra = get_settings().webhook_ca_certs
+    if not extra:
+        return True
+    context = ssl.create_default_context(cafile=certifi.where())
+    context.load_verify_locations(cafile=str(extra))
+    return context
 
 
 def client() -> httpx.AsyncClient:
     """A client for one delivery. It ignores HTTP_PROXY and the like from the
     environment, which would send pinned addresses through a proxy that checks
     certificates against the address; a proxy is used only when
-    TBCONSOLE_WEBHOOK_PROXY names one."""
+    TBCONSOLE_WEBHOOK_PROXY names one. SSL_CERT_FILE is ignored with them, so
+    extra certificates come from TBCONSOLE_WEBHOOK_CA_CERTS instead."""
     settings = get_settings()
-    return httpx.AsyncClient(timeout=settings.webhook_timeout_sec, trust_env=False,
+    return httpx.AsyncClient(timeout=settings.webhook_timeout_sec, trust_env=False, verify=_trust(),
                              proxy=settings.webhook_proxy or None, follow_redirects=False)
 
 
@@ -85,23 +104,33 @@ def _words(e: httpx.TransportError) -> tuple[str, bool]:
 
 async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, headers: dict,
                 outcome: dict) -> None:
-    proxied = bool(get_settings().webhook_proxy)
+    settings = get_settings()
     # Through a proxy the name goes as it is, and the proxy connects; otherwise
     # each checked address in turn, with the name as Host and TLS server name
-    attempts = [None] if proxied else target.addresses
+    attempts = [None] if settings.webhook_proxy else target.addresses[:MAX_ADDRESSES]
+    # An address that does not answer leaves time for the next
+    connect = max(MIN_CONNECT, settings.webhook_timeout_sec / len(attempts))
+    timeout = httpx.Timeout(settings.webhook_timeout_sec, connect=min(connect, settings.webhook_timeout_sec))
     for i, address in enumerate(attempts):
         url, extensions, sent = target.url, {}, dict(headers)
+        # A compressed answer is not unpacked: a few bytes of it can be gigabytes
+        sent['Accept-Encoding'] = 'identity'
         if address is not None:
             url = target.url_for(address)
             sent['Host'] = target.host_header
             if target.tls:
                 extensions = {'sni_hostname': target.host}
         try:
-            async with http.stream('POST', url, content=body, headers=sent,
+            async with http.stream('POST', url, content=body, headers=sent, timeout=timeout,
                                    extensions=extensions) as response:
                 outcome['status_code'] = response.status_code
+                encoding = response.headers.get('content-encoding', 'identity').strip().lower()
+                if encoding not in ('', 'identity'):
+                    outcome['snippet'] = f'(an answer compressed as {encoding[:20]}, not shown)'
+                    return
                 # Only the start of the answer is read: a receiver that sends
-                # a gigabyte back does not get the console to hold it
+                # a gigabyte back does not get the console to hold it. Not
+                # compressed, so the bytes are as they came
                 chunks, size = [], 0
                 async for chunk in response.aiter_bytes():
                     chunks.append(chunk)
@@ -110,7 +139,7 @@ async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, hea
                         break
                 outcome['snippet'] = b''.join(chunks)[:SNIPPET_BYTES].decode('utf-8', 'replace')[:300]
             return
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.ConnectTimeout):
             if i == len(attempts) - 1:
                 raise
 
@@ -131,13 +160,17 @@ async def send(hook: Webhook, delivery: WebhookDelivery, http: httpx.AsyncClient
     try:
         if not hook.enabled:
             raise _Permanent('the webhook is disabled')
-        target = await safety.resolve(url_of(hook))
         body = json.dumps(formats.render(hook.format, delivery.payload),
                           separators=(',', ':')).encode('utf-8')
         headers = _headers(hook, delivery, body)
         http = http or client()
-        await asyncio.wait_for(_post(http, target, body, headers, outcome),
-                               timeout=get_settings().webhook_timeout_sec + DEADLINE_SLACK)
+
+        async def attempt() -> None:
+            # The lookup inside the deadline too: a name server that never
+            # answers must not hold the batch up any more than a receiver
+            target = await safety.resolve(url_of(hook))
+            await _post(http, target, body, headers, outcome)
+        await asyncio.wait_for(attempt(), timeout=get_settings().webhook_timeout_sec + DEADLINE_SLACK)
         code = outcome['status_code']
         if 200 <= code < 300:
             outcome['retry'] = False

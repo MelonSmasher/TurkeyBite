@@ -3,9 +3,11 @@
 import asyncio
 import csv
 import io
+import itertools
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -373,7 +375,36 @@ async def _still_allowed(request: Request) -> bool:
         return False
     return principal is not None and not principal.mfa_setup_required \
         and principal.can(rbac.EVENTS_READ)
-_live: dict[str, int] = {}
+
+
+# Each person's live tails: a slot per tail, taken when it is asked for, so
+# several asked for at once cannot all get past the cap, and holding the time
+# it was taken until the stream runs. A slot whose stream never ran, because
+# the browser went away first, lapses after LIVE_START_GRACE seconds
+_live: dict[str, dict[int, float | None]] = {}
+_slots = itertools.count()
+LIVE_START_GRACE = 30.0
+
+
+def _take_slot(who: str) -> int | None:
+    now = time.monotonic()
+    slots = _live.setdefault(who, {})
+    for slot, taken in list(slots.items()):
+        if taken is not None and now - taken > LIVE_START_GRACE:
+            del slots[slot]
+    if len(slots) >= MAX_LIVE_PER_USER:
+        return None
+    slot = next(_slots)
+    slots[slot] = now
+    return slot
+
+
+def _free_slot(who: str, slot: int) -> None:
+    slots = _live.get(who)
+    if slots is not None:
+        slots.pop(slot, None)
+        if not slots:
+            _live.pop(who, None)
 
 
 @router.get('/events/live')
@@ -397,19 +428,19 @@ async def live(request: Request, query: str = '',
                      details={'query': query[:2000]})
         await db.commit()
     who = str(principal.user.id)
-    if _live.get(who, 0) >= MAX_LIVE_PER_USER:
+    slot = _take_slot(who)
+    if slot is None:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                             f'At most {MAX_LIVE_PER_USER} live tails at once; close one in another tab.')
 
     async def stream():
-        # Counted only once the stream is running, so one that never starts
-        # cannot leave the count up
-        _live[who] = _live.get(who, 0) + 1
+        # Running: the slot no longer lapses
+        _live.setdefault(who, {})[slot] = None
         try:
             async for chunk in _stream():
                 yield chunk
         finally:
-            _live[who] = max(0, _live.get(who, 1) - 1)
+            _free_slot(who, slot)
 
     async def _stream():
         since = datetime.now(timezone.utc) - timedelta(seconds=30)

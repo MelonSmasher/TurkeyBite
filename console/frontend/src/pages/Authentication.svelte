@@ -5,6 +5,7 @@
   import PageHeader from '../lib/components/PageHeader.svelte';
   import Switch from '../lib/components/Switch.svelte';
   import { Query } from '../lib/query.svelte';
+  import { PRESETS } from '../lib/stores/timerange.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
 
   interface Ldap {
@@ -166,6 +167,11 @@
         <div class="sec-title">Console</div>
         <label class="field"><span class="field-label">Organisation name</span><input class="input" bind:value={general.org_name} /></label>
         <label class="field"><span class="field-label">Sign-in notice</span><textarea class="textarea" rows="2" bind:value={general.login_banner}></textarea></label>
+        <label class="field"><span class="field-label">Pages open on</span>
+          <select class="select" bind:value={general.default_range}>
+            {#each PRESETS as p (p.id)}<option value={p.from}>{p.label}</option>{/each}
+          </select>
+          <span class="field-hint">Until someone picks another time range.</span></label>
         <label class="row top"><Switch bind:checked={general.privacy_mode_default} label="Privacy mode by default" />
           <span>Start everyone in privacy mode <span class="muted small">People are shown as aliases until someone chooses to see names.</span></span></label>
         <button class="btn btn-primary" onclick={saveGeneral}><Save size={15} /> Save</button>

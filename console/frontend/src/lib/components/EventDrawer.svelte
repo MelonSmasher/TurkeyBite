@@ -171,8 +171,11 @@
   .dh h2 { font-size: 1.05rem; }
   .dh-time { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; }
   .type-badge { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; font-size: 0.74rem; font-weight: 600;
-    padding: 2px 8px; border-radius: 99px; background: color-mix(in srgb, var(--s1) 12%, transparent); color: var(--s1); }
-  .type-badge.browser { background: color-mix(in srgb, var(--s7) 12%, transparent); color: var(--s7); }
+    padding: 2px 8px; border-radius: 99px; background: color-mix(in srgb, var(--s1) 12%, transparent); color: var(--text-2); }
+  .type-badge.browser { background: color-mix(in srgb, var(--s7) 12%, transparent); }
+  /* The words in text colour, for contrast; the icon carries the type's colour */
+  .type-badge :global(svg) { color: var(--s1); }
+  .type-badge.browser :global(svg) { color: var(--s7); }
   .sections { display: flex; flex-direction: column; gap: 22px; }
   section { display: flex; flex-direction: column; gap: 10px; }
   .kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 14px; font-size: 0.9rem; }

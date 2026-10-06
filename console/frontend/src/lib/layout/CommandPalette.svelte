@@ -161,7 +161,7 @@
              aria-label="Command" spellcheck="false" autocomplete="off" />
       <span class="kbd">Esc</span>
     </div>
-    <div class="results" role="listbox">
+    <div class="results" role="listbox" aria-label="Results">
       {#each grouped as [group, list] (group)}
         <div class="group-label">{group}</div>
         {#each list as item (item.id)}

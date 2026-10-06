@@ -1,13 +1,36 @@
-// use:tip={'text'}: a small tooltip on hover and keyboard focus.
+// use:tip={'text'}: a small tooltip on hover and keyboard focus. As WCAG
+// 1.4.13 asks, it stays while the pointer is on it, so it can be read, and
+// Escape dismisses it without moving focus.
 
 let el: HTMLDivElement | null = null;
+// The element whose tip is showing, and a hide waiting for the pointer
+let owner: HTMLElement | null = null;
+let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+function hideNow() {
+  if (hideTimer) clearTimeout(hideTimer);
+  hideTimer = null;
+  owner = null;
+  if (el) {
+    el.style.opacity = '0';
+    el.classList.remove('shown');
+  }
+}
 
 function ensure(): HTMLDivElement {
   if (!el) {
     el = document.createElement('div');
     el.className = 'tbc-tip';
     el.setAttribute('role', 'tooltip');
+    el.addEventListener('mouseenter', () => {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = null;
+    });
+    el.addEventListener('mouseleave', hideNow);
     document.body.appendChild(el);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && owner) hideNow();
+    });
   }
   return el;
 }
@@ -16,7 +39,6 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
   let current = text;
   // The tip names an element that shows no name of its own, such as an icon
   // button or a collapsed sidebar link, and keeps naming it as it changes;
-  // one whose text can be seen keeps that text as its name
   // one whose text can be seen keeps that text as its name. A plain span or
   // div may carry a name only as an image, so an icon gets role="img"; a bit
   // of a chart, which the chart's own label or table describes, gets none.
@@ -44,8 +66,12 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
   function show() {
     if (!current) return;
     const tipEl = ensure();
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = null;
+    owner = node;
     tipEl.textContent = current;
     tipEl.style.opacity = '1';
+    tipEl.classList.add('shown');
     const rect = node.getBoundingClientRect();
     const width = tipEl.offsetWidth;
     const left = Math.min(window.innerWidth - width - 8, Math.max(8, rect.left + rect.width / 2 - width / 2));
@@ -54,10 +80,16 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
     tipEl.style.top = `${top < 8 ? rect.bottom + 8 : top}px`;
   }
   function hide() {
-    if (el) el.style.opacity = '0';
+    if (owner === node) hideNow();
+  }
+  function leave() {
+    // A moment for the pointer to reach the tip, which then keeps it
+    if (owner !== node) return;
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = setTimeout(hideNow, 150);
   }
   node.addEventListener('mouseenter', show);
-  node.addEventListener('mouseleave', hide);
+  node.addEventListener('mouseleave', leave);
   node.addEventListener('focus', show);
   node.addEventListener('blur', hide);
   label(text);
@@ -69,7 +101,7 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
     destroy() {
       hide();
       node.removeEventListener('mouseenter', show);
-      node.removeEventListener('mouseleave', hide);
+      node.removeEventListener('mouseleave', leave);
       node.removeEventListener('focus', show);
       node.removeEventListener('blur', hide);
     },

@@ -11,7 +11,7 @@ from tbconsole.models import AuditEvent, Finding, Rule
 from .conftest import login, make_user
 
 
-async def _finding(rule_id=None, entity='ava', status='new', severity='high') -> Finding:
+async def _finding(rule_id=None, entity='ava', status='new', severity='high', full=None) -> Finding:
     now = datetime.now(timezone.utc)
     async with db.sessionmaker()() as session:
         finding = Finding(rule_id=rule_id, rule_name='Threat seen', rule_type='threshold', category='threat',
@@ -19,7 +19,8 @@ async def _finding(rule_id=None, entity='ava', status='new', severity='high') ->
                           entity_field='bite.client_user', entity_value=entity, dedup_key=uuid.uuid4().hex,
                           first_seen=now, last_seen=now, event_count=3,
                           evidence={'query': f'risk:threat AND user:{entity}',
-                                    'top_domains': [{'key': 'evil.example', 'count': 3}]})
+                                    'top_domains': [{'key': 'evil.example', 'count': 3}],
+                                    **({'entity_full': full} if full else {})})
         session.add(finding)
         await session.commit()
         await session.refresh(finding)
@@ -100,6 +101,27 @@ async def test_a_false_positive_teaches_the_rule_an_exception(client):
         # Exceptions are the rule's own: a built-in rule keeps taking new versions
         assert not stored.modified and stored.exceptions[-1]['query'] == 'user:it-admin'
         assert (await session.get(Finding, finding.id)).status == 'false_positive'
+
+
+async def test_an_exception_a_rule_could_not_keep_or_use_is_refused(client):
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    rule = next(r for r in (await client.get('/api/v1/rules')).json() if r['builtin_key'] == 'anonymiser')
+    rule_id = uuid.UUID(rule['id'])
+    # A NUL is stored as U+FFFD
+    for entity, words in (('a' * 1100, 'would not work'), ('ava\ufffd', 'cannot match')):
+        finding = await _finding(rule_id=rule_id, entity=entity[:200] + '…', full=entity)
+        response = await client.post(f'/api/v1/findings/{finding.id}/exception', headers=headers,
+                                     json={'scope': 'entity'})
+        assert response.status_code == 400 and words in response.json()['detail']
+    async with db.sessionmaker()() as session:
+        stored = await session.get(Rule, rule_id)
+        stored.exceptions = [{'query': f'user:u{i}'} for i in range(200)]
+        await session.commit()
+    finding = await _finding(rule_id=rule_id, entity='liam')
+    response = await client.post(f'/api/v1/findings/{finding.id}/exception', headers=headers,
+                                 json={'scope': 'entity'})
+    assert response.status_code == 409 and 'the most a rule can have' in response.json()['detail']
 
 
 async def test_bulk_triage(client):
@@ -306,3 +328,43 @@ async def test_every_accent_the_app_offers_can_be_saved(client):
     assert me['preferences']['accent'] == 'slate' and me['preferences']['privacy_mode'] is True
     bad = await client.put('/api/v1/account/preferences', headers=headers, json={'accent': 'chartreuse'})
     assert bad.status_code == 400
+
+
+async def test_preferences_saved_at_once_from_two_tabs_both_stay(client):
+    import asyncio
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    for _ in range(5):
+        await asyncio.gather(
+            client.put('/api/v1/account/preferences', headers=headers, json={'theme': 'dark'}),
+            client.put('/api/v1/account/preferences', headers=headers, json={'privacy_mode': True}),
+            client.put('/api/v1/account/preferences', headers=headers, json={'density': 'compact'}))
+        me = (await client.get('/api/v1/auth/me')).json()['preferences']
+        assert (me['theme'], me['privacy_mode'], me['density']) == ('dark', True, 'compact')
+        await client.put('/api/v1/account/preferences', headers=headers,
+                         json={'theme': 'light', 'privacy_mode': False, 'density': 'comfortable'})
+
+
+async def test_the_organisations_default_range_reaches_the_app(client):
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    assert (await client.get('/api/v1/auth/me')).json()['default_range'] == 'now-24h'
+    general = (await client.get('/api/v1/settings/general')).json()
+    bad = await client.put('/api/v1/settings/general', headers=headers, json={**general, 'default_range': 'now-9999999d'})
+    assert bad.status_code == 422
+    saved = await client.put('/api/v1/settings/general', headers=headers, json={**general, 'default_range': 'now-7d'})
+    assert saved.status_code == 200
+    assert (await client.get('/api/v1/auth/me')).json()['default_range'] == 'now-7d'
+
+
+async def test_a_tab_left_from_another_persons_session_cannot_save_its_preferences_onto_yours(client):
+    await make_user('carol', role='analyst')
+    await make_user('bob', role='analyst')
+    carol = (await client.get('/api/v1/auth/me', headers=await login(client, 'carol'))).json()['user']['id']
+    headers = await login(client, 'bob')
+    stale = await client.put('/api/v1/account/preferences', headers=headers,
+                             json={'privacy_mode': False, 'user_id': carol})
+    assert stale.status_code == 409
+    bob = (await client.get('/api/v1/auth/me')).json()['user']['id']
+    mine = await client.put('/api/v1/account/preferences', headers=headers, json={'privacy_mode': True, 'user_id': bob})
+    assert mine.status_code == 200 and 'user_id' not in mine.json()

@@ -1,6 +1,6 @@
 """Settings admins change at runtime: the LDAP directory and general options."""
 
-import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -49,7 +49,7 @@ class LdapTestBody(LdapBody):
 class GeneralBody(BaseModel):
     org_name: str = Field('TurkeyBite', min_length=1, max_length=100)
     login_banner: str = Field('', max_length=2000)
-    default_range: str = Field('now-24h', max_length=40)
+    default_range: Literal[settings_store.DEFAULT_RANGES] = 'now-24h'
     require_mfa_for_local_admins: bool = False
     privacy_mode_default: bool = False
 
@@ -142,7 +142,7 @@ async def test_ldap(body: LdapTestBody, request: Request,
     _check_tls(body, True)
     cfg = ldap.config_with_defaults(_merge(body, await settings_store.get(db, 'ldap')))
     secret = crypto.decrypt(cfg['bind_password_enc']) if cfg.get('bind_password_enc') else ''
-    steps = await asyncio.to_thread(ldap.test, cfg, secret, body.username, body.password)
+    steps = await ldap.call(ldap.test, cfg, secret, body.username, body.password, guarded=False)
     audit.record(db, 'settings.ldap_test', principal=principal, request=request,
                  outcome='success' if all(s['ok'] for s in steps) else 'failure',
                  details={'username': body.username})

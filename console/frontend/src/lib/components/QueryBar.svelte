@@ -2,8 +2,9 @@
   // The search bar: TBQL with colour, field and value suggestions, and the
   // server's own check, so a mistake is underlined where it is made.
   import { CircleAlert, CornerDownLeft, Search } from '@lucide/svelte';
+  import { untrack } from 'svelte';
   import { api, type QueryError } from '../api';
-  import { identityValueTokens, maskToken } from '../mask';
+  import { identityValueTokens, maskForEditing, maskToken, unmaskForSearch } from '../mask';
   import { alias, isIdentityName } from '../privacy';
   import { fields } from '../stores/fields.svelte';
   import { prefs } from '../stores/prefs.svelte';
@@ -22,7 +23,7 @@
   let input: HTMLInputElement | undefined = $state();
   let scroll = $state(0);
   let focused = $state(false);
-  let suggestions = $state<{ insert: string; label: string; hint?: string; kind: 'field' | 'value' }[]>([]);
+  let suggestions = $state<{ insert: string; label: string; hint?: string; kind: 'field' | 'value'; real?: string }[]>([]);
   let active = $state(0);
   let open = $state(false);
   let checked = $state<QueryError | null>(null);
@@ -35,26 +36,51 @@
     if (autofocus) queueMicrotask(() => input?.focus());
   });
 
-  const shownError = $derived(error ?? checked);
-  const tokens = $derived(tokenize(value));
-  // In privacy mode a value after user:, host: and the like reads as its
-  // alias until someone clicks in to edit, when the real text has to show
-  const masking = $derived(prefs.privacy && !focused);
-  const masked = $derived(masking ? identityValueTokens(value) : new Set<number>());
-  function display(t: { kind: string; text: string; start: number }): string {
-    return masked.has(t.start) ? maskToken(t) : t.text;
+  // In privacy mode the bar is edited as it is shown, with names as their
+  // aliases: `text` is what is in the input, `value` the real query behind
+  // it, and `known` what each alias stands for. A name someone types in full
+  // stays as typed while they edit, and reads as its alias once they leave.
+  const known = new Map<string, string>();
+  let text = $state(untrack(() => (prefs.privacy ? maskForEditing(value, known) : value)));
+  let emitted = untrack(() => value);
+  let maskedWith = untrack(() => prefs.privacy);
+  $effect(() => {
+    // The query set from outside, or privacy mode turned on or off
+    const outside = value;
+    const privacy = prefs.privacy;
+    untrack(() => {
+      if (outside === emitted && privacy === maskedWith) return;
+      emitted = outside;
+      maskedWith = privacy;
+      text = privacy ? maskForEditing(outside, known) : outside;
+    });
+  });
+  function edited() {
+    emitted = prefs.privacy ? unmaskForSearch(text, known) : text;
+    value = emitted;
   }
 
+  const shownError = $derived(error ?? checked);
+  const tokens = $derived(tokenize(text));
+  const masked = $derived(prefs.privacy && !focused ? identityValueTokens(text) : new Set<number>());
+  function display(t: { kind: string; text: string; start: number }): string {
+    if (!masked.has(t.start) || known.has(t.text.replace(/^"|"$/g, ''))) return t.text;
+    return maskToken(t);
+  }
+  // Where the server's error is, which is in the real query: underlined only
+  // when what is shown is that query
+  const errorAt = $derived(shownError && text === value ? shownError : null);
+
   $effect(() => {
-    const text = value;
+    const query = value;
     if (checkTimer) clearTimeout(checkTimer);
     checkTimer = setTimeout(async () => {
-      if (!text.trim()) {
+      if (!query.trim()) {
         checked = null;
         return;
       }
       try {
-        const result = await api.post<{ ok: boolean; error?: QueryError }>('/query/validate', { query: text });
+        const result = await api.post<{ ok: boolean; error?: QueryError }>('/query/validate', { query });
         checked = result.ok ? null : result.error ?? null;
       } catch {
         checked = null;
@@ -85,12 +111,13 @@
     try {
       const result = await api.get<{ values: { key: string; count?: number }[] }>(
         `/fields/${encodeURIComponent(field)}/values?prefix=${encodeURIComponent(prefix)}`);
-      // In privacy mode the busiest people are suggested by alias; picking
-      // one still puts the real value in the query
+      // In privacy mode the busiest people are suggested by alias, and
+      // picking one puts the alias in the bar, standing for the real value
       const hide = prefs.privacy && isIdentityName(field);
       return result.values.slice(0, 9).map((v) => ({
-        insert: /[\s():"]/.test(v.key) ? `"${v.key}"` : v.key, label: hide ? alias(v.key) : v.key,
+        insert: hide ? alias(v.key) : /[\s():"]/.test(v.key) ? `"${v.key}"` : v.key, label: hide ? alias(v.key) : v.key,
         hint: v.count !== undefined ? v.count.toLocaleString() : undefined, kind: 'value' as const,
+        real: hide ? v.key : undefined,
       }));
     } catch {
       return [];
@@ -99,13 +126,13 @@
 
   function refresh() {
     if (!input) return;
-    const caret = input.selectionStart ?? value.length;
-    const ctx = context(value, caret);
+    const caret = input.selectionStart ?? text.length;
+    const ctx = context(text, caret);
     suggestStart = ctx.start;
     if (ctx.kind === 'field') {
       suggestions = fieldSuggestions(ctx.prefix);
       active = 0;
-      open = focused && suggestions.length > 0 && (ctx.prefix.length > 0 || value.length === 0);
+      open = focused && suggestions.length > 0 && (ctx.prefix.length > 0 || text.length === 0);
     } else if (ctx.kind === 'value' && ctx.field) {
       if (valueTimer) clearTimeout(valueTimer);
       const field = ctx.field === 'has' ? null : ctx.field;
@@ -127,10 +154,13 @@
   function accept(index: number) {
     const s = suggestions[index];
     if (!s || !input) return;
-    const caret = input.selectionStart ?? value.length;
-    const after = value.slice(caret).replace(/^[^\s()]*/, '');
+    const caret = input.selectionStart ?? text.length;
+    const after = text.slice(caret).replace(/^[^\s()]*/, '');
     const addSpace = s.kind === 'value' && !after.startsWith(' ') && !after.startsWith(')');
-    value = value.slice(0, suggestStart) + s.insert + (addSpace ? ' ' : '') + after;
+    // In privacy mode a person is put in as their alias, which stands for them
+    if (s.real !== undefined) known.set(s.insert, s.real);
+    text = text.slice(0, suggestStart) + s.insert + (addSpace ? ' ' : '') + after;
+    edited();
     const pos = suggestStart + s.insert.length + (addSpace ? 1 : 0);
     open = false;
     queueMicrotask(() => {
@@ -178,17 +208,17 @@
   <div class="field-wrap">
     <div class="highlight" aria-hidden="true" style:transform="translateX({-scroll}px)">
       {#each tokens as t (t.start)}
-        {@const bad = shownError && t.start < shownError.position + shownError.length && t.start + t.text.length > shownError.position}
+        {@const bad = errorAt && t.start < errorAt.position + errorAt.length && t.start + t.text.length > errorAt.position}
         <span class="t-{t.kind}" class:bad>{display(t)}</span>
       {/each}
-      {#if !value}<span class="placeholder">{placeholder}</span>{/if}
+      {#if !text}<span class="placeholder">{placeholder}</span>{/if}
     </div>
-    <input bind:this={input} bind:value type="text" spellcheck="false" autocomplete="off"
+    <input bind:this={input} bind:value={text} type="text" spellcheck="false" autocomplete="off"
            aria-label="Search query" aria-invalid={!!shownError} role="combobox" aria-expanded={open}
            aria-controls="query-suggestions" aria-autocomplete="list"
            onfocus={() => { focused = true; }}
            onblur={() => { focused = false; setTimeout(() => (open = false), 150); }}
-           oninput={refresh} onclick={refresh} onkeydown={onkeydown}
+           oninput={() => { edited(); refresh(); }} onclick={refresh} onkeydown={onkeydown}
            onscroll={() => (scroll = input?.scrollLeft ?? 0)}
            onkeyup={() => (scroll = input?.scrollLeft ?? 0)} />
   </div>

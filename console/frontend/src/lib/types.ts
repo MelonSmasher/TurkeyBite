@@ -32,8 +32,10 @@ export interface Me {
   preferences: Record<string, unknown>;
   org_name: string;
   privacy_mode_default: boolean;
+  default_range: string;
   mfa_required: boolean;
   version: string;
+  api_docs: boolean;
 }
 
 export interface Bucket {

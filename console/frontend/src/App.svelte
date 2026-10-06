@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { ShieldAlert } from '@lucide/svelte';
-  import type { Component } from 'svelte';
+  import { ExternalLink, ShieldAlert } from '@lucide/svelte';
+  import { untrack, type Component } from 'svelte';
   import { api, setMfaRequiredHandler, setUnauthorizedHandler } from './lib/api';
+  import { answerArrival, cameFromElsewhere, noteArrival } from './lib/arrival';
   import EmptyState from './lib/components/EmptyState.svelte';
   import Toasts from './lib/components/Toasts.svelte';
   import CommandPalette from './lib/layout/CommandPalette.svelte';
@@ -9,6 +10,7 @@
   import Topbar from './lib/layout/Topbar.svelte';
   import { Query } from './lib/query.svelte';
   import { navigate, router } from './lib/router.svelte';
+  import { hideAddress } from './lib/privacy';
   import { prefs } from './lib/stores/prefs.svelte';
   import { session } from './lib/stores/session.svelte';
   import { routes } from './routes';
@@ -20,7 +22,22 @@
   let loaded = $state<Record<string, Component<any>>>({});
   let loadFailed = $state(false);
 
+  noteArrival();
   router.init(routes);
+
+  // A page opened from a link on another site is asked about before it
+  // looks anyone up; the overview and your own account are not about anyone
+  function arrivalApplies(): boolean {
+    const route = router.route;
+    return !!route && !route.public && router.path !== '/' && router.path !== '/account'
+      && cameFromElsewhere(router.path);
+  }
+  let askArrival = $state(arrivalApplies());
+  $effect(() => {
+    void router.path;
+    void router.search;
+    askArrival = arrivalApplies();
+  });
   setUnauthorizedHandler(() => {
     if (router.route?.public) return;
     const back = encodeURIComponent(location.pathname + location.search);
@@ -35,6 +52,14 @@
     if (!me && !router.route?.public) {
       navigate(`/login?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
     }
+  });
+
+  // In privacy mode the address bar never shows a name: rewritten when the
+  // mode is turned on, and when a link written without it is followed
+  $effect(() => {
+    void router.path;
+    void router.search;
+    if (prefs.privacy && session.me) untrack(() => hideAddress());
   });
 
   // An admin who must set up a second factor can do nothing else until they
@@ -96,6 +121,14 @@
           {:else if loadFailed}
             <EmptyState title="This page could not be loaded" body="The console may have been updated. Reload to get the latest version.">
               <button class="btn" onclick={() => location.reload()}>Reload</button>
+            </EmptyState>
+          {:else if askArrival}
+            <EmptyState icon={ExternalLink} title="You followed a link from another site"
+                        body={`It opens ${router.route?.title ?? 'a page'}. What you look at here is recorded in the audit log under your name, so open it only if you meant to.`}>
+              <div class="row">
+                <button class="btn btn-primary" onclick={() => { answerArrival(); askArrival = false; }}>Open it</button>
+                <a class="btn" href="/" onclick={answerArrival}>Go to the overview</a>
+              </div>
             </EmptyState>
           {:else if Page}
             {#key pageKey}

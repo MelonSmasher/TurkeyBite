@@ -117,6 +117,8 @@ class Evaluation:
     hits: list[Hit]
     status: str = 'ok'              # ok, skipped
     reason: str = ''
+    # What to carry to the next run, when the type keeps anything
+    state: dict | None = None
 
 
 # -- definitions, for the editor and for validation ---------------------------------
@@ -286,6 +288,24 @@ def _details(bucket: dict) -> dict:
             'last': moment('last')}
 
 
+def _left_out(aggregations: dict, groups: list[str], enough: int, filled: int | None = None) -> list[str]:
+    """The group fields that may have had more groups pass than came back.
+
+    A terms aggregation's sum_other_doc_count is the events in the groups it
+    left out, and a group needs `enough` of them to pass. With `filled`, only
+    a field that returned that many groups counts; fewer means none passing
+    was left out."""
+    labels = []
+    for i, name in enumerate(groups):
+        terms = ((aggregations or {}).get(f'g{i}') or {}).get('t') or {}
+        if filled is not None and len(terms.get('buckets') or []) < filled:
+            continue
+        if int(terms.get('sum_other_doc_count') or 0) >= max(1, enough):
+            label = F.BY_NAME[name].label if name in F.BY_NAME else name
+            labels.append(label[:1].lower() + label[1:])
+    return labels
+
+
 def _fmt(n: float) -> str:
     if isinstance(n, float) and not n.is_integer():
         return f'{n:,.1f}'
@@ -304,6 +324,7 @@ def _span(seconds: float) -> str:
 class Evaluator:
     def __init__(self, search: SearchClient, budget: int | None = None):
         self.search = search
+        self.state: dict = {}
         # How many requests it may still send, for a backtest; None is no limit
         self.budget = budget
 
@@ -316,9 +337,11 @@ class Evaluator:
 
     async def evaluate(self, spec: RuleSpec, now: datetime,
                        recent_since: datetime | None = None,
-                       start: datetime | None = None) -> Evaluation:
+                       start: datetime | None = None, state: dict | None = None) -> Evaluation:
         """Evaluates `spec` over the window ending at `now`, or from `start`
-        when the window has been cut short, at the start of active hours."""
+        when the window has been cut short, at the start of active hours.
+        `state` is what the last run carried forward."""
+        self.state = dict(state or {})
         params = normalise(spec)
         full = now - timedelta(seconds=spec.window_seconds)
         if start is not None and start > full:
@@ -330,21 +353,29 @@ class Evaluator:
         window = TimeRange(full, now)
         groups = F.group_fields(spec.group_by or [])
         method = getattr(self, f'_{spec.type}')
-        return await method(spec, params, window, groups, recent_since)
+        evaluation = await method(spec, params, window, groups, recent_since)
+        evaluation.state = {k: v for k, v in self.state.items() if v}
+        return evaluation
 
     async def _run(self, query: dict, aggs: dict) -> dict:
         return await self._search({'size': 0, 'track_total_hits': True, 'query': query,
                                    'aggs': aggs})
 
     async def _composite(self, query: dict, sources: list[tuple[str, str]], sub: dict | None,
-                         limit: int) -> tuple[list[dict], bool]:
+                         limit: int, start_after: dict | None = None) -> tuple[list[dict], bool, dict | None]:
         """Every bucket of a composite aggregation, a page at a time, up to
-        `limit`. Returns the buckets and whether there were more: it reads one
-        past the limit to know, so a page that ends exactly there is not
-        mistaken for a cut."""
+        `limit`. Returns the buckets, whether there were more, and where to
+        start next time when there were.
+
+        From `start_after` when given, wrapping round to the start, so a
+        limit that cuts the buckets short does not cut short the same ones
+        every time. It reads one past the limit to know whether there were
+        more, so a page that ends exactly at it is not taken for a cut."""
         out: list[dict] = []
-        after = None
-        while len(out) <= limit:
+        seen: set = set()
+        after = start_after
+        wrapped = start_after is None
+        while True:
             size = min(PAGE, limit + 1 - len(out))
             composite: dict = {'size': size, 'sources': [
                 {name: {'terms': {'field': name_field}}} for name, name_field in sources]}
@@ -356,31 +387,57 @@ class Evaluator:
             result = await self._search({'size': 0, 'query': query, 'aggs': {'c': agg}})
             part = (result.get('aggregations') or {}).get('c') or {}
             buckets = part.get('buckets', [])
-            out.extend(buckets)
+            for b in buckets:
+                marker = tuple(sorted((b.get('key') or {}).items()))
+                if wrapped and marker in seen:
+                    # Round to where this pass began: every bucket was read
+                    return out[:limit], len(out) > limit, None
+                seen.add(marker)
+                out.append(b)
+                if len(out) > limit:
+                    return out[:limit], True, out[limit - 1].get('key')
             after = part.get('after_key')
             if not buckets or not after or len(buckets) < size:
-                break
-        return out[:limit], len(out) > limit
+                if not wrapped:
+                    wrapped, after = True, None
+                    continue
+                return out, False, None
 
     async def _each_group(self, query: dict, groups: list[str], extra: list[tuple[str, str]],
-                          sub: dict | None, limit: int) -> tuple[list[dict], bool]:
+                          sub: dict | None, limit: int, cursor: str | None = None) -> tuple[list[dict], bool]:
         """Composite buckets per group field, each as {field, key, ...}; with
-        no groups, one field-less set. `extra` are further sources."""
+        no groups, one field-less set. `extra` are further sources.
+
+        With `cursor`, a name under which the evaluation's state keeps where a
+        cut-short reading got to, field by field, so the next run carries on
+        from there rather than reading the same buckets again."""
         out: list[dict] = []
         truncated = False
         targets = [(i, name) for i, name in enumerate(groups)] or [(None, None)]
-        for i, name in targets:
+        places = dict(self.state.get(cursor) or {}) if cursor else {}
+        first = int(places.get('field', 0) or 0) % len(targets)
+        resume: dict = {'field': 0}
+        for offset in range(len(targets)):
+            index = (first + offset) % len(targets)
+            i, name = targets[index]
             q = query
             sources = list(extra)
             if name is not None:
                 q = {'bool': {'filter': [query, Q.group_filter(groups, i)]}}
                 sources = [('g', name), *extra]
-            buckets, more = await self._composite(q, sources, sub, limit - len(out))
-            truncated = truncated or more
+            remaining = limit - len(out)
+            buckets, more, next_key = await self._composite(
+                q, sources, sub, max(remaining, 0), start_after=(places.get('after') or {}).get(str(index)))
             for b in buckets:
                 key = b.get('key') or {}
                 out.append(dict(b, field=name, key=key.get('g'),
                                 values={k: v for k, v in key.items() if k != 'g'}))
+            if more:
+                truncated = True
+                resume = {'field': index, 'after': {str(index): next_key}}
+                break
+        if cursor:
+            self.state[cursor] = resume if truncated else {}
         return out, truncated
 
     def _grouped(self, result: dict, groups: list[str]) -> list[dict]:
@@ -416,7 +473,10 @@ class Evaluator:
                 evidence_query=_evidence_query(spec, b['field'], b['key']), window=window,
                 top_domains=d['top_domains'], top_categories=d['top_categories'],
                 first=d['first'], last=d['last']))
-        return Evaluation(hits)
+        crowded = _left_out(result.get('aggregations'), groups, params['threshold'], MAX_GROUPS)
+        return Evaluation(hits, reason=f'more than {MAX_GROUPS} groups by {" or ".join(crowded)} may have '
+                                       f'reached the threshold; the {MAX_GROUPS} busiest were looked at'
+                          if crowded else '')
 
     async def _unique_count(self, spec, params, window, groups, recent_since) -> Evaluation:
         target = params['field']
@@ -441,17 +501,21 @@ class Evaluator:
                 evidence_query=_evidence_query(spec, b['field'], b['key']), window=window,
                 top_domains=d['top_domains'], top_categories=d['top_categories'],
                 first=d['first'], last=d['last'], extra={'distinct_field': target}))
-        return Evaluation(hits)
+        crowded = _left_out(result.get('aggregations'), groups, params['threshold'], MAX_GROUPS)
+        return Evaluation(hits, reason=f'more than {MAX_GROUPS} groups by {" or ".join(crowded)} may have '
+                                       f'reached the threshold; the {MAX_GROUPS} with the most distinct '
+                                       f'values were looked at' if crowded else '')
 
     async def _ratio(self, spec, params, window, groups, recent_since) -> Evaluation:
         numerator = tbql.compile(params['numerator'])
         query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
+        reason = ''
         if not groups:
             sub = dict(_detail_aggs(recent_since))
             sub['num'] = {'filter': numerator}
             candidates = self._grouped(await self._run(query, self._aggs(groups, sub)), groups)
         else:
-            candidates = await self._ratio_groups(query, numerator, params, groups, recent_since)
+            candidates, reason = await self._ratio_groups(query, numerator, params, groups, recent_since)
         hits = []
         for b in candidates:
             count = b.get('doc_count', 0)
@@ -471,12 +535,13 @@ class Evaluator:
                 window=window, top_domains=d['top_domains'], top_categories=d['top_categories'],
                 first=d['first'], last=d['last'], extra={'matched': matched}))
         hits.sort(key=lambda h: h.value, reverse=True)
-        return Evaluation(hits)
+        return Evaluation(hits, reason=reason)
 
-    async def _ratio_groups(self, query, numerator, params, groups, recent_since) -> list[dict]:
+    async def _ratio_groups(self, query, numerator, params, groups, recent_since) -> tuple[list[dict], str]:
         """The groups with the highest share, not the most events: first ranked
         by share across many groups with OpenSearch working out each share,
-        then the details read for the best of them alone."""
+        then the details read for the best of them alone. And a note when a
+        field had more groups than were ranked."""
         share_aggs = {
             'num': {'filter': numerator},
             'share': {'bucket_script': {'buckets_path': {'n': 'num>_count', 'c': '_count'},
@@ -486,17 +551,21 @@ class Evaluator:
                                                     'params': {'r': params['ratio']}}}},
             'best': {'bucket_sort': {'sort': [{'share': {'order': 'desc'}}], 'size': MAX_GROUPS}},
         }
-        ranked = self._grouped(await self._run(query, {
+        result = await self._run(query, {
             # Beyond the usual cap on terms: only the share and its count come back
             f'g{i}': {'filter': Q.group_filter(groups, i),
                       'aggs': {'t': {'terms': {'field': name, 'size': RATIO_SCAN,
                                                'min_doc_count': max(1, params['min_count'])},
                                      'aggs': share_aggs}}}
-            for i, name in enumerate(groups)}), groups)
+            for i, name in enumerate(groups)})
+        ranked = self._grouped(result, groups)
+        crowded = _left_out(result.get('aggregations'), groups, params['min_count'])
+        reason = (f'only the {RATIO_SCAN:,} busiest groups by {" or ".join(crowded)} were ranked by share'
+                  if crowded else '')
         best = sorted(ranked, key=lambda b: ((b.get('num') or {}).get('doc_count', 0)
                                              / max(b.get('doc_count', 1), 1)), reverse=True)[:MAX_GROUPS]
         if not best:
-            return []
+            return [], reason
         keys: dict[str, list] = {}
         for b in best:
             keys.setdefault(b['field'], []).append(b['key'])
@@ -511,7 +580,7 @@ class Evaluator:
             terms = Q.terms_agg(name, len(keys[name]), sub)
             terms['terms']['include'] = [str(k) for k in keys[name]]
             aggs[f'g{i}'] = {'filter': Q.group_filter(groups, i), 'aggs': {'t': terms}}
-        return self._grouped(await self._run(detail_query, aggs), groups)
+        return self._grouped(await self._run(detail_query, aggs), groups), reason
 
     async def _spike(self, spec, params, window, groups, recent_since) -> Evaluation:
         n = params['baseline_windows']
@@ -580,7 +649,8 @@ class Evaluator:
         # value that is new is usually a rare one
         current_query = Q.bool_query(window, spec.query, exclude=spec.exclusions)
         pairs, truncated = await self._each_group(current_query, groups, [('v', target)],
-                                                  _detail_aggs(recent_since), MAX_PAIRS)
+                                                  _detail_aggs(recent_since), MAX_PAIRS,
+                                                  cursor='first_seen')
         if not pairs:
             return Evaluation([])
         for p in pairs:
@@ -592,7 +662,7 @@ class Evaluator:
         fresh.sort(key=lambda p: p.get('doc_count', 0), reverse=True)
         reason = ''
         if truncated:
-            reason = f'looked at the first {MAX_PAIRS:,} values in the window'
+            reason = f'looked at {MAX_PAIRS:,} values in the window; the next run carries on from there'
         if len(fresh) > MAX_NEW:
             reason = f'{len(fresh):,} values were new; kept the {MAX_NEW:,} busiest'
             fresh = fresh[:MAX_NEW]
@@ -663,7 +733,8 @@ class Evaluator:
                              exclude=spec.exclusions)
         # Every group that was active, not just the busiest: a quiet machine
         # going silent matters as much as a loud one
-        buckets, truncated = await self._each_group(query, groups, [], sub, MAX_SILENT_GROUPS)
+        buckets, truncated = await self._each_group(query, groups, [], sub, MAX_SILENT_GROUPS,
+                                                    cursor='silence')
         hits = []
         for b in buckets:
             past = (b.get('past') or {}).get('doc_count', 0)
@@ -678,7 +749,8 @@ class Evaluator:
                         f'{_span(params["lookback_seconds"])} before. Last seen {last or "unknown"}.',
                 evidence_query=_evidence_query(spec, b['field'], b['key']), window=window,
                 last=last, extra={'before': past}))
-        reason = f'looked at the first {MAX_SILENT_GROUPS:,} groups' if truncated else ''
+        reason = (f'looked at {MAX_SILENT_GROUPS:,} groups; the next run carries on from there'
+                  if truncated else '')
         if len(hits) > MAX_GROUPS:
             reason = f'{len(hits):,} groups fell silent; kept the {MAX_GROUPS} that were busiest'
             hits = sorted(hits, key=lambda h: h.value, reverse=True)[:MAX_GROUPS]

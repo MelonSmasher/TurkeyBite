@@ -1,6 +1,7 @@
 """Local account passwords: Argon2id hashes and the rules a new one must meet."""
 
 import asyncio
+import weakref
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -27,14 +28,27 @@ def verify_password(stored: str | None, password: str) -> bool:
         return False
 
 
+# Argon2 is meant to be slow; a few at a time, off the event loop, so a burst
+# of sign-ins waits its turn rather than stalls every other request
+_TURNS: 'weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]' = weakref.WeakKeyDictionary()
+
+
+def _turn() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    turn = _TURNS.get(loop)
+    if turn is None:
+        turn = _TURNS[loop] = asyncio.Semaphore(4)
+    return turn
+
+
 async def verify_async(stored: str | None, password: str) -> bool:
-    """verify_password, off the event loop: Argon2 is meant to be slow, and a
-    burst of sign-ins would otherwise stall every other request."""
-    return await asyncio.to_thread(verify_password, stored, password)
+    async with _turn():
+        return await asyncio.to_thread(verify_password, stored, password)
 
 
 async def hash_async(password: str) -> str:
-    return await asyncio.to_thread(hash_password, password)
+    async with _turn():
+        return await asyncio.to_thread(hash_password, password)
 
 
 def needs_rehash(stored: str) -> bool:

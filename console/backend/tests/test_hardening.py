@@ -250,7 +250,8 @@ async def test_a_directory_that_is_down_is_a_503_and_local_accounts_still_work(c
 
 async def test_an_admins_disabling_outlasts_the_directory(client, directory):
     await _save_directory(directory)
-    await make_user('ava', source='ldap', role='analyst', disabled=True, disabled_reason='admin')
+    await make_user('ava', source='ldap', role='analyst', disabled=True, disabled_reason='admin',
+                    ldap_dn='uid=ava,ou=people,dc=example,dc=org')
     response = await client.post('/api/v1/auth/login', json={'username': 'ava', 'password': 'ava-pw'})
     assert response.status_code == 401
 
@@ -453,6 +454,21 @@ async def test_reopening_a_finding_that_has_an_open_successor_is_refused(client)
     bulk = await client.post('/api/v1/findings/bulk', headers=headers,
                              json={'ids': [str(old.id)], 'status': 'acknowledged'})
     assert bulk.json() == {'updated': 0, 'skipped': [old.number]}
+
+
+async def test_a_rule_opening_a_successor_mid_reopen_is_a_conflict_not_an_error(client, monkeypatch):
+    from tbconsole.api import findings as api_findings
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    old = await _finding(status='resolved', dedup_key='same')
+
+    async def rule_runs_meanwhile(db, finding, changes):
+        await _finding(status='new', dedup_key='same')
+        # A query that flushes the reopening, before the commit
+        await db.execute(select(Finding.id))
+    monkeypatch.setattr(api_findings, '_announce', rule_runs_meanwhile)
+    response = await client.patch(f'/api/v1/findings/{old.id}', headers=headers, json={'status': 'new'})
+    assert response.status_code == 409
 
 
 async def test_bulk_changes_tell_the_webhooks_that_listen_for_them(client):
@@ -682,6 +698,31 @@ async def test_the_app_answers_head_requests_for_its_pages(tmp_path, monkeypatch
         assert (await c.head('/findings')).status_code == 200
         assert (await c.get('/findings')).text.startswith('<!doctype html>')
         assert (await c.get('/api/v1/nothing-here')).status_code == 404
+
+
+async def test_a_page_opened_from_another_site_says_so_to_the_app(tmp_path, monkeypatch):
+    from tbconsole.config import get_settings
+    from tbconsole.main import create_app
+    (tmp_path / 'index.html').write_text('<!doctype html><html><head><title>console</title></head></html>')
+    monkeypatch.setattr(get_settings(), 'static_dir', tmp_path)
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as c:
+        linked = await c.get('/entities/user/ava', headers={'Sec-Fetch-Site': 'cross-site'})
+        typed = await c.get('/entities/user/ava', headers={'Sec-Fetch-Site': 'none'})
+    assert 'name="tbc-arrival"' in linked.text and linked.headers['cache-control'] == 'no-store'
+    assert 'tbc-arrival' not in typed.text
+
+
+async def test_swagger_ui_and_its_cdn_are_off_unless_asked_for(monkeypatch):
+    from tbconsole.config import get_settings
+    from tbconsole.main import create_app
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url='http://testserver') as c:
+        assert (await c.get('/api/docs')).status_code == 404
+        assert (await c.get('/api/openapi.json')).status_code == 200
+    monkeypatch.setattr(get_settings(), 'api_docs', True)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url='http://testserver') as c:
+        docs = await c.get('/api/docs')
+    assert docs.status_code == 200 and 'cdn.jsdelivr.net' in docs.headers['content-security-policy']
 
 
 def test_today_starts_at_the_callers_midnight():
@@ -988,6 +1029,126 @@ async def test_a_second_address_is_tried_when_the_first_will_not_connect(monkeyp
     assert seen == ['93.184.215.14', '93.184.215.15'] and outcome['error'] is None
 
 
+async def test_a_second_address_is_tried_when_the_first_does_not_answer_in_time(monkeypatch):
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14', '93.184.215.15'))
+    hook = await _hook('https://hooks.example.test/in')
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.host, request.extensions['timeout']['connect']))
+        if request.url.host == '93.184.215.14':
+            raise httpx.ConnectTimeout('timed out')
+        return httpx.Response(204)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert [host for host, _ in seen] == ['93.184.215.14', '93.184.215.15'] and outcome['error'] is None
+    # Each has its share of the time, so the second is not left none
+    assert seen[0][1] == 5.0
+
+
+async def test_a_name_that_takes_forever_to_look_up_is_cut_off_too(monkeypatch):
+    import asyncio as aio
+    from tbconsole.config import get_settings
+
+    class Hangs(_Loop):
+        async def getaddrinfo(self, host, port, type=0):
+            await aio.sleep(5)
+    lookup = _Asyncio()
+    lookup.loop = Hangs()
+    monkeypatch.setattr(safety, 'asyncio', lookup)
+    monkeypatch.setattr(dispatcher, 'DEADLINE_SLACK', 0)
+    monkeypatch.setattr(get_settings(), 'webhook_timeout_sec', 0.2)
+    hook = await _hook('https://hooks.example.test/in')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(204))) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert 'too long' in outcome['error'] and outcome['retry'] is True and outcome['duration_ms'] < 2000
+
+
+async def test_a_compressed_answer_is_not_unpacked(monkeypatch):
+    import gzip
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14'))
+    hook = await _hook('https://hooks.example.test/in')
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers['accept-encoding'])
+        return httpx.Response(200, headers={'Content-Encoding': 'gzip'}, content=gzip.compress(b'0' * 10_000_000))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert seen == ['identity']
+    assert outcome['error'] is None and outcome['snippet'] == '(an answer compressed as gzip, not shown)'
+
+
+def test_a_webhook_proxy_or_ca_file_that_cannot_work_stops_the_console_starting(tmp_path):
+    from pydantic import ValidationError
+    from tbconsole.config import Settings
+    for proxy in ('socks5://proxy.example.test:1080', 'proxy.example.test:3128', 'http://'):
+        with pytest.raises(ValidationError, match='WEBHOOK_PROXY'):
+            Settings(webhook_proxy=proxy)
+    assert Settings(webhook_proxy=' ').webhook_proxy is None
+    with pytest.raises(ValidationError, match='not a file'):
+        Settings(webhook_ca_certs=str(tmp_path / 'missing.pem'))
+    assert Settings(webhook_ca_certs='').webhook_ca_certs is None
+
+
+def test_webhook_receivers_may_be_signed_by_an_internal_ca(monkeypatch):
+    import ssl
+    import certifi
+    from tbconsole.config import get_settings
+    assert dispatcher._trust() is True
+    monkeypatch.setattr(get_settings(), 'webhook_ca_certs', certifi.where())
+    assert isinstance(dispatcher._trust(), ssl.SSLContext)
+
+
+async def test_a_test_delivery_is_recorded_as_unfinished_until_it_finishes(client, monkeypatch):
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14'))
+    hook = await _hook('https://hooks.example.test/in')
+    during = []
+
+    async def send(hook, delivery, http=None):
+        async with db.sessionmaker()() as session:
+            stored = await session.get(WebhookDelivery, delivery.id)
+            during.append((stored.status, stored.next_attempt_at, stored.last_error))
+        return {'status_code': 204, 'error': None, 'snippet': '', 'retry': False, 'duration_ms': 1}
+    monkeypatch.setattr(dispatcher, 'send', send)
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    tested = await client.post(f'/api/v1/webhooks/{hook.id}/test', headers=headers)
+    assert during == [('dead', None, 'the test did not finish')]
+    assert tested.json()['status'] == 'succeeded' and tested.json()['last_error'] is None
+
+
+async def test_a_redelivery_names_no_one_to_a_key_that_may_not_read_findings(client):
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    hook = await _hook('https://example.org/hook')
+    async with db.sessionmaker()() as session:
+        delivery = WebhookDelivery(webhook_id=hook.id, event='finding.created', status='dead', payload={
+            'event': 'finding.created', 'finding': {'title': 'Threat seen: ava', 'entity': 'ava',
+                                                    'entity_field': 'bite.client_user'}})
+        session.add(delivery)
+        await session.commit()
+    key = (await client.post('/api/v1/api-keys', headers=headers,
+                             json={'name': 'k', 'scopes': ['webhooks:read', 'webhooks:write']})).json()['key']
+    client.cookies.clear()
+    again = await client.post(f'/api/v1/webhook-deliveries/{delivery.id}/redeliver',
+                              headers={'Authorization': f'Bearer {key}'})
+    assert again.status_code == 200 and 'ava' not in again.text
+
+
+def test_a_delivery_about_a_domain_names_no_one():
+    from tbconsole.api.common import delivery_out
+    about_domain = WebhookDelivery(id=uuid.uuid4(), webhook_id=uuid.uuid4(), event='finding.created', payload={
+        'finding': {'entity': 'evil.example', 'entity_field': 'bite.registrable_domain'}})
+    about_person = WebhookDelivery(id=uuid.uuid4(), webhook_id=uuid.uuid4(), event='finding.created', payload={
+        'finding': {'entity': 'ava', 'entity_field': 'bite.client_user'}})
+    redacted = WebhookDelivery(id=uuid.uuid4(), webhook_id=uuid.uuid4(), event='finding.created', payload={
+        'finding': {'entity': '[redacted]', 'entity_field': 'bite.client_user'}})
+    assert delivery_out(about_domain)['names'] == []
+    assert delivery_out(about_person)['names'] == ['ava']
+    assert delivery_out(redacted)['names'] == []
+
+
 async def test_an_ipv6_host_header_is_bracketed():
     target = await safety.resolve('https://[2606:4700::1111]:8443/x')
     assert target.host_header == '[2606:4700::1111]:8443'
@@ -1046,8 +1207,21 @@ async def test_the_live_tail_cap_holds(client, monkeypatch):
     from tbconsole.api import events
     user = await make_user('ana', role='analyst')
     await login(client, 'ana')
-    monkeypatch.setitem(events._live, str(user.id), events.MAX_LIVE_PER_USER)
+    monkeypatch.setitem(events._live, str(user.id), {i: None for i in range(events.MAX_LIVE_PER_USER)})
     assert (await client.get('/api/v1/events/live')).status_code == 429
+
+
+def test_live_tails_asked_for_at_once_cannot_get_past_the_cap(monkeypatch):
+    from tbconsole.api import events
+    monkeypatch.setattr(events, '_live', {})
+    taken = [events._take_slot('ana') for _ in range(events.MAX_LIVE_PER_USER + 1)]
+    # Each is counted when asked for, before any stream has started
+    assert None not in taken[:-1] and taken[-1] is None
+    events._free_slot('ana', taken[0])
+    assert events._take_slot('ana') is not None
+    # A slot whose stream never started lapses
+    monkeypatch.setattr(events, 'LIVE_START_GRACE', -1)
+    assert events._take_slot('ana') is not None
 
 
 async def test_looks_at_people_through_pivots_histograms_lists_and_suggestions_are_audited(client):
@@ -1063,6 +1237,16 @@ async def test_looks_at_people_through_pivots_histograms_lists_and_suggestions_a
     assert len(await _audit('events.search')) == 1, 'the histogram of the same search is the same look'
     assert len(await _audit('entities.list')) == 1
     assert len(await _audit('events.top')) == 1, 'suggestions are one look, not one per keystroke'
+
+
+async def test_the_people_list_and_the_overview_are_looks_at_people_but_a_refresh_is_not_another(client):
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    for _ in range(2):
+        await client.get('/api/v1/entities')
+        await client.get('/api/v1/overview')
+    assert len(await _audit('entities.list')) == 1
+    assert len(await _audit('analytics.overview')) == 1
 
 
 async def test_times_out_of_range_and_bodies_that_are_not_json_are_400s_not_500s(client):
@@ -1084,6 +1268,46 @@ async def test_the_probes_answer_head_and_readiness_fails_without_the_database(c
         raise ConnectionRefusedError('no database')
     monkeypatch.setattr(db, 'sessionmaker', broken)
     assert (await client.get('/readyz')).status_code == 503
+
+
+async def test_readiness_answers_in_time_when_the_database_hangs(client, monkeypatch):
+    import asyncio as aio
+    from tbconsole import main
+
+    class Hangs:
+        async def __aenter__(self):
+            await aio.sleep(30)
+
+        async def __aexit__(self, *exc):
+            return False
+    monkeypatch.setattr(main, 'READY_TIMEOUT', 0.1)
+    monkeypatch.setattr(db, 'sessionmaker', lambda: Hangs)
+    assert (await client.get('/readyz')).status_code == 503
+
+
+async def test_pruning_failing_does_not_stop_the_directory_recheck(monkeypatch):
+    from tbconsole import maintenance as M
+    rechecked = []
+
+    async def broken(session, now=None):
+        raise OverflowError('date value out of range')
+
+    async def recheck(now=None):
+        rechecked.append(now)
+        return {'revoked': 0, 'changed': 0, 'restored': 0, 'held_back': 0}
+    monkeypatch.setattr(M, 'prune', broken)
+    monkeypatch.setattr(M, 'recheck_directory', recheck)
+    with pytest.raises(M.MaintenanceProblem, match='pruning failed'):
+        await M.Maintenance().run_once()
+    assert len(rechecked) == 1
+
+
+def test_retention_cannot_reach_past_what_a_date_can_hold():
+    from pydantic import ValidationError
+    from tbconsole.config import Settings
+    for name in ('finding_retention_days', 'audit_retention_days', 'delivery_retention_days'):
+        with pytest.raises(ValidationError):
+            Settings(**{name: 1_000_000})
 
 
 def test_a_database_password_needs_a_user_name_to_go_with():
@@ -1145,3 +1369,127 @@ async def test_a_first_seen_person_is_named_redacted_and_listed_for_masking(clie
     await login(client, 'root')
     listed = (await client.get('/api/v1/webhook-deliveries')).json()
     assert listed[0]['names'] == ['lab-12', 'k.larsen']
+
+
+# -- round three -----------------------------------------------------------------------
+
+async def test_two_directory_people_with_one_name_never_share_an_account(client, directory, monkeypatch):
+    # The console keeps uid; people sign in by mail. A staff member shares a
+    # student's uid in another branch of the directory.
+    from ldap3 import MOCK_SYNC, Connection
+
+    from tbconsole.security import ldap
+    seed = Connection(ldap._MOCK_SERVER, user='cn=svc,dc=example,dc=org', password='svc-pw',
+                      client_strategy=MOCK_SYNC)
+    seed.strategy.add_entry('uid=ava,ou=staff,dc=example,dc=org', {
+        'userPassword': 'staff-pw', 'objectClass': ['person', 'inetOrgPerson'], 'uid': 'ava', 'sn': 'Staff',
+        'mail': 'ava.staff@example.org', 'memberOf': ['CN=IT,ou=groups,dc=example,dc=org']})
+    await _save_directory(dict(directory, user_base_dn='dc=example,dc=org',
+                               user_filter='(&(objectClass=person)(mail={username}))'))
+    student = await client.post('/api/v1/auth/login', json={'username': 'ava@example.org', 'password': 'ava-pw'})
+    assert student.status_code == 200 and student.json()['user']['role'] == 'analyst'
+    async with httpx.AsyncClient(transport=client._transport, base_url='http://testserver') as other:
+        staff = await other.post('/api/v1/auth/login', json={'username': 'ava.staff@example.org', 'password': 'staff-pw'})
+    assert staff.status_code == 409, 'refused, rather than handed the student\'s account'
+    assert (await client.get('/api/v1/users')).status_code == 403, 'the student did not become admin'
+
+
+def test_an_entrys_lasting_id_is_read_in_whichever_form_it_comes():
+    import uuid as uuid_mod
+
+    from tbconsole.security import ldap
+    value = uuid_mod.uuid4()
+    assert ldap._guid({'objectGUID': [value.bytes_le]}) == str(value)
+    assert ldap._guid({'entryUUID': [str(value).upper()]}) == str(value)
+    assert ldap._guid({'objectGUID': '{' + str(value) + '}'}) == str(value)
+    assert ldap._guid({}) is None
+
+
+async def test_one_unclear_entry_does_not_stop_the_others_being_revoked(client, directory, monkeypatch):
+    from tbconsole import maintenance
+    from tbconsole.security import ldap
+    await _save_directory(directory)
+    for name in ('ava', 'bob'):
+        user = await make_user(name, source='ldap', role='analyst', ldap_dn=f'uid={name},ou=people,dc=example,dc=org')
+        async with db.sessionmaker()() as session:
+            session.add(UserSession(token_hash=crypto.sha256(name), user_id=user.id,
+                                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                                    last_seen_at=datetime.now(timezone.utc)))
+            await session.commit()
+    real = ldap.recheck
+
+    def referral_for_ava(cfg, secret, dn, username):
+        if username == 'ava':
+            raise ldap.LdapUnavailable('referral')
+        return real(cfg, secret, dn, username)
+    monkeypatch.setattr(ldap, 'recheck', referral_for_ava)
+    counts = await maintenance.recheck_directory()
+    assert counts['unclear'] == 1 and counts['revoked'] == 1, 'bob, in no granting group, still goes'
+
+
+def test_a_recheck_folds_wildcards_around_the_name():
+    import re
+    assert re.sub(r'\**\{username\}\**', '*', '(uid=*{username}*)') == '(uid=*)'
+
+
+def test_a_flood_from_one_address_never_refuses_a_name_it_has_not_tried():
+    from tbconsole.security import limits
+    limits.reset()
+    for i in range(5000):
+        limits.failed('203.0.113.9', f'junk-{i}')
+    assert not limits.limited('203.0.113.9', 'alice')
+    assert limits.limited('203.0.113.9', 'junk-7')
+    limits.reset()
+
+
+def test_width_and_case_variants_of_a_name_are_one_name_to_the_brake():
+    from tbconsole.security import limits
+    limits.reset()
+    for variant in ('bob', 'ＢＯＢ', 'Bob') * 4:
+        limits.failed('203.0.113.10', variant)
+    assert limits.limited('203.0.113.10', 'ｂｏｂ')
+    limits.failed('203.0.113.11', '')
+    assert limits._recent(('203.0.113.11', '')) == 1, 'a blank name is not counted twice'
+    limits.reset()
+
+
+async def test_a_hanging_directory_is_braked_and_holds_no_database_connection(client, directory, monkeypatch):
+    from tbconsole.security import ldap, limits
+    await _save_directory(directory)
+
+    def down(*args):
+        raise ldap.LdapUnavailable('no answer')
+    monkeypatch.setattr(ldap, 'authenticate', down)
+    monkeypatch.setattr(ldap, '_breaker', ldap._Breaker())
+    for _ in range(limits.PAIR_LIMIT):
+        assert (await client.post('/api/v1/auth/login', json={'username': 'ava', 'password': 'x'})).status_code == 503
+    assert (await client.post('/api/v1/auth/login', json={'username': 'ava', 'password': 'x'})).status_code == 429
+    # After a few failures in a row the directory is given a rest: no thread is asked
+    calls = []
+    monkeypatch.setattr(ldap, 'authenticate', lambda *a: calls.append(a))
+    assert (await client.post('/api/v1/auth/login', json={'username': 'zed', 'password': 'x'})).status_code == 503
+    assert calls == []
+    assert len(await _audit('auth.login')) <= 2, 'one row for the outage, not one per attempt'
+
+
+async def test_the_same_two_factor_token_sent_at_once_makes_one_session(client):
+    import asyncio
+    secret = pyotp.random_base32()
+    await make_user('root', role='admin', totp_enabled=True, totp_secret_enc=crypto.encrypt(secret))
+    token = (await client.post('/api/v1/auth/login', json={'username': 'root',
+                                                          'password': 'correct horse battery'})).json()['token']
+    code = pyotp.TOTP(secret).now()
+    answers = await asyncio.gather(*[client.post('/api/v1/auth/mfa', json={'token': token, 'code': code})
+                                     for _ in range(5)])
+    assert sorted(a.status_code for a in answers).count(200) == 1
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(func.count()).select_from(UserSession))).scalar_one() == 1
+
+
+async def test_wrong_passwords_on_the_account_page_lock_the_account(client):
+    await make_user('ana')
+    headers = await login(client, 'ana')
+    for _ in range(5):
+        await client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': 'guess'})
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(User.locked_until))).scalar_one() is not None

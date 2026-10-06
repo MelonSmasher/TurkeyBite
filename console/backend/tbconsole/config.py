@@ -11,6 +11,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -69,10 +70,10 @@ class Settings(BaseSettings):
     audit_all_searches: bool = False
     # How long the console keeps its own records. Closed findings and the
     # audit log for a year by default; set 0 to keep them for ever.
-    finding_retention_days: int = Field(365, ge=0)
-    audit_retention_days: int = Field(365, ge=0)
+    finding_retention_days: int = Field(365, ge=0, le=36500)
+    audit_retention_days: int = Field(365, ge=0, le=36500)
     # Webhook deliveries that were sent or gave up
-    delivery_retention_days: int = Field(30, ge=1)
+    delivery_retention_days: int = Field(30, ge=1, le=36500)
     # How often directory accounts are checked against the directory, so
     # someone removed from its groups loses access without signing in again
     ldap_recheck_minutes: int = Field(60, ge=5)
@@ -90,6 +91,11 @@ class Settings(BaseSettings):
     opensearch_index: str = 'tb-index-*'
     opensearch_timeout_sec: float = Field(30.0, gt=0, le=300)
 
+    # Swagger UI at /api/docs. Off unless asked for: it loads its script and
+    # styles from a CDN, on the console's own origin. /api/openapi.json and
+    # the app's API page describe the API either way
+    api_docs: bool = False
+
     # -- webhooks -------------------------------------------------------------
     # Webhook URLs may not point at private, loopback or link-local addresses
     # unless this is on, so an admin account cannot be turned into a way to
@@ -102,6 +108,9 @@ class Settings(BaseSettings):
     # what it may reach is its rules' to decide; the console still refuses
     # URLs whose names resolve, for it, to addresses webhooks may not reach.
     webhook_proxy: str | None = None
+    # Certificates, in PEM, that webhook receivers' may be signed by besides
+    # the usual public ones: an internal CA's, for a receiver on the LAN
+    webhook_ca_certs: Path | None = None
 
     @field_validator('opensearch_urls', mode='before')
     @classmethod
@@ -118,12 +127,30 @@ class Settings(BaseSettings):
     def _strip_slash(cls, value):
         return value.rstrip('/')
 
-    @field_validator('opensearch_ca_certs', 'static_dir', mode='before')
+    @field_validator('webhook_proxy')
+    @classmethod
+    def _check_proxy(cls, value):
+        if not value or not value.strip():
+            return None
+        parts = urlsplit(value.strip())
+        if parts.scheme not in ('http', 'https') or not parts.hostname:
+            raise ValueError('TBCONSOLE_WEBHOOK_PROXY is an http:// or https:// URL, such as '
+                             'http://proxy.example.org:3128')
+        return value.strip()
+
+    @field_validator('opensearch_ca_certs', 'webhook_ca_certs', 'static_dir', mode='before')
     @classmethod
     def _empty_path(cls, value):
         # An empty variable means none, not the current directory
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator('webhook_ca_certs')
+    @classmethod
+    def _readable_certs(cls, value):
+        if value is not None and not Path(value).is_file():
+            raise ValueError(f'TBCONSOLE_WEBHOOK_CA_CERTS names {value}, which is not a file')
         return value
 
     @model_validator(mode='after')

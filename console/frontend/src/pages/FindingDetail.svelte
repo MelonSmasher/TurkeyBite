@@ -37,6 +37,15 @@
   const id = $derived(params.id);
   const finding = new Query((signal) => api.get<Detail>(`/findings/${encodeURIComponent(id)}`, { signal }));
   const f = $derived(finding.data);
+
+  /** A value from "How the rule decided": a new value through privacy mode
+   *  when it is a person or machine, a category path as its label, and any
+   *  name the finding is about masked wherever it turns up. */
+  function detailValue(key: string, value: unknown, detail: Record<string, any>): string {
+    if (key === 'new_value') return who(value, detail.field);
+    const text = typeof value === 'string' && value.includes('.') ? taxon(value) : String(value);
+    return f ? findingText(text, f) : text;
+  }
   const people = new Query((signal) => api.get<UserRef[]>(`/findings/${encodeURIComponent(id)}/assignable`, { signal }),
                            { enabled: () => session.can('findings:write') });
   let comment = $state('');
@@ -226,7 +235,7 @@
                 </span>
                 <div class="tl-body">
                   <div><strong>{a.actor}</strong> <span class="muted">{activityText(a)}</span> <span class="faint small" title={fullTime(a.at)}>· {ago(a.at)}</span></div>
-                  {#if a.body}<div class="tl-text" class:quote={a.kind === 'comment'}>{a.body}</div>{/if}
+                  {#if a.body}<div class="tl-text" class:quote={a.kind === 'comment'}>{findingText(a.body, f)}</div>{/if}
                 </div>
               </li>
             {/each}
@@ -270,7 +279,7 @@
             {#if f.evidence.detail}
               <dl>
                 {#each Object.entries(f.evidence.detail) as [k, v] (k)}
-                  {#if !Array.isArray(v)}<dt class="muted">{k.replace(/_/g, ' ')}</dt><dd class="mono">{typeof v === 'string' && v.includes('.') ? taxon(v) : String(v)}</dd>{/if}
+                  {#if !Array.isArray(v)}<dt class="muted">{k.replace(/_/g, ' ')}</dt><dd class="mono">{detailValue(k, v, f.evidence.detail)}</dd>{/if}
                 {/each}
               </dl>
             {/if}

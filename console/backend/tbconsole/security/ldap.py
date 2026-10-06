@@ -14,9 +14,15 @@ as a success.
 ldap3 is synchronous, so callers run these functions in a thread.
 """
 
+import asyncio
 import logging
+import re
 import ssl
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 
 from ldap3 import ALL_ATTRIBUTES, BASE, FIRST, SUBTREE, SYNC, Connection, Server, ServerPool, Tls
 from ldap3.core import exceptions as lx
@@ -61,8 +67,18 @@ class LdapUnavailable(LdapError):
     """The directory could not be reached, or the service account was refused."""
 
 
+class LdapUnreachable(LdapUnavailable):
+    """The service account could not even connect or bind: nothing the
+    directory says about anyone can be read."""
+
+
 class LdapInvalidCredentials(LdapError):
     """No such person, or the wrong password. Deliberately not said which."""
+
+
+class LdapAmbiguous(LdapInvalidCredentials):
+    """The sign-in filter matched more than one entry: refused, without
+    saying so, at sign-in; no answer at all about anyone, in a recheck."""
 
 
 class LdapNotPermitted(LdapError):
@@ -77,6 +93,9 @@ class LdapIdentity:
     email: str | None
     groups: list[str] = field(default_factory=list)
     role: str | None = None
+    # The directory's own lasting id for the entry, where it has one
+    # (entryUUID, objectGUID): unlike a name or a DN, never another person's
+    guid: str | None = None
 
 
 def config_with_defaults(value: dict | None) -> dict:
@@ -161,11 +180,11 @@ def _service_connection(cfg: dict, bind_password: str) -> Connection:
     try:
         return _connect(cfg, cfg.get('bind_dn') or '', bind_password)
     except _BindRefused as e:
-        raise LdapUnavailable(f'the service account could not bind: {e}') from e
+        raise LdapUnreachable(f'the service account could not bind: {e}') from e
     except _UNREACHABLE as e:
-        raise LdapUnavailable(f'the directory could not be reached: {e}') from e
+        raise LdapUnreachable(f'the directory could not be reached: {e}') from e
     except lx.LDAPException as e:
-        raise LdapUnavailable(f'the directory refused the connection: {e}') from e
+        raise LdapUnreachable(f'the directory refused the connection: {e}') from e
 
 
 def _first(entry: dict, name: str) -> str | None:
@@ -230,19 +249,47 @@ def _answered(conn: Connection, what: str, allow: tuple[int, ...] = _ANSWERED) -
     return code
 
 
-def _attributes(cfg: dict) -> list[str]:
-    return [a for a in (cfg.get('attr_username'), cfg.get('attr_display_name'),
-                        cfg.get('attr_email'), cfg.get('attr_groups')) if a]
+# Operational attributes that name an entry for good: OpenLDAP and most
+# others, then Active Directory
+_ID_ATTRIBUTES = ('entryUUID', 'objectGUID')
+
+
+def _attributes(cfg: dict, conn: Connection | None = None) -> list[str]:
+    wanted = [a for a in (cfg.get('attr_username'), cfg.get('attr_display_name'),
+                          cfg.get('attr_email'), cfg.get('attr_groups')) if a]
+    ids = list(_ID_ATTRIBUTES)
+    # With a schema loaded, ldap3 refuses names it does not hold, as
+    # OpenLDAP's does not hold objectGUID: ask only for those it knows
+    schema = getattr(getattr(conn, 'server', None), 'schema', None)
+    if schema is not None and getattr(schema, 'attribute_types', None):
+        known = {name.lower() for name in schema.attribute_types}
+        ids = [a for a in ids if a.lower() in known]
+    return [*(wanted or [ALL_ATTRIBUTES]), *ids]
+
+
+def _guid(attributes: dict) -> str | None:
+    """The entry's lasting id as text, whichever form the directory gave it in."""
+    for name in _ID_ATTRIBUTES:
+        for key, value in attributes.items():
+            if key.lower() != name.lower() or value in (None, [], b'', ''):
+                continue
+            value = value[0] if isinstance(value, list) else value
+            if isinstance(value, bytes) and len(value) == 16:
+                return str(uuid.UUID(bytes_le=value))
+            text = value.decode('ascii', 'replace') if isinstance(value, bytes) else str(value)
+            return text.strip('{}').lower() or None
+    return None
 
 
 def _find_user(conn: Connection, cfg: dict, username: str) -> tuple[str, dict]:
     search_filter = (cfg.get('user_filter') or DEFAULTS['user_filter']).replace(
         '{username}', escape_filter_chars(username))
-    attributes = _attributes(cfg)
     conn.search(cfg.get('user_base_dn') or '', search_filter, search_scope=SUBTREE,
-                attributes=attributes or ALL_ATTRIBUTES, size_limit=2)
+                attributes=_attributes(cfg, conn), size_limit=2)
     _answered(conn, 'search for the account')
     entries = [e for e in conn.response or [] if e.get('type') == 'searchResEntry']
+    if len(entries) > 1 or (conn.result or {}).get('result') == 4:
+        raise LdapAmbiguous('invalid username or password')
     if len(entries) != 1:
         # None, or an ambiguous filter: refusing is the only safe answer,
         # and saying which would tell a stranger who has an account
@@ -263,6 +310,61 @@ def _groups(conn: Connection, cfg: dict, dn: str, attributes: dict) -> list[str]
             seen.add(group.lower())
             unique.append(group)
     return unique
+
+
+# Directory calls block, so they run in threads: a pool of their own, small,
+# so a directory that hangs ties up four threads, not the ones Argon2 and
+# everything else share. When it keeps failing, calls fail at once for a
+# while rather than queue behind it.
+_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix='ldap')
+_MAX_WAITING = 16
+_BREAK_AFTER = 3
+_BREAK_FOR = 30.0
+
+
+class _Breaker:
+    def __init__(self):
+        self.failures = 0
+        self.open_until = 0.0
+        self.waiting = 0
+
+    def check(self) -> None:
+        if time.monotonic() < self.open_until:
+            raise LdapUnavailable('the directory has not been answering; the console will try it '
+                                  'again in a few seconds')
+        if self.waiting >= _MAX_WAITING:
+            raise LdapUnavailable('the directory is slow to answer and many sign-ins are waiting')
+
+    def record(self, ok: bool) -> None:
+        if ok:
+            self.failures = 0
+            return
+        self.failures += 1
+        if self.failures >= _BREAK_AFTER:
+            self.open_until = time.monotonic() + _BREAK_FOR
+            self.failures = 0
+
+
+_breaker = _Breaker()
+
+
+async def call(fn, *args, guarded: bool = True):
+    """Runs a directory call in the directory's own threads. With `guarded`,
+    a directory that keeps failing is given a rest: calls fail at once."""
+    if guarded:
+        _breaker.check()
+    _breaker.waiting += 1
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(_POOL, partial(fn, *args))
+    except LdapUnavailable:
+        if guarded:
+            _breaker.record(False)
+        raise
+    finally:
+        _breaker.waiting -= 1
+    if guarded:
+        _breaker.record(True)
+    return result
 
 
 def authenticate(cfg: dict, bind_password: str, username: str, password: str) -> LdapIdentity:
@@ -309,7 +411,7 @@ def _authenticate(cfg: dict, bind_password: str, username: str, password: str) -
         username=(_first(attributes, cfg.get('attr_username') or '') or username).lower(),
         display_name=_first(attributes, cfg.get('attr_display_name') or ''),
         email=_first(attributes, cfg.get('attr_email') or ''),
-        groups=groups,
+        groups=groups, guid=_guid(attributes),
     )
     identity.role = map_role(cfg, groups)
     if identity.role is None:
@@ -330,11 +432,12 @@ def recheck(cfg: dict, bind_password: str, dn: str | None, username: str) -> Lda
         try:
             if dn:
                 # The sign-in filter, with any name allowed, applied to this
-                # one entry: it still has to be an account that may sign in
-                search_filter = (cfg.get('user_filter') or DEFAULTS['user_filter']).replace('{username}', '*')
-                service.search(dn, search_filter, search_scope=BASE,
-                               attributes=_attributes(cfg) or ALL_ATTRIBUTES)
-                if _answered(service, 'look-up of the account', _ANSWERED + (_NO_SUCH_OBJECT,)) \
+                # one entry: it still has to be an account that may sign in.
+                # Wildcards already around the name fold into the one
+                search_filter = re.sub(r'\**\{username\}\**', '*',
+                                       cfg.get('user_filter') or DEFAULTS['user_filter'])
+                service.search(dn, search_filter, search_scope=BASE, attributes=_attributes(cfg, service))
+                if _answered(service, 'look-up of the account', (0, _NO_SUCH_OBJECT)) \
                         == _NO_SUCH_OBJECT:
                     return None
                 entries = [e for e in service.response or [] if e.get('type') == 'searchResEntry']
@@ -344,6 +447,9 @@ def recheck(cfg: dict, bind_password: str, dn: str | None, username: str) -> Lda
             else:
                 try:
                     dn, attributes = _find_user(service, cfg, _clean_username(username))
+                except LdapAmbiguous as e:
+                    # Two entries for one name says nothing about this person
+                    raise LdapUnavailable('the name matches more than one entry') from e
                 except LdapInvalidCredentials:
                     return None
             groups = _groups(service, cfg, dn, attributes)
@@ -359,7 +465,8 @@ def recheck(cfg: dict, bind_password: str, dn: str | None, username: str) -> Lda
     identity = LdapIdentity(
         dn=dn, username=(_first(attributes, cfg.get('attr_username') or '') or username).lower(),
         display_name=_first(attributes, cfg.get('attr_display_name') or ''),
-        email=_first(attributes, cfg.get('attr_email') or ''), groups=groups)
+        email=_first(attributes, cfg.get('attr_email') or ''), groups=groups,
+        guid=_guid(attributes))
     identity.role = map_role(cfg, groups)
     return identity
 

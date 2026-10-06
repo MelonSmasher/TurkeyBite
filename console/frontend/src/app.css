@@ -407,6 +407,8 @@ table.table { width: 100%; border-collapse: separate; border-spacing: 0; font-si
   box-shadow: var(--shadow); transition: opacity var(--fast);
 }
 :root[data-theme='dark'] .tbc-tip { background: #f2f4f7; color: #101828; }
+/* Shown, the pointer can move onto it to read it, as WCAG 1.4.13 asks */
+.tbc-tip.shown { pointer-events: auto; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

@@ -136,8 +136,13 @@ class Prefs {
     const body = this.#unsaved;
     this.#unsaved = {};
     this.#saveTimer = null;
-    if (!Object.keys(body).length) return;
-    api.put('/account/preferences', body).catch(() => {
+    if (!Object.keys(body).length || !this.#user) return;
+    // Saved only onto the account this tab belongs to
+    api.put('/account/preferences', { ...body, user_id: this.#user }).catch((e) => {
+      if ((e as { status?: number }).status === 409) {
+        location.reload();
+        return;
+      }
       toasts.error('Your preference was not saved',
         'privacy_mode' in body ? 'Privacy mode applies here, but another browser or a reload may not have it.'
           : 'It applies here until you reload.');

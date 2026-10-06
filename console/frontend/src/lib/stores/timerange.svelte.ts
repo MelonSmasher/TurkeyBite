@@ -1,6 +1,7 @@
 // The time range every page shares. It lives in the URL (?from=&to=), so a
 // link to a view brings its range with it, and falls back to the last range
-// used, so moving between pages keeps the frame.
+// used, so moving between pages keeps the frame, and before any to the range
+// the organisation opens pages on.
 
 import { router } from '../router.svelte';
 import { resolveTime } from '../time';
@@ -27,16 +28,22 @@ export const PRESETS: RangePreset[] = [
 const KEY = 'tbc.range';
 
 class TimeRangeStore {
-  #fallback = $state<{ from: string; to: string }>(this.#load());
+  #chosen = this.#load();
+  #fallback = $state<{ from: string; to: string }>(this.#chosen ?? { from: 'now-24h', to: 'now' });
 
-  #load(): { from: string; to: string } {
+  #load(): { from: string; to: string } | null {
     try {
       const stored = JSON.parse(sessionStorage.getItem(KEY) || 'null');
       if (stored?.from && stored?.to) return stored;
     } catch {
       /* ignore */
     }
-    return { from: 'now-24h', to: 'now' };
+    return null;
+  }
+
+  /** The organisation's default, for a tab where no range was chosen yet. */
+  useDefault(from: string) {
+    if (!this.#chosen && PRESETS.some((p) => p.from === from)) this.#fallback = { from, to: 'now' };
   }
 
   get from(): string {
@@ -67,6 +74,7 @@ class TimeRangeStore {
   }
 
   set(from: string, to: string) {
+    this.#chosen = { from, to };
     this.#fallback = { from, to };
     sessionStorage.setItem(KEY, JSON.stringify({ from, to }));
     router.setQuery({ from, to }, { push: true });

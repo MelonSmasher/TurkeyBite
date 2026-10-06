@@ -450,8 +450,41 @@ async def test_catching_up_is_bounded_and_says_what_it_skipped(search):
     rule = await _rule(evaluated_until=NOW - timedelta(days=2))
     search.answer = lambda body, index=None: grouped('bite.client_user', [])
     outcome = await _run(search, rule.id, NOW)
-    assert len(search.bodies) == engine.CATCH_UP_STEPS + 1
-    assert 'were not checked' in outcome.reason
+    assert len(search.bodies) == engine.CATCH_UP_STEPS
+    # Two days behind; the last twelve 15-minute windows are three hours
+    assert outcome.reason == '45 hours of missed windows were not checked'
+
+
+async def test_a_window_as_long_as_the_interval_is_evaluated_once_when_the_run_is_late(search):
+    rule = await _rule(window_seconds=300, evaluated_until=NOW - timedelta(minutes=5, seconds=10))
+    search.answer = lambda body, index=None: grouped('bite.client_user', [])
+    await _run(search, rule.id, NOW)
+    assert [b['query']['bool']['filter'][0]['range']['@timestamp']['lt'] for b in search.bodies] == [
+        '2026-10-05T11:59:50.000Z']
+    async with db.sessionmaker()() as session:
+        assert (await session.get(Rule, rule.id)).evaluated_until == NOW - timedelta(seconds=10)
+
+
+async def test_catching_up_on_a_window_longer_than_the_catch_up_evaluates_the_last_one(search):
+    rule = await _rule(window_seconds=86400, interval_seconds=3600, evaluated_until=NOW - timedelta(days=3))
+    search.answer = lambda body, index=None: grouped('bite.client_user', [])
+    outcome = await _run(search, rule.id, NOW)
+    assert [b['query']['bool']['filter'][0]['range']['@timestamp']['lt'] for b in search.bodies] == [
+        '2026-10-05T12:00:00.000Z']
+    assert outcome.reason == '48 hours of missed windows were not checked'
+
+
+async def test_due_rules_keep_their_beat_when_the_tick_is_late():
+    rule = await _rule(next_run_at=NOW)
+    async with db.sessionmaker()() as session:
+        await engine.claim_due(session, NOW + timedelta(seconds=4))
+        await session.commit()
+        assert (await session.get(Rule, rule.id)).next_run_at == NOW + timedelta(minutes=5)
+    async with db.sessionmaker()() as session:
+        # Far behind, it starts again from now rather than run back to back
+        await engine.claim_due(session, NOW + timedelta(hours=1))
+        await session.commit()
+        assert (await session.get(Rule, rule.id)).next_run_at == NOW + timedelta(hours=1, minutes=5)
 
 
 async def test_a_window_is_cut_at_the_start_of_active_hours(search):
@@ -555,10 +588,12 @@ async def test_the_scheduler_logs_a_rule_that_blew_up(search, monkeypatch, caplo
     async def boom(*args, **kwargs):
         raise RuntimeError('kaboom')
     monkeypatch.setattr(engine, 'run_rule', boom)
-    ran = await engine.Scheduler(search).tick()
-    assert ran == 1
+    scheduler = engine.Scheduler(search)
+    assert await scheduler.tick() == 1
+    await scheduler.drain()
     assert any('running rule' in r.message and r.exc_info for r in caplog.records)
-    assert rule.id
+    async with db.sessionmaker()() as session:
+        assert (await session.get(Rule, rule.id)).running_until is None, 'the lease was given back'
 
 
 async def test_builtin_tags_are_stored_sorted_so_an_unchanged_save_is_no_change():
@@ -576,6 +611,45 @@ def test_an_answer_some_shards_could_not_give_is_refused():
     with pytest.raises(SearchRejected, match='2 of 22 shards'):
         _whole({'_shards': {'total': 22, 'failed': 2, 'failures': [
             {'reason': {'type': 'query_shard_exception', 'reason': "'zoe' is not an IP string literal"}}]}})
+
+
+def test_an_answer_that_ran_out_of_time_or_missed_a_cluster_is_refused():
+    from tbconsole.search.client import SearchRejected, _whole
+    with pytest.raises(SearchRejected, match='ran out of time'):
+        _whole({'timed_out': True, '_shards': {'total': 3, 'failed': 0}})
+    with pytest.raises(SearchRejected, match='1 of 2 remote clusters'):
+        _whole({'_clusters': {'total': 2, 'successful': 1, 'skipped': 1}, '_shards': {'total': 3, 'failed': 0}})
+    _whole({'_clusters': {'total': 2, 'successful': 2, 'skipped': 0}, '_shards': {'total': 3, 'failed': 0}})
+
+
+def _crowded(field, buckets, other):
+    from tbconsole.search import fields as F
+    answer = grouped(field, buckets)
+    answer['aggregations'][f'g{F.ENTITY_FIELDS.index(field)}']['t']['sum_other_doc_count'] = other
+    return answer
+
+
+async def test_a_threshold_rule_says_when_more_groups_may_have_passed_than_it_looked_at(search):
+    from tbconsole.analysis.ruletypes import MAX_GROUPS
+    spec = RuleSpec(name='t', type='threshold', params={'threshold': 5}, group_by=['entity'])
+    full = [bucket(f'u{i}', 9) for i in range(MAX_GROUPS)]
+    search.answer = lambda body, index=None: _crowded('bite.client_user', full, 40)
+    result = await Evaluator(search).evaluate(spec, NOW)
+    assert len(result.hits) == MAX_GROUPS
+    assert result.reason == (f'more than {MAX_GROUPS} groups by user may have reached the threshold; '
+                             f'the {MAX_GROUPS} busiest were looked at')
+    # Fewer groups than the cap: none that passed was left out
+    search.answer = lambda body, index=None: _crowded('bite.client_user', full[:3], 40)
+    assert (await Evaluator(search).evaluate(spec, NOW)).reason == ''
+
+
+async def test_a_ratio_rule_says_when_it_ranked_only_the_busiest_groups(search):
+    spec = RuleSpec(name='r', type='ratio', params={'numerator': 'rcode:NXDOMAIN', 'ratio': 0.5, 'min_count': 50},
+                    group_by=['entity'])
+    search.answer = lambda body, index=None: _crowded('bite.client', [
+        bucket('small', 60, num={'doc_count': 57})], 900)
+    result = await Evaluator(search).evaluate(spec, NOW)
+    assert result.reason == 'only the 2,000 busiest groups by client IP were ranked by share'
 
 
 async def test_a_window_that_failed_is_evaluated_by_a_later_run(search):
@@ -627,6 +701,42 @@ def test_active_hours_never_start_after_now_on_the_night_clocks_spring_forward()
     schedule = {'days': None, 'start': '02:30', 'end': '06:00', 'timezone': 'America/New_York'}
     now = datetime(2026, 3, 8, 7, 10, tzinfo=timezone.utc)  # 03:10 EDT
     assert engine.active_since(schedule, now) <= now
+
+
+def test_hours_that_start_in_the_hour_the_clocks_skip_start_when_they_jump():
+    schedule = {'days': None, 'start': '02:30', 'end': '06:00', 'timezone': 'America/New_York'}
+    jump = datetime(2026, 3, 8, 7, 0, tzinfo=timezone.utc)  # 02:00 EST becomes 03:00 EDT
+    assert engine.active_since(schedule, jump + timedelta(minutes=10)) == jump
+    assert not engine.in_schedule(schedule, jump - timedelta(seconds=1))
+    assert engine.active_until(schedule, jump) == datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc)
+
+
+def test_whole_days_back_to_back_are_one_stretch_of_active_hours():
+    weekdays = {'days': [0, 1, 2, 3, 4], 'start': '00:00', 'end': '24:00', 'timezone': 'UTC'}
+    wednesday = datetime(2026, 10, 7, 9, 0, tzinfo=timezone.utc)
+    assert engine.active_since(weekdays, wednesday) == datetime(2026, 10, 5, 0, 0, tzinfo=timezone.utc)
+    assert engine.active_until(weekdays, wednesday) == datetime(2026, 10, 10, 0, 0, tzinfo=timezone.utc)
+    always = {'days': None, 'start': '00:00', 'end': '24:00', 'timezone': 'UTC'}
+    assert engine.in_schedule(always, wednesday)
+    assert engine.active_since(always, wednesday) is None
+    assert engine.active_until(always, wednesday) is None
+
+
+def test_a_start_equal_to_the_end_is_a_whole_day_from_the_start():
+    friday = {'days': [4], 'start': '00:00', 'end': '00:00', 'timezone': 'UTC'}
+    assert engine.in_schedule(friday, datetime(2026, 10, 9, 23, 59, tzinfo=timezone.utc))
+    assert not engine.in_schedule(friday, datetime(2026, 10, 10, 0, 0, tzinfo=timezone.utc))
+    evening = {'days': [4], 'start': '18:00', 'end': '18:00', 'timezone': 'UTC'}
+    assert engine.in_schedule(evening, datetime(2026, 10, 10, 17, 0, tzinfo=timezone.utc))
+    assert not engine.in_schedule(evening, datetime(2026, 10, 9, 17, 0, tzinfo=timezone.utc))
+
+
+async def test_a_day_long_spike_rule_on_weekdays_is_not_cut_at_midnight(search):
+    schedule = {'days': [0, 1, 2, 3, 4], 'start': '00:00', 'end': '24:00', 'timezone': 'UTC'}
+    rule = await _rule(schedule=schedule, window_seconds=86400, interval_seconds=3600)
+    search.answer = lambda body, index=None: grouped('bite.client_user', [])
+    await _run(search, rule.id, datetime(2026, 10, 7, 9, 0, tzinfo=timezone.utc))
+    assert search.bodies[0]['query']['bool']['filter'][0]['range']['@timestamp']['gte'] == '2026-10-06T09:00:00.000Z'
 
 
 async def test_a_long_window_is_cut_at_the_start_of_todays_hours(search):

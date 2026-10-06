@@ -2,7 +2,7 @@
   import { Bookmark, ChevronDown, ChevronRight, Columns3, Download, Globe, Minus, MonitorSmartphone, Pause,
     Play, Plus, Radio, Search, X } from '@lucide/svelte';
   import { untrack } from 'svelte';
-  import { api, ApiError, download, qs } from '../lib/api';
+  import { api, ApiError, download } from '../lib/api';
   import ChartCard from '../lib/charts/ChartCard.svelte';
   import TimeChart from '../lib/charts/TimeChart.svelte';
   import { intervalMsOf, RISK_COLOR, slot } from '../lib/charts/util';
@@ -19,11 +19,12 @@
   import TimeRangePicker from '../lib/components/TimeRangePicker.svelte';
   import { tip } from '../lib/components/tooltip';
   import { compact, dateTime, num, taxon } from '../lib/format';
-  import { isIdentity, maskQuery, who } from '../lib/privacy';
+  import { exploreLink, isIdentity, maskQuery, savedName, who } from '../lib/privacy';
   import { hide, reveal } from '../lib/urlsafe';
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { fields } from '../lib/stores/fields.svelte';
+  import { readPersonal, writePersonal } from '../lib/stores/personal';
   import { prefs } from '../lib/stores/prefs.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
@@ -37,7 +38,7 @@
   // The query, from ?q= or, as privacy mode writes it, hidden in ?qe=
   const asked = () => router.query.get('q') ?? reveal(router.query.get('qe') ?? '');
   let draft = $state(asked());
-  let columns = $state<string[]>(JSON.parse(localStorage.getItem('tbc.columns') || 'null') ?? DEFAULT_COLUMNS);
+  let columns = $state<string[]>(readPersonal('columns', DEFAULT_COLUMNS));
   let split = $state<'severity' | 'type'>('severity');
   let selected = $state<Hit | null>(null);
   let page = $state(0);
@@ -57,7 +58,7 @@
     draft = query;
   });
   $effect(() => {
-    localStorage.setItem('tbc.columns', JSON.stringify(columns));
+    writePersonal('columns', columns);
   });
 
   const results = new Query((signal) => api.post<{ total: number; took: number; hits: Hit[] }>('/events/search', {
@@ -96,8 +97,10 @@
 
   function run(text: string) {
     router.setQuery(prefs.privacy && text ? { q: null, qe: hide(text) } : { q: text || null, qe: null }, { push: true });
-    const recent: string[] = JSON.parse(localStorage.getItem('tbc.recent') || '[]');
-    if (text) localStorage.setItem('tbc.recent', JSON.stringify([text, ...recent.filter((r) => r !== text)].slice(0, 8)));
+    if (text) {
+      recent = [text, ...recent.filter((r) => r !== text)].slice(0, 8);
+      writePersonal('recent', recent);
+    }
   }
 
   function addTerm(term: string, negate = false) {
@@ -154,15 +157,20 @@
       toasts.push({ kind: 'info', title: 'Live tail stopped',
                     body: reason ? 'You are no longer signed in.' : 'It ran for its full time. Start it again to keep watching.' });
     });
-    // A tail that keeps failing to connect gives up rather than retry for ever
+    // A tail the server refused, with a 401, a 429 or a 502, is closed by the
+    // browser at once and never retried; one that keeps failing to connect
+    // gives up rather than retry for ever. Either way it stops and says so
     let failures = 0;
     source.addEventListener('open', () => { failures = 0; });
     source.addEventListener('error', () => {
       failures += 1;
-      if (failures >= 3) {
+      const refused = source.readyState === EventSource.CLOSED;
+      if (refused || failures >= 3) {
         source.close();
         live = false;
-        toasts.error('Live tail stopped', 'The console could not be reached. Start it again when it is back.');
+        toasts.error('Live tail stopped', refused
+          ? 'The console would not start it: you may be signed out, have too many open, or it could not reach OpenSearch.'
+          : 'The console could not be reached. Start it again when it is back.');
       }
     });
     return () => source.close();
@@ -236,7 +244,7 @@
     return v;
   }
 
-  const recent = $derived(JSON.parse(localStorage.getItem('tbc.recent') || '[]') as string[]);
+  let recent = $state<string[]>(readPersonal('recent', []));
   // Pinned searches first; the rest, which a person or a colleague saved
   // without pinning, are a menu away rather than nowhere
   const pinned = $derived((saved.data ?? []).filter((s) => s.pinned));
@@ -276,9 +284,9 @@
   <div class="quick">
     {#each pinned as s (s.id)}
       <span class="chip saved-chip">
-        <a href="/explore{qs({ q: s.query, from: s.time_range.from, to: s.time_range.to })}"><Bookmark size={12} /> {s.name}</a>
+        <a href={exploreLink({ q: s.query, from: s.time_range.from, to: s.time_range.to })}><Bookmark size={12} /> {savedName(s.name, s.query)}</a>
         {#if s.mine || session.can('users:admin')}
-          <button class="chip-x" aria-label="Remove the saved search {s.name}" use:tip={'Remove'} onclick={() => forget(s.id, s.name)}><X size={11} /></button>
+          <button class="chip-x" aria-label="Remove the saved search {savedName(s.name, s.query)}" use:tip={'Remove'} onclick={() => forget(s.id, savedName(s.name, s.query))}><X size={11} /></button>
         {/if}
       </span>
     {/each}
@@ -288,9 +296,9 @@
         {#snippet children({ close })}
           {#each unpinned as s (s.id)}
             <div class="saved-row">
-              <a class="menu-item" href="/explore{qs({ q: s.query, from: s.time_range.from, to: s.time_range.to })}" onclick={close}>{s.name}</a>
+              <a class="menu-item" href={exploreLink({ q: s.query, from: s.time_range.from, to: s.time_range.to })} onclick={close}>{savedName(s.name, s.query)}</a>
               {#if s.mine || session.can('users:admin')}
-                <button class="chip-x" aria-label="Remove the saved search {s.name}" onclick={() => forget(s.id, s.name)}><X size={11} /></button>
+                <button class="chip-x" aria-label="Remove the saved search {savedName(s.name, s.query)}" onclick={() => forget(s.id, savedName(s.name, s.query))}><X size={11} /></button>
               {/if}
             </div>
           {/each}

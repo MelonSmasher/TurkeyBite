@@ -2,7 +2,7 @@
 // can be tested; privacy.ts applies it when privacy mode is on.
 
 import { alias } from './alias';
-import { tokenize } from './components/tbql';
+import { quoteValue, tokenize } from './components/tbql';
 
 export const IDENTITY_FIELDS = new Set(['bite.client', 'bite.client_ips', 'bite.client_user', 'bite.client_hostname',
   'bite.client_hostname_short', 'bite.client_hosts', 'bite.client_hosts_short', 'bite.ptr', 'entity']);
@@ -42,25 +42,32 @@ function aliasToken(kind: string, text: string): string {
   return kind === 'quoted' ? `"${alias(text.replace(/^"|"$/g, ''))}"` : alias(text);
 }
 
-/** Which tokens of a query are values of identity fields: user:x, and each
- *  value in user:(x OR y). Field names in any case, as TBQL takes them. */
+/** Which tokens of a query could name someone: values of identity fields,
+ *  user:x and each value in user:(x OR y), field names in any case as TBQL
+ *  takes them; and free text, which TBQL matches against user and host names
+ *  among others. A value of any other field, domain:x, is left as it is. */
 export function identityValueTokens(query: string): Set<number> {
   const out = new Set<number>();
   let field: string | null = null;
-  let depth = 0;
+  // Each open group: of an identity field's values, another field's, or free text
+  const groups: ('identity' | 'other' | 'free')[] = [];
   for (const t of tokenize(query)) {
-    if (depth > 0) {
-      if (t.kind === 'paren') depth += t.text === '(' ? 1 : -1;
-      else if (t.kind === 'value' || t.kind === 'quoted' || t.kind === 'text') out.add(t.start);
-      continue;
-    }
-    if (t.kind === 'field') {
-      field = t.text.slice(0, -1).toLowerCase();
-    } else if (t.kind === 'paren' && t.text === '(' && field && IDENTITY_NAMES.has(field)) {
-      depth = 1;
+    const inside = groups.at(-1) ?? 'free';
+    if (t.kind === 'paren') {
+      if (t.text === '(') {
+        groups.push(field ? (IDENTITY_NAMES.has(field) ? 'identity' : 'other') : inside);
+      } else {
+        groups.pop();
+      }
       field = null;
-    } else if ((t.kind === 'value' || t.kind === 'quoted') && field && IDENTITY_NAMES.has(field)) {
-      out.add(t.start);
+    } else if (t.kind === 'field') {
+      field = t.text.slice(0, -1).toLowerCase();
+    } else if (t.kind === 'value' || t.kind === 'quoted' || t.kind === 'text') {
+      const fielded = field !== null && t.kind !== 'text';
+      const named = fielded ? IDENTITY_NAMES.has(field!) : inside !== 'other';
+      // A bare * is "any", not a name
+      if (named && t.text !== '*') out.add(t.start);
+      field = null;
     } else if (t.kind !== 'space' && t.kind !== 'compare') {
       field = null;
     }
@@ -68,10 +75,46 @@ export function identityValueTokens(query: string): Set<number> {
   return out;
 }
 
+/** The names a query holds: what privacy mode aliases in it. */
+export function namesInQuery(query: string): string[] {
+  const marked = identityValueTokens(query);
+  return tokenize(query).filter((t) => marked.has(t.start)).map((t) => (t.kind === 'quoted' ? unquote(t.text) : t.text));
+}
+
 /** A TBQL query with the values of identity fields replaced by aliases. */
 export function maskQueryValues(query: string): string {
   const masked = identityValueTokens(query);
   return tokenize(query).map((t) => (masked.has(t.start) ? aliasToken(t.kind, t.text) : t.text)).join('');
+}
+
+function unquote(text: string): string {
+  return text.replace(/^"/, '').replace(/"$/, '').replace(/\\(["\\])/g, '$1');
+}
+
+/** A query as the query bar shows it in privacy mode, every name in it
+ *  aliased, with each alias's real value noted in `known`, so that what is
+ *  typed around them can be turned back into the real query. */
+export function maskForEditing(query: string, known: Map<string, string>): string {
+  const masked = identityValueTokens(query);
+  return tokenize(query).map((t) => {
+    if (!masked.has(t.start)) return t.text;
+    const real = t.kind === 'quoted' ? unquote(t.text) : t.text;
+    const shown = alias(real);
+    known.set(shown, real);
+    return t.kind === 'quoted' ? `"${shown}"` : shown;
+  }).join('');
+}
+
+/** The real query behind what the query bar shows: each alias it knows put
+ *  back as the value it stands for, quoted as that needs. */
+export function unmaskForSearch(shown: string, known: Map<string, string>): string {
+  if (!known.size) return shown;
+  return tokenize(shown).map((t) => {
+    if (t.kind !== 'value' && t.kind !== 'text' && t.kind !== 'quoted') return t.text;
+    const real = known.get(t.kind === 'quoted' ? unquote(t.text) : t.text);
+    if (real === undefined) return t.text;
+    return t.kind === 'quoted' ? `"${real.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : quoteValue(real);
+  }).join('');
 }
 
 /** The token as privacy mode shows it, for the query bar's colouring. */

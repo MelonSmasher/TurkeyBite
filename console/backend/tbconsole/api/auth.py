@@ -10,12 +10,12 @@ used to find out which usernames exist. Five wrong passwords lock a local
 account for fifteen minutes, and an address that fails often is slowed down.
 """
 
-import asyncio
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import __version__, audit, settings_store
@@ -99,11 +99,35 @@ async def _fail(db: AsyncSession, request: Request, username: str, reason: str,
     await db.commit()
 
 
+class _NotTheSamePerson(Exception):
+    """An account matched a directory entry by DN, but its lasting id says it
+    was made for an entry that has since been deleted and its DN reused."""
+
+
+async def _directory_account(db: AsyncSession, identity) -> User | None:
+    """The console account for a directory entry: by its lasting id when the
+    directory has one, else by its DN."""
+    if identity.guid:
+        found = (await db.execute(select(User).where(
+            User.source == 'ldap', User.ldap_guid == identity.guid))).scalar_one_or_none()
+        if found is not None:
+            return found
+    found = (await db.execute(select(User).where(
+        User.source == 'ldap', func.lower(User.ldap_dn) == identity.dn.lower()))).scalar_one_or_none()
+    if found is not None and found.ldap_guid and identity.guid and found.ldap_guid != identity.guid:
+        raise _NotTheSamePerson('the DN belongs to a different directory entry now')
+    return found
+
+
 @router.post('/login')
 async def login(body: LoginBody, request: Request, response: Response,
                 db: AsyncSession = Depends(get_session)) -> dict:
     _same_origin(request)
-    username = body.username.strip()
+    # In the form directories compare names in, so ｂｏｂ and bob are one name
+    # here as they are there, and one count against the brake
+    username = unicodedata.normalize('NFKC', body.username).strip()
+    if not username:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
     if limits.limited(sessions.client_ip(request), username):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
     user = (await db.execute(select(User).where(
@@ -136,12 +160,18 @@ async def login(body: LoginBody, request: Request, response: Response,
         await passwords.verify_async(None, body.password)
         await _fail(db, request, username, 'no such local account and LDAP is off')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
+    # The pooled connection goes back before the directory is asked, which
+    # can take seconds, or hang
+    await db.commit()
     try:
-        identity = await asyncio.to_thread(ldap.authenticate, cfg, bind_password, username,
-                                           body.password)
+        identity = await ldap.call(ldap.authenticate, cfg, bind_password, username, body.password)
     except ldap.LdapUnavailable as e:
-        audit.record(db, 'auth.login', actor_name=username, request=request, outcome='failure',
-                     details={'reason': 'directory unavailable', 'error': str(e)})
+        # Counted like a failure, so a flood of sign-ins while the directory
+        # hangs is braked like any other
+        limits.failed(sessions.client_ip(request), username)
+        audit.look(db, 'auth.login', principal=None, request=request, key='directory-unavailable',
+                   details={'reason': 'directory unavailable', 'error': str(e)},
+                   actor_name=username, outcome='failure')
         await db.commit()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
                             'The directory cannot be reached right now. Local accounts can '
@@ -155,23 +185,27 @@ async def login(body: LoginBody, request: Request, response: Response,
         await _fail(db, request, username, 'directory refused the credentials', user)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC) from e
 
-    if user is None:
-        # People may sign in with a name other than the one the console keeps
-        # (an email address for a sAMAccountName): find them by their entry
-        user = (await db.execute(select(User).where(User.source == 'ldap', or_(
-            User.ldap_dn == identity.dn,
-            func.lower(User.username) == identity.username.lower())))).scalars().first()
+    # The directory's entry decides whose account this is: its lasting id, or
+    # its DN. Never a name, which two people in two branches of the
+    # directory can share; nor the account the typed name happened to find
+    try:
+        user = await _directory_account(db, identity)
+    except _NotTheSamePerson as e:
+        await _fail(db, request, username, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'The console already has an account for a different directory entry '
+                            'with this name. Ask an administrator to sort it out.') from e
     if user is None:
         taken = (await db.execute(select(User.id).where(
             func.lower(User.username) == identity.username.lower()))).first()
         if taken:
-            await _fail(db, request, username, 'a local or service account has the directory name')
+            await _fail(db, request, username, 'another account has the directory name')
             raise HTTPException(status.HTTP_409_CONFLICT,
                                 'A console account already has your directory name. Ask an '
                                 'administrator to rename it.')
         user = User(username=identity.username, source='ldap', role=identity.role,
                     display_name=identity.display_name, email=identity.email,
-                    ldap_dn=identity.dn, preferences={},
+                    ldap_dn=identity.dn, ldap_guid=identity.guid, preferences={},
                     directory_checked_at=datetime.now(timezone.utc))
         db.add(user)
         await db.flush()
@@ -189,6 +223,7 @@ async def login(body: LoginBody, request: Request, response: Response,
         user.display_name = identity.display_name or user.display_name
         user.email = identity.email or user.email
         user.ldap_dn = identity.dn
+        user.ldap_guid = user.ldap_guid or identity.guid
     return await _finish(db, user, request, response, 'ldap')
 
 
@@ -199,7 +234,11 @@ async def login_mfa(body: MfaBody, request: Request, response: Response,
     _same_origin(request)
     ip = sessions.client_ip(request)
     parsed = sessions.read_mfa_token(body.token)
-    user = await db.get(User, parsed[0]) if parsed else None
+    # Locked, so the same token sent several times at once is taken in turn,
+    # and each after the first sees the sign-in it completed
+    user = (await db.execute(select(User).where(User.id == parsed[0]).with_for_update()
+                             .execution_options(populate_existing=True))).scalar_one_or_none() \
+        if parsed else None
     # One token, one session: a sign-in completed since it was issued spends it
     if user is not None and user.last_login_at and user.last_login_at.timestamp() >= parsed[2]:
         user = None
@@ -254,7 +293,10 @@ async def me(principal: Principal = Depends(current_principal),
         'preferences': user.preferences or {},
         'org_name': general['org_name'],
         'privacy_mode_default': general['privacy_mode_default'],
+        'default_range': general['default_range'] if general['default_range'] in settings_store.DEFAULT_RANGES
+        else 'now-24h',
         'mfa_required': bool(general['require_mfa_for_local_admins'] and user.source == 'local'
                              and user.role == 'admin' and not user.totp_enabled),
         'version': __version__,
+        'api_docs': get_settings().api_docs,
     }

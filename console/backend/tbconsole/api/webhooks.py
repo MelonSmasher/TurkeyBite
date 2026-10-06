@@ -195,8 +195,12 @@ async def test_webhook(webhook_id: str, request: Request,
                        db: AsyncSession = Depends(get_session)) -> dict:
     """Sends a test delivery now and says what the receiver answered."""
     hook = await _get(db, webhook_id)
+    # Recorded as one that did not finish until it has, so a test cut off
+    # part way, by the browser going away say, is neither left pending nor
+    # picked up and sent again by the dispatcher
     delivery = WebhookDelivery(
-        webhook_id=hook.id, event='test', status='pending',
+        webhook_id=hook.id, event='test', status='dead', next_attempt_at=None,
+        last_error='the test did not finish',
         payload=event_body('test', message=f'{principal.user.username} sent a test from the '
                                            'TurkeyBite Console. If you can read this, the webhook works.'))
     db.add(delivery)
@@ -272,4 +276,4 @@ async def redeliver(delivery_id: str, request: Request,
     audit.record(db, 'webhook.redeliver', principal=principal, request=request,
                  target_type='delivery', target_id=delivery.id)
     await db.commit()
-    return delivery_out(copy)
+    return delivery_out(copy, about=principal.can(rbac.FINDINGS_READ))

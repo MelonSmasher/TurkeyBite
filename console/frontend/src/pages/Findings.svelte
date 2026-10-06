@@ -18,6 +18,8 @@
   import { session } from '../lib/stores/session.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
   import type { Finding } from '../lib/types';
+  import { prefs } from '../lib/stores/prefs.svelte';
+  import { hide, reveal } from '../lib/urlsafe';
 
   interface Stats {
     by_status: Record<string, number>; open: number; open_by_severity: Record<string, number>;
@@ -36,8 +38,10 @@
   const assignee = $derived(router.query.get('assignee') ?? '');
   const sort = $derived(router.query.get('sort') ?? 'severity');
   const ruleId = $derived(router.query.get('rule_id') ?? '');
-  let search = $state(router.query.get('q') ?? '');
-  let q = $state(router.query.get('q') ?? '');
+  // Search text, from ?q= or, as privacy mode writes it, hidden in ?qe=
+  const askedText = router.query.get('q') ?? reveal(router.query.get('qe') ?? '');
+  let search = $state(askedText);
+  let q = $state(askedText);
   let selected = $state<Set<string>>(new Set());
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -52,7 +56,7 @@
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       q = value;
-      router.setQuery({ q: value || null });
+      router.setQuery(prefs.privacy && value ? { q: null, qe: hide(value) } : { q: value || null, qe: null });
     }, 250);
     // Leaving the page before it fires must not write into the next page's URL
     return () => {

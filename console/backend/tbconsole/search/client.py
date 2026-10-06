@@ -137,10 +137,19 @@ class SearchClient:
 
 
 def _whole(result: dict) -> None:
-    """Refuses an answer some shards failed to give. OpenSearch still says 200
-    then, with what the other shards found, and a partial count read as a
-    whole one is wrong in the worst way: a rule takes what it did not see for
-    something that is not there, and calls a value new or a source silent."""
+    """Refuses an answer some shards failed to give, that ran out of time, or
+    that a remote cluster gave only part of. OpenSearch still says 200 then,
+    with what the rest found, and a partial count read as a whole one is
+    wrong in the worst way: a rule takes what it did not see for something
+    that is not there, and calls a value new or a source silent."""
+    if result.get('timed_out'):
+        raise SearchRejected(400, 'the search ran out of time before every shard answered')
+    clusters = result.get('_clusters') or {}
+    skipped = int(clusters.get('skipped') or 0) + int(clusters.get('partial') or 0) \
+        + int(clusters.get('failed') or 0)
+    if skipped:
+        raise SearchRejected(400, f'{skipped} of {clusters.get("total", "?")} remote clusters could not '
+                                  f'answer in full')
     shards = result.get('_shards') or {}
     failed = int(shards.get('failed') or 0)
     if not failed:

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit
@@ -44,6 +44,9 @@ class UpdateUser(BaseModel):
 
 class PasswordReset(BaseModel):
     password: str = Field(max_length=1024)
+    # A password reset for an account someone else got into wants their keys
+    # gone as well, or what they made with the old password still works
+    revoke_keys: bool = False
 
 
 async def _get(db: AsyncSession, user_id: str) -> User:
@@ -161,10 +164,16 @@ async def reset_password(user_id: str, body: PasswordReset, request: Request,
     user.failed_logins = 0
     user.locked_until = None
     await sessions.end_all(db, user.id)
+    revoked = 0
+    if body.revoke_keys:
+        revoked = (await db.execute(
+            update(ApiKey).where(ApiKey.user_id == user.id, ApiKey.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc)))).rowcount
     audit.record(db, 'user.password_reset', principal=principal, request=request,
-                 target_type='user', target_id=user.id, target_label=user.username)
+                 target_type='user', target_id=user.id, target_label=user.username,
+                 details={'keys_revoked': revoked})
     await db.commit()
-    return {'ok': True}
+    return {'ok': True, 'keys_revoked': revoked}
 
 
 @router.post('/{user_id}/unlock')

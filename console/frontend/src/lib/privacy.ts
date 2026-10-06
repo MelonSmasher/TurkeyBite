@@ -10,7 +10,8 @@
 
 import { alias } from './alias';
 import { qs } from './api';
-import { IDENTITY_FIELDS, IDENTITY_NAMES, maskDocument, maskNames, maskPrefixes, maskQueryValues, maskStrings } from './mask';
+import { router } from './router.svelte';
+import { IDENTITY_FIELDS, IDENTITY_NAMES, maskDocument, maskNames, maskPrefixes, maskQueryValues, maskStrings, namesInQuery } from './mask';
 import { prefs } from './stores/prefs.svelte';
 import { hide } from './urlsafe';
 
@@ -25,6 +26,33 @@ export function isIdentity(field: string | null | undefined): boolean {
 export function exploreLink(params: { q?: string | null; from?: string | null; to?: string | null }): string {
   const { q, ...rest } = params;
   return `/explore${qs(prefs.privacy && q ? { qe: hide(q), ...rest } : { q, ...rest })}`;
+}
+
+// Pages whose ?q= is a query or search text, which can name someone
+const QUERY_PAGES = new Set(['/explore', '/analytics', '/entities', '/findings']);
+
+/** The address bar as privacy mode writes it: a query moved into ?qe=, and a
+ *  person's or machine's name in the path hidden. For when privacy mode is
+ *  turned on, and for an address reached by a link written without it. */
+export function hideAddress(): void {
+  const url = new URL(location.href);
+  let changed = false;
+  const q = url.searchParams.get('q');
+  if (q && QUERY_PAGES.has(url.pathname)) {
+    url.searchParams.delete('q');
+    url.searchParams.set('qe', hide(q));
+    changed = true;
+  }
+  const entity = /^\/entities\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+  if (entity && !entity[2].startsWith('~')) {
+    try {
+      url.pathname = `/entities/${entity[1]}/${encodeURIComponent(hide(decodeURIComponent(entity[2])))}`;
+      changed = true;
+    } catch {
+      // A malformed escape: the page says it does not exist
+    }
+  }
+  if (changed) router.navigate(url.pathname + url.search, { replace: true });
 }
 
 /** A path segment for a person or machine, hidden in privacy mode. */
@@ -82,6 +110,11 @@ export function findingText(text: string | null | undefined, finding: Named): st
 export function maskQuery(query: string | null | undefined): string {
   if (!query) return query ?? '';
   return prefs.privacy ? maskQueryValues(query) : query;
+}
+
+/** A saved search's name, without the names its query holds, in privacy mode. */
+export function savedName(name: string, query: string | null | undefined): string {
+  return prefs.privacy && query ? maskNames(name, namesInQuery(query)) : name;
 }
 
 /** An event's document with every identity in it masked, for showing raw. */

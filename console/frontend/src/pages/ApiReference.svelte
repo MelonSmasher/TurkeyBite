@@ -3,6 +3,7 @@
   import CopyButton from '../lib/components/CopyButton.svelte';
   import PageHeader from '../lib/components/PageHeader.svelte';
   import { Query } from '../lib/query.svelte';
+  import { session } from '../lib/stores/session.svelte';
 
   interface Operation { method: string; path: string; summary: string; description: string; tag: string; params: string[] }
 
@@ -44,7 +45,7 @@
 
 <PageHeader title="API reference" subtitle="Everything the app does goes through this API, so anything you can do here a script can do too. Authenticate with an API key as a bearer token.">
   {#snippet actions()}
-    <a class="btn" href="/api/docs" target="_blank" rel="noopener"><ExternalLink size={15} /> Interactive docs</a>
+    {#if session.me?.api_docs}<a class="btn" href="/api/docs" target="_blank" rel="noopener"><ExternalLink size={15} /> Interactive docs</a>{/if}
     <a class="btn" href="/api/openapi.json" target="_blank" rel="noopener"><BookOpen size={15} /> OpenAPI</a>
   {/snippet}
 </PageHeader>

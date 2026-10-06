@@ -267,7 +267,7 @@ def verify(secret: str, body: bytes, header: str) -> bool:
     </div>
     <div class="route">
       <label class="checkbox"><input type="checkbox" bind:checked={form.all_findings} /> Every finding at or above</label>
-      <select class="select select-sm sev-sel" bind:value={form.min_severity} disabled={!form.all_findings}>
+      <select class="select select-sm sev-sel" bind:value={form.min_severity} disabled={!form.all_findings} aria-label="Lowest severity sent">
         {#each [...SEVERITIES].reverse() as s (s)}<option value={s}>{s}</option>{/each}
       </select>
       <span class="muted small">and the findings of any rule that names it.</span>

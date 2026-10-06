@@ -58,6 +58,10 @@ async def prune(db: AsyncSession, now: datetime | None = None) -> dict:
     return removed
 
 
+class MaintenanceProblem(Exception):
+    """Part of a maintenance run failed, after the rest of it ran."""
+
+
 # A recheck that would revoke more than this share of the accounts it looked
 # at, and more than a handful, is more likely a directory or settings mistake
 # than a mass departure: it revokes nobody and says so
@@ -72,7 +76,7 @@ async def recheck_directory(now: datetime | None = None) -> dict:
     Every look-up is made first, with no transaction open; only if all of them
     got a clear answer is anything changed, one account at a time."""
     now = now or datetime.now(timezone.utc)
-    counts = {'checked': 0, 'revoked': 0, 'changed': 0, 'restored': 0, 'held_back': 0}
+    counts = {'checked': 0, 'revoked': 0, 'changed': 0, 'restored': 0, 'held_back': 0, 'unclear': 0}
     async with database.sessionmaker()() as db:
         cfg = ldap.config_with_defaults(await settings_store.get(db, 'ldap'))
         if not cfg.get('enabled'):
@@ -81,7 +85,7 @@ async def recheck_directory(now: datetime | None = None) -> dict:
         active_session = select(UserSession.user_id).where(UserSession.expires_at > now)
         usable_key = select(ApiKey.user_id).where(
             ApiKey.revoked_at.is_(None), or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now))
-        accounts = [(u.id, u.username, u.ldap_dn, u.disabled) for u in (await db.execute(select(User).where(
+        accounts = [(u.id, u.username, u.ldap_dn, u.disabled, u.ldap_guid) for u in (await db.execute(select(User).where(
             User.source == 'ldap',
             or_(User.disabled_reason == 'directory',
                 and_(User.disabled.is_(False),
@@ -89,8 +93,21 @@ async def recheck_directory(now: datetime | None = None) -> dict:
     verdicts = []
     enabled = 0
     losing = 0
-    for user_id, username, dn, disabled in accounts:
-        identity = await asyncio.to_thread(ldap.recheck, cfg, secret, dn, username)
+    for user_id, username, dn, disabled, guid in accounts:
+        try:
+            identity = await ldap.call(ldap.recheck, cfg, secret, dn, username, guarded=False)
+        except ldap.LdapUnreachable:
+            # Nothing can be read about anyone: change nothing this run
+            raise
+        except ldap.LdapUnavailable as e:
+            # No clear answer about this one account: it stays as it is, and
+            # the others are still looked at
+            log.warning('directory recheck: no clear answer about %s: %s', username, e)
+            counts['unclear'] += 1
+            continue
+        if identity is not None and guid and identity.guid and identity.guid != guid:
+            # The DN is someone else's now: the person this account was for is gone
+            identity = None
         verdicts.append((user_id, identity))
         # The cap weighs what this run would take away from accounts that have
         # access now; those the directory already took away are neither news
@@ -138,6 +155,7 @@ async def recheck_directory(now: datetime | None = None) -> dict:
                     user.role = identity.role
                     counts['changed'] += 1
                 user.ldap_dn = identity.dn
+                user.ldap_guid = user.ldap_guid or identity.guid
             await db.commit()
     return counts
 
@@ -152,12 +170,20 @@ class Maintenance:
 
     async def run_once(self) -> None:
         settings = get_settings()
+        problem = None
         async with database.sessionmaker()() as db:
             if not await acquire_lease(db, 'maintenance', max(60, self.every_seconds - 60)):
                 return
-            removed = await prune(db)
-            if any(removed.values()):
-                log.info('maintenance removed %s', removed)
+            try:
+                removed = await prune(db)
+                if any(removed.values()):
+                    log.info('maintenance removed %s', removed)
+            except Exception as e:
+                # Pruning failing must not stop the directory recheck, which
+                # is what takes access away from people who lost it
+                await db.rollback()
+                log.exception('pruning old records failed')
+                problem = f'pruning failed: {type(e).__name__}: {e}'
         now = datetime.now(timezone.utc)
         due = timedelta(minutes=settings.ldap_recheck_minutes)
         if self._last_directory is None or now - self._last_directory >= due:
@@ -169,6 +195,8 @@ class Maintenance:
             except ldap.LdapError as e:
                 log.warning('directory recheck got no clear answer, so changed nothing: %s', e)
         self.last_run = datetime.now(timezone.utc)
+        if problem:
+            raise MaintenanceProblem(problem)
 
     async def loop(self) -> None:
         while True:

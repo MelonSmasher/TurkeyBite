@@ -77,9 +77,11 @@ that grants a role, or no longer matched by the sign-in filter (a disabled
 Active Directory account, if the filter says so) loses access within
 `TBCONSOLE_LDAP_RECHECK_MINUTES` rather than when their session ends, and a
 changed group changes their role. A directory that does not answer clearly
-(busy, unreachable, refusing the search) changes nothing, and a recheck that
-would revoke more than a fifth of the accounts it looked at revokes none and
-logs why: that is far likelier a settings mistake than a mass departure.
+(busy, unreachable, refusing the search) changes nothing, an account it gives
+no clear answer about is left as it is, and a recheck that would revoke more
+than a fifth of the enabled accounts it looked at, and more than three,
+revokes none and logs why: that is far likelier a settings mistake than a
+mass departure.
 Accounts the directory took away are given back when it grants them again;
 an administrator's disabling is not.
 
@@ -120,15 +122,19 @@ A username that belongs to a local account always signs in locally, whether the
 directory is up or not; that is what local accounts are for. Five wrong
 passwords or codes lock a local account for fifteen minutes
 (`TBCONSOLE_LOGIN_MAX_FAILURES`, `TBCONSOLE_LOGIN_LOCKOUT_MINUTES`), ten failures
-for one username from one address hold that pair back for five minutes, and
-admins can require a second factor for local admins. Someone who lost their
+for one username from one address hold that pair back for five minutes, an
+address with a hundred failures in five minutes is held back for the names it
+has failed with but never for one it has not tried, and admins can require a
+second factor for local admins. Someone who lost their
 authenticator gets back in with
 `python -m tbconsole create-user NAME --password-stdin --reset-mfa`, which also
 ends their sessions; their role stays as it was unless `--role` is given, a
 disabled account stays disabled unless `--enable` is, and `--revoke-keys`
-revokes every API key it holds, for a reset after a compromise. Wrong
-passwords given to confirm a change on the account page count against the same
-limits as sign-ins, and a sign-in from another site's page is refused.
+revokes every API key it holds, for a reset after a compromise; an admin
+setting a new password on Users can revoke the keys too. Wrong passwords given
+to confirm a change on the account page count against the same limits as
+sign-ins, and lock the account the same way, and a sign-in from another site's
+page is refused.
 
 ## Rules
 
@@ -202,8 +208,10 @@ or script the console does not offer.
 
 ## The API
 
-Everything the app does goes through `/api/v1`, documented at `/api/docs` and
-`/api/openapi.json`. Integrations authenticate with an API key:
+Everything the app does goes through `/api/v1`, described at
+`/api/openapi.json` and on the app's API reference page. Set
+`TBCONSOLE_API_DOCS=true` for the interactive docs at `/api/docs`, which load
+Swagger UI from a CDN. Integrations authenticate with an API key:
 
 ```sh
 curl https://console.example.org/api/v1/findings?status=open -H "Authorization: Bearer tbc_…"
@@ -220,8 +228,10 @@ HMAC-SHA256 of the timestamp, a full stop and the exact body, keyed with the
 webhook's secret. The body's `id` stays the same across retries, and is
 covered by the signature, so a receiver can ignore a repeat; the
 `X-TurkeyBite-Delivery` header says the same but is not signed. Deliveries
-ignore proxy settings in the environment; set `TBCONSOLE_WEBHOOK_PROXY` if the
-console must reach receivers through a proxy.
+ignore proxy and certificate settings in the environment: set
+`TBCONSOLE_WEBHOOK_PROXY` (an `http://` or `https://` URL) if the console must
+reach receivers through a proxy, and `TBCONSOLE_WEBHOOK_CA_CERTS` to a PEM file
+for a receiver whose certificate an internal CA signed.
 
 ```python
 import hashlib, hmac, time
@@ -299,8 +309,10 @@ screenshots in `docs/screenshots/` from the running app.
   older is noted on the rule's run, not evaluated. They read events up to a
   minute behind now (`TBCONSOLE_RULE_INGEST_DELAY_SEC`), for those still on
   their way into OpenSearch.
-- A first-seen rule looks at up to 5,000 values in a window and raises at most
-  1,000 findings in one run; a ratio rule ranks the 2,000 busiest groups per
-  field by their share. Each says so on its run when it reaches the limit.
+- A first-seen or silence rule looks at up to 5,000 values in a run, and the
+  next run carries on where it stopped; a first-seen rule raises at most 1,000
+  findings in one run. Threshold and distinct-count rules look at the 200
+  busiest groups per field, and a ratio rule ranks the 2,000 busiest by their
+  share. Each says so on its run when it reaches the limit.
 - The live tail polls OpenSearch every two seconds rather than streaming from it.
 - Single sign-on is LDAP only for now; SAML and OIDC would sit beside it.

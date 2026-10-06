@@ -129,3 +129,12 @@ def test_quote_round_trips():
     for value in ('plain', 'two words', 'say "hi"', 'AND', 'back\\slash'):
         node = tbql.parse(f'user:{tbql.quote(value)}')
         assert node.tok.value == value
+
+
+def test_times_opensearch_would_choke_on_are_refused():
+    for query in ('@timestamp:>now-999999999999d', '@timestamp:>now-60y', '@timestamp:[now-7d TO 3000-01-01]',
+                  '@timestamp:>nowish'):
+        with pytest.raises(TbqlError):
+            compile_(query)
+    for query in ('@timestamp:>now-1d+2h', '@timestamp:<now/d', '@timestamp:2026-10-05', '@timestamp:[2026-01 TO *]'):
+        compile_(query)

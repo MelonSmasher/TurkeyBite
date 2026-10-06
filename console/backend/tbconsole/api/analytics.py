@@ -58,11 +58,15 @@ def _changes(current: dict[str, int], previous: dict[str, int], facet: str) -> l
 
 
 @router.get('/overview')
-async def overview(start: str | None = None, end: str | None = None,
+async def overview(request: Request, start: str | None = None, end: str | None = None,
                    principal: Principal = Depends(require(rbac.EVENTS_READ)),
                    search: SearchClient = Depends(search_client),
                    db: AsyncSession = Depends(get_session)) -> dict:
     tr = time_range(start, end)
+    # It names the riskiest people, so it is a look at them
+    if audit.look(db, 'analytics.overview', principal=principal, request=request, key=f'{start}|{end}',
+                  window=audit.LIST_LOOK_WINDOW, details=tr.public()):
+        await db.commit()
     prev = tr.previous()
     _, interval = auto_interval(tr, 72)
     # The weekly rhythm needs a week: a shorter range shows the seven days

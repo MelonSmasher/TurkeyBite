@@ -26,8 +26,10 @@ import difflib
 import ipaddress
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from . import fields as F
+from . import timerange
 
 MAX_TERMS = 200
 MAX_DEPTH = 24
@@ -387,6 +389,38 @@ def _unknown_field(name: str) -> str:
     return f'There is no field called {name!r}.{hint}'
 
 
+# OpenSearch's date math: now, then any steps, then rounding
+_DATE_MATH = re.compile(r'now(?:[+-]\d{1,9}[smhdwMy])*(?:/[smhdwMy])?')
+_DATE_STEP = re.compile(r'([+-])(\d+)([smhdwMy])')
+
+
+def _check_date(value: str, tok: Tok) -> None:
+    """Refuses a time OpenSearch would choke on, rather than let it fail
+    there: a relative time reaching back past 1970, or a year far out. One
+    Python cannot read is left for OpenSearch, which takes more forms."""
+    if value == '*':
+        return
+    if value.startswith('now'):
+        if not _DATE_MATH.fullmatch(value):
+            raise TbqlError(f'{value!r} is not a time such as now-24h.', tok.pos, tok.length)
+        moment = datetime.now(timezone.utc)
+        for sign, amount, unit in _DATE_STEP.findall(value):
+            try:
+                step = timedelta(seconds=int(amount) * timerange.UNIT_SECONDS[unit])
+                moment = moment - step if sign == '-' else moment + step
+            except OverflowError:
+                moment = datetime.min.replace(tzinfo=timezone.utc)
+                break
+    else:
+        try:
+            moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            return
+    if not timerange.EARLIEST <= moment.year <= timerange.LATEST:
+        raise TbqlError(f'{value!r} is outside the years {timerange.EARLIEST} to {timerange.LATEST}.',
+                        tok.pos, tok.length)
+
+
 def _range(field_name: str, op: str, value: str) -> dict:
     key = {'>': 'gt', '>=': 'gte', '<': 'lt', '<=': 'lte'}[op]
     return {'range': {field_name: {key: value}}}
@@ -417,6 +451,10 @@ def _term(tok: Tok) -> dict:
             for bound in (low, high):
                 if bound is not None and not _ip_or_net(bound):
                     raise TbqlError(f'{bound!r} is not an address.', tok.pos, tok.length)
+        if f.type == 'date':
+            for bound in (low, high):
+                if bound is not None:
+                    _check_date(bound, tok)
         return {'range': {f.name: bounds}}
 
     if tok.op != ':':
@@ -425,6 +463,8 @@ def _term(tok: Tok) -> dict:
                             tok.length)
         if f.type == 'ip' and not _ip_or_net(value):
             raise TbqlError(f'{value!r} is not an address.', tok.pos, tok.length)
+        if f.type == 'date':
+            _check_date(value, tok)
         return _range(f.name, tok.op, value)
 
     if f.type == 'boolean':
@@ -444,6 +484,7 @@ def _term(tok: Tok) -> dict:
     if f.type == 'date':
         if value == '*':
             return {'exists': {'field': f.name}}
+        _check_date(value, tok)
         # An exact instant almost never matches, so a date means that whole day
         return {'range': {f.name: {'gte': value, 'lte': value + '||/d' if 'now' not in value
                                    else value}}}

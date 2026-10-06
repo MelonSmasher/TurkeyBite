@@ -24,6 +24,10 @@ os.environ['TBCONSOLE_RUN_WORKERS'] = 'false'
 os.environ['TBCONSOLE_STATIC_DIR'] = ''
 os.environ['TBCONSOLE_PUBLIC_URL'] = 'http://testserver'
 os.environ['TBCONSOLE_RULE_INGEST_DELAY_SEC'] = '0'
+# Whatever the shell running the tests has set for a development console
+os.environ['TBCONSOLE_WEBHOOK_ALLOW_PRIVATE'] = 'false'
+for _name in ('TBCONSOLE_WEBHOOK_PROXY', 'TBCONSOLE_WEBHOOK_CA_CERTS'):
+    os.environ.pop(_name, None)
 
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402

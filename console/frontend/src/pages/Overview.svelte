@@ -311,7 +311,7 @@
   .pad { padding: 20px 0; }
   .score { display: inline-grid; place-items: center; min-width: 30px; height: 22px; padding: 0 6px; border-radius: 6px;
     font-weight: 700; font-size: 0.8rem; background: var(--surface-3); color: var(--text-2); }
-  .score.warm { background: color-mix(in srgb, var(--sev-high) 18%, transparent); color: #b5531c; }
+  .score.warm { background: color-mix(in srgb, var(--sev-high) 18%, transparent); color: #a3481a; }
   .score.hot { background: color-mix(in srgb, var(--sev-critical) 15%, transparent); color: #a8282c; }
   :global(:root[data-theme='dark']) .score.warm { color: var(--sev-high); }
   :global(:root[data-theme='dark']) .score.hot { color: #f97066; }

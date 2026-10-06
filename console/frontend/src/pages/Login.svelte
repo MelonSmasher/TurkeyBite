@@ -35,7 +35,8 @@
   }
 
   async function finish() {
-    await session.load();
+    const me = await session.load();
+    if (me) session.announce(me.user.id);
     location.assign(next());
   }
 

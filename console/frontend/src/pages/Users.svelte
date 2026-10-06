@@ -20,6 +20,7 @@
   let form = $state({ username: '', display_name: '', email: '', role: 'analyst', password: '' });
   let resetFor = $state<User | null>(null);
   let newPassword = $state('');
+  let revokeKeys = $state(true);
 
   const rows = $derived((users.data ?? []).filter((u) => filter === 'all' || u.source === filter));
   const counts = $derived({
@@ -49,7 +50,9 @@
     if (!u) return;
     resetting = true;
     // The dialog stays until it worked, so a refused password can be changed
-    const ok = await call(() => api.post(`/users/${encodeURIComponent(u.id)}/password`, { password: newPassword }), 'Password set');
+    const revoke = revokeKeys && (u.api_keys ?? 0) > 0;
+    const ok = await call(() => api.post(`/users/${encodeURIComponent(u.id)}/password`, { password: newPassword, revoke_keys: revoke }),
+      revoke ? 'Password set and keys revoked' : 'Password set');
     resetting = false;
     if (ok) resetFor = null;
   }
@@ -119,7 +122,7 @@
               <Menu width={220}>
                 {#snippet trigger({ toggle })}<button class="btn btn-ghost btn-icon btn-sm" onclick={toggle} aria-label="Account actions"><EllipsisVertical size={16} /></button>{/snippet}
                 {#snippet children({ close })}
-                  {#if u.source === 'local'}<button class="menu-item" onclick={() => { close(); resetFor = u; newPassword = ''; }}><KeyRound size={14} /> Set a new password</button>{/if}
+                  {#if u.source === 'local'}<button class="menu-item" onclick={() => { close(); resetFor = u; newPassword = ''; revokeKeys = true; }}><KeyRound size={14} /> Set a new password</button>{/if}
                   {#if u.locked}<button class="menu-item" onclick={() => { close(); call(() => api.post(`/users/${u.id}/unlock`), 'Unlocked'); }}><LockOpen size={14} /> Unlock</button>{/if}
                   {#if u.mfa_enabled}<button class="menu-item" onclick={() => { close(); call(() => api.post(`/users/${u.id}/mfa/reset`), 'Second factor removed'); }}><ShieldOff size={14} /> Remove second factor</button>{/if}
                   {#if u.disabled}<button class="menu-item" onclick={() => { close(); call(() => api.patch(`/users/${u.id}`, { disabled: false }), 'Enabled'); }}><UserCheck size={14} /> Enable</button>
@@ -158,6 +161,10 @@
 
 <Modal open={!!resetFor} title="New password for {resetFor?.username}" subtitle="Signs them out everywhere." onclose={() => (resetFor = null)}>
   <input class="input" type="password" bind:value={newPassword} autocomplete="new-password" aria-label="New password" />
+  {#if (resetFor?.api_keys ?? 0) > 0}
+    <label class="checkbox revoke"><input type="checkbox" bind:checked={revokeKeys} />
+      Revoke their {resetFor?.api_keys} API {resetFor?.api_keys === 1 ? 'key' : 'keys'} too, for an account someone else got into</label>
+  {/if}
   {#snippet footer()}
     <button class="btn" onclick={() => (resetFor = null)}>Cancel</button>
     <button class="btn btn-primary" disabled={newPassword.length < 12 || resetting} onclick={resetPassword}>{resetting ? 'Setting…' : 'Set password'}</button>
@@ -165,6 +172,7 @@
 </Modal>
 
 <style>
+  .revoke { margin-top: 12px; }
   .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
   @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } }
   .stat { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }

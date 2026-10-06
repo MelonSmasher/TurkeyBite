@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analysis import engine
 from ..models import ApiKey, Dashboard, Finding, Rule, SavedSearch, User, Webhook, WebhookDelivery
+from ..search import fields as F
 from ..search.timerange import RangeError, TimeRange, iso, parse_moment, parse_range
 
 SEVERITY_WEIGHT = {'critical': 40, 'high': 20, 'medium': 8, 'low': 3, 'info': 1}
@@ -145,12 +146,18 @@ def webhook_out(w: Webhook, reveal: bool = False) -> dict:
 
 
 def _delivery_names(d: WebhookDelivery) -> list[str]:
+    """The people and machines a delivery names: who its finding is about,
+    when that is a person or machine and not, say, a domain, and a new value
+    that is one. Not what redaction already replaced."""
     finding = (d.payload or {}).get('finding') or {}
-    names = [str(finding['entity'])] if finding.get('entity') else []
+    names = []
+    field = F.BY_NAME.get(finding.get('entity_field') or '')
+    if finding.get('entity') and field is not None and field.identity:
+        names.append(str(finding['entity']))
     new_value = finding.get('new_value') or {}
     if new_value.get('identity') and new_value.get('value') is not None:
         names.append(str(new_value['value']))
-    return names
+    return [n for n in names if n != '[redacted]']
 
 
 def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> dict:
@@ -164,6 +171,7 @@ def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> 
         'duration_ms': d.duration_ms, 'created_at': ts(d.created_at),
         'delivered_at': ts(d.delivered_at),
         'entity': ((d.payload or {}).get('finding') or {}).get('entity') if about else None,
+        'entity_field': ((d.payload or {}).get('finding') or {}).get('entity_field') if about else None,
         # Every person or machine the delivery names, for the app to mask
         'names': _delivery_names(d) if about else [],
         'title': (((d.payload or {}).get('finding') or {}).get('title') if about else None)

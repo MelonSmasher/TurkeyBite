@@ -16,10 +16,12 @@
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { fields } from '../lib/stores/fields.svelte';
+  import { prefs } from '../lib/stores/prefs.svelte';
   import { session } from '../lib/stores/session.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
   import type { Dashboard, PivotResult, PivotSpec } from '../lib/types';
+  import { hide, reveal } from '../lib/urlsafe';
 
   timeRange.sync();
   fields.load();
@@ -41,8 +43,10 @@
   ];
 
   const params = router.query;
+  // The question's query, from ?q= or, as privacy mode writes it, hidden in ?qe=
+  const askedQuery = params.get('q') ?? reveal(params.get('qe') ?? '');
   let spec = $state<PivotSpec>({
-    query: params.get('q') ?? '',
+    query: askedQuery,
     metric: (params.get('metric') as 'count' | 'unique') ?? 'count',
     metric_field: params.get('mf') ?? 'bite.client_user',
     rows: params.get('rows') ?? 'bite.purpose',
@@ -52,7 +56,7 @@
     over_time: params.get('t') === '1',
   });
   let viz = $state(params.get('viz') ?? 'hbar');
-  let draft = $state(router.query.get('q') ?? '');
+  let draft = $state(askedQuery);
   let addOpen = $state(false);
   let widgetTitle = $state('');
   let targetDashboard = $state('');
@@ -61,11 +65,14 @@
     ...fields.list.filter((f) => f.aggregatable && f.type !== 'date' && f.type !== 'boolean').map((f) => ({ name: f.name, label: f.label }))]);
   const distinctable = $derived(fields.list.filter((f) => f.aggregatable && f.type !== 'date'));
 
-  // The builder lives in the URL, so a question can be sent to someone else
+  // The builder lives in the URL, so a question can be sent to someone else;
+  // in privacy mode its query is hidden there, as Explore's is
   $effect(() => {
     const s = $state.snapshot(spec);
     const v = viz;
-    untrack(() => router.setQuery({ q: s.query || null, metric: s.metric === 'unique' ? 'unique' : null,
+    const hidden = prefs.privacy && !!s.query;
+    untrack(() => router.setQuery({ q: hidden ? null : s.query || null, qe: hidden ? hide(s.query ?? '') : null,
+      metric: s.metric === 'unique' ? 'unique' : null,
       mf: s.metric === 'unique' ? s.metric_field : null, rows: s.over_time ? null : s.rows, n: String(s.rows_size),
       split: s.split || null, sn: String(s.split_size), t: s.over_time ? '1' : null, viz: v }));
   });

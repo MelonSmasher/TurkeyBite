@@ -13,6 +13,7 @@
   import { router } from '../lib/router.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
   import { errorText } from '../lib/stores/toasts.svelte';
+  import { reveal } from '../lib/urlsafe';
 
   interface EntityRow {
     field: string; key: string; label: string; events: number; notable: number; threats: number; domains: number;
@@ -21,8 +22,9 @@
 
   timeRange.sync();
   let sort = $state<'notable' | 'events' | 'score'>((router.query.get('sort') as 'notable') ?? 'notable');
-  let query = $state(router.query.get('q') ?? '');
-  let draft = $state(router.query.get('q') ?? '');
+  const asked = router.query.get('q') ?? reveal(router.query.get('qe') ?? '');
+  let query = $state(asked);
+  let draft = $state(asked);
   let kind = $state<'all' | 'user' | 'host' | 'ip'>('all');
 
   const list = new Query((signal) => api.get<{ items: EntityRow[]; total_events: number }>(

@@ -56,12 +56,13 @@ async def list_entities(request: Request, start: str | None = None, end: str | N
                         db: AsyncSession = Depends(get_session)) -> dict:
     """The people and machines in the events, each with what they did and how risky."""
     tr = time_range(start, end)
-    if query.strip():
-        # Narrowed to some people's events, the list is a look at them
-        if audit.look(db, 'entities.list', principal=principal, request=request,
-                      key=f'{query}|{start}|{end}',
-                      details={'query': query[:2000], **tr.public()}):
-            await db.commit()
+    # The list names people, narrowed or not: a look at them. Once in a
+    # while for the same list, which the page asks for again as it is used
+    narrowed = bool(query.strip())
+    if audit.look(db, 'entities.list', principal=principal, request=request,
+                  key=f'{query}|{start}|{end}|{sort}', window=60 if narrowed else audit.LIST_LOOK_WINDOW,
+                  details={'query': query[:2000], 'sort': sort, **tr.public()}):
+        await db.commit()
     size = max(1, min(size, 200))
     groups = list(F.ENTITY_FIELDS)
     sub = {
