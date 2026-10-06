@@ -1,19 +1,17 @@
 name: Tests
 
 on:
-  # Branches are tested through their pull request, so a push to one is not
-  # tested twice; master is tested on every push
-  push:
-    branches: [master]
+  # Pull requests run tests directly; every master push runs them through the
+  # image workflow, which waits for both suites before publishing.
   pull_request:
-
+  workflow_call:
 permissions:
   contents: read
 
-# A newer push to a pull request makes the run for the older one moot. Runs
-# for master are grouped by commit, so every commit there gets its result.
+# Cancel superseded runs only for the same ref. A master push and a release
+# tag can point to the same SHA; neither may cancel the other's required tests.
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.sha }}
+  group: tests-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

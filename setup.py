@@ -413,9 +413,7 @@ class TurkeyBiteSetup:
         if "opensearch" in self.components:
             settings += [("OPENSEARCH_PORT", "9200", False),
                          ("OPENSEARCH_PERFORMANCE_PORT", "9600", False),
-                         ("OPENSEARCH_DASHBOARD_PORT", "5601", False),
                          ("OPENSEARCH_INITIAL_ADMIN_PASSWORD", self.opensearch_admin_password, True),
-                         ("OPENSEARCH_HOSTS", f"'[\"https://{self.opensearch_host}:9200\"]'", True),
                          ("bootstrap.memory_lock", "true", False),
                          ("node.name", "${OPENSEARCH_HOST}", False),
                          ("discovery.type", "single-node", False),
@@ -617,38 +615,21 @@ class TurkeyBiteSetup:
                                         "${OPENSEARCH_PERFORMANCE_PORT:-9600}:9600"
                                     ]
                             
-                            # Special handling for distributed deployments
-                            if self.is_distributed and 'depends_on' in service_config:
-                                # In distributed deployments, we need to remove dependencies on services
-                                # that are running on other nodes
-                                
-                                # Create a copy of the depends_on section to modify
-                                depends_on = service_config.get('depends_on', {}).copy()
-                                
-                                # List of services that might be on other nodes in distributed setups
-                                external_services = []
-                                
-                                # Valkey might be on a Data Node
-                                if 'valkey' not in self.components and 'valkey' in depends_on:
-                                    external_services.append('valkey')
-                                    
-                                # OpenSearch might be on a Search Node
-                                if 'opensearch' not in self.components and 'opensearch' in depends_on:
-                                    external_services.append('opensearch')
-                                
-                                # Remove external service dependencies
-                                for service in external_services:
-                                    if service in depends_on:
-                                        del depends_on[service]
-                                
-                                # Update the service config with modified dependencies
-                                # Only keep the depends_on section if there are still local dependencies
+                            # Only locally deployed services can appear in depends_on.
+                            # Bind9 is optional, even on a single-node installation.
+                            if 'depends_on' in service_config:
+                                local_services = set(self.components)
+                                if 'bind' in local_services:
+                                    local_services.add('bind9')
+                                depends_on = {
+                                    name: condition
+                                    for name, condition in service_config['depends_on'].items()
+                                    if name in local_services
+                                }
                                 if depends_on:
                                     service_config['depends_on'] = depends_on
                                 else:
-                                    # Remove depends_on completely if it's empty
-                                    if 'depends_on' in service_config:
-                                        del service_config['depends_on']
+                                    del service_config['depends_on']
                             
                             new_compose['services'][service_name] = service_config
                             
@@ -895,8 +876,7 @@ class TurkeyBiteSetup:
                     continue
                 self.opensearch_admin_password = generate_opensearch_password()
                 self.print_success("Generated an OpenSearch admin password.")
-                self.print_info("IMPORTANT: Save this password. It logs in to OpenSearch "
-                                "Dashboards as admin, and other nodes need it:")
+                self.print_info("IMPORTANT: Save this password. Other nodes need it to connect to OpenSearch:")
                 print(self.opensearch_admin_password)
                 return
 
@@ -1022,7 +1002,7 @@ class TurkeyBiteSetup:
         
         node_type = self.prompt("Node Selection", [
             "Application Node (Core + Librarian + Worker + Valkey)",
-            "Search Node (OpenSearch + Dashboards)"
+            "Search Node (OpenSearch)"
         ])
         
         if "Application Node" in node_type:
@@ -1058,7 +1038,7 @@ class TurkeyBiteSetup:
             "Core Node (Core + Librarian)",
             "Worker Node (Worker)",
             "Data Node (Valkey)",
-            "Search Node (OpenSearch + Dashboards)"
+            "Search Node (OpenSearch)"
         ])
         
         if "Core Node" in node_type:

@@ -1,0 +1,102 @@
+name: Publish images
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Do not cancel a release because the same commit also had a master run.
+# The ref separates the two runs; images use only commit-specific/version tags.
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag and master ancestry
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            if ! [[ "$REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo 'Expected a release tag like v1.2.3' >&2
+              exit 1
+            fi
+            # Fetch full history above; tag commits must be on master.
+            git show-ref --verify --quiet refs/remotes/origin/master
+            git merge-base --is-ancestor HEAD refs/remotes/origin/master
+            printf 'version=%s\n' "$REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+  pipeline-tests:
+    uses: ./.github/workflows/tests.yml
+
+  console-tests:
+    uses: ./.github/workflows/console.yml
+
+  publish:
+    if: github.repository == 'MelonSmasher/TurkeyBite' && (github.ref == 'refs/heads/master' || github.ref_type == 'tag')
+    needs: [release, pipeline-tests, console-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: core
+            context: .
+            dockerfile: docker/core/Dockerfile
+          - role: worker
+            context: .
+            dockerfile: docker/worker/Dockerfile
+          - role: librarian
+            context: .
+            dockerfile: docker/librarian/Dockerfile
+          - role: console
+            context: console
+            dockerfile: console/Dockerfile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Authenticate to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish ${{ matrix.role }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ github.ref_type == 'branch' && format('ghcr.io/melonsmasher/turkeybite-{0}:sha-{1}', matrix.role, github.sha) || '' }}
+            ${{ needs.release.outputs.version && format('ghcr.io/melonsmasher/turkeybite-{0}:{1}', matrix.role, needs.release.outputs.version) || '' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.role }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.role }}

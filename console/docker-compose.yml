@@ -34,7 +34,7 @@ services:
 
   console:
     build: .
-    image: turkeybite-console
+    image: ${TURKEYBITE_CONSOLE_IMAGE:-turkeybite-console:local}
     restart: unless-stopped
     env_file: console.env
     environment:
