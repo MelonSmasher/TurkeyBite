@@ -65,6 +65,14 @@ BACKOFF_SLICE = 0.5
 # Valkey not answering, which the consumer waits out instead of exiting
 VALKEY_ERRORS = (ValkeyConnectionError, ValkeyTimeoutError)
 
+# How often a batch being handled renews the consumer's name, well inside
+# ListQueue.OWNER_TTL, so a slow batch cannot outlast the reservation
+RENEW_SECONDS = 20.0
+
+
+class NameLost(Exception):
+    """Another process has this consumer's name, so its processing list."""
+
 
 class Consumer(object):
 
@@ -113,7 +121,11 @@ class Consumer(object):
         batch could not be indexed and should be requeued.
         """
         kept = 0
+        renewed = time.monotonic()
         for raw in items:
+            if time.monotonic() - renewed >= RENEW_SECONDS:
+                self.hold_name()
+                renewed = time.monotonic()
             try:
                 data = json.loads(raw.decode('utf-8') if isinstance(raw, bytes) else raw)
             except (UnicodeDecodeError, ValueError):
@@ -185,8 +197,18 @@ class Consumer(object):
             served += step
         return due
 
+    def hold_name(self):
+        """Renews this consumer's name, or raises NameLost if another has it."""
+        if not self.queue.renew():
+            raise NameLost(self.name)
+
     def settle(self, items, acked):
-        """Acknowledges a handled batch, or requeues it and rests."""
+        """Acknowledges a handled batch, or requeues it and rests.
+
+        Only while the name is still this process's: otherwise the list is
+        another's, whose items an acknowledgement or a requeue would take.
+        """
+        self.hold_name()
         if acked is None:
             self.queue.requeue(items)
             self.stats['requeued'] += len(items)
@@ -220,12 +242,7 @@ class Consumer(object):
             try:
                 # Before the processing list is touched, recovery included:
                 # another process that has this consumer's name has the list
-                if not self.queue.renew():
-                    print(f'[{self.name}] stopping: another consumer has taken the name '
-                          f'{self.name}', file=sys.stderr)
-                    self.name_lost = True
-                    self.running = False
-                    break
+                self.hold_name()
                 if recovering:
                     self.settle_stranded(recovering)
                     recovering = None
@@ -238,6 +255,12 @@ class Consumer(object):
                     print('[{0}] queue depth {1}, in flight {2}, {3}'.format(
                         self.name, self.queue.depth(), self.queue.in_flight(),
                         ', '.join(f'{k}={v}' for k, v in sorted(self.stats.items()))))
+            except NameLost:
+                print(f'[{self.name}] stopping: another consumer has taken the name '
+                      f'{self.name}', file=sys.stderr)
+                self.name_lost = True
+                self.running = False
+                break
             except VALKEY_ERRORS as e:
                 print(f'[{self.name}] Valkey did not answer: {e}', file=sys.stderr)
                 # A claim, an acknowledgement or a requeue may have been cut
@@ -249,10 +272,15 @@ class Consumer(object):
                     break
                 self.rest()
 
-        # A clean stop must not leave a batch buffered
-        try:
-            self.processor.flush_bulk(force=True)
-        except Exception as e:
-            print(f'[{self.name}] final flush failed: {e}', file=sys.stderr)
+        if self.name_lost:
+            # What is buffered belongs to items the new owner now has, and
+            # will index itself
+            self.processor.discard_bulk()
+        else:
+            # A clean stop must not leave a batch buffered
+            try:
+                self.processor.flush_bulk(force=True)
+            except Exception as e:
+                print(f'[{self.name}] final flush failed: {e}', file=sys.stderr)
         print(f'[{self.name}] stopped. ' + ', '.join(
             f'{k}={v}' for k, v in sorted(self.stats.items())))

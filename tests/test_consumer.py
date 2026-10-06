@@ -578,6 +578,30 @@ class ConsumerTest(unittest.TestCase):
         self.assertEqual(self.indexed(), [])
         self.assertEqual(len(self.in_flight()), 1)
 
+    def test_a_slow_batch_renews_the_name_and_stops_untouched_if_it_was_taken(self):
+        # A batch that outlasts the reservation: renewed as it goes, and if
+        # another took the name meanwhile, neither acknowledged nor requeued,
+        # and what it buffered is not sent, since the new owner has the items
+        from libtb import consumer as C
+        self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
+        self.queue.reserve()
+        renewals = []
+        real = self.queue.renew
+
+        def renew():
+            renewals.append(1)
+            if len(renewals) == 3:
+                self.redis.delete(self.queue.owner_key)
+                ListQueue(self.redis, KEY, 'worker1-01').reserve()
+            return real()
+        with mock.patch.object(C, 'RENEW_SECONDS', 0), mock.patch.object(self.queue, 'renew', renew):
+            consumer = self.consumer()
+            err = self.drain(consumer)
+        self.assertTrue(consumer.name_lost)
+        self.assertIn('another consumer has taken the name', err)
+        self.assertEqual(self.indexed(), [])
+        self.assertEqual(len(self.in_flight()), 3)
+
     def test_a_requeue_valkey_did_not_take_is_handled_before_the_next_claim(self):
         # OpenSearch refuses a and b, and Valkey goes away as they are put
         # back, so they are still in flight when it returns. They are handled
