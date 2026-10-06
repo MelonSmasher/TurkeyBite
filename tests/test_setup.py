@@ -256,6 +256,51 @@ class PasswordInStepTest(Rerun):
         self.assertEqual(self.setup().existing_password(), OLD)
 
 
+class ComposeServicesTest(Rerun):
+    """Generated roles keep the data store but never bring back its old UI."""
+
+    def test_development_keeps_search_and_native_image_selection(self):
+        setup = self.setup()
+        setup.setup_docker_compose()
+        services = yaml.safe_load(self.read('docker-compose.yml'))['services']
+        self.assertIn('opensearch', services)
+        self.assertNotIn('opensearch-dashboards', services)
+        self.assertEqual(set(services), {'opensearch', 'valkey', 'turkeybite-core',
+                                         'turkeybite-worker', 'turkeybite-librarian'})
+        for role in ('core', 'worker', 'librarian'):
+            service = services[f'turkeybite-{role}']
+            self.assertIn(f'TURKEYBITE_{role.upper()}_IMAGE', service['image'])
+            self.assertEqual(service['build']['dockerfile'], f'docker/{role}/Dockerfile')
+        self.assertEqual(set(services['turkeybite-worker']['depends_on']),
+                         {'valkey', 'opensearch'})
+
+    def test_distributed_application_has_no_external_dependencies(self):
+        setup = self.setup()
+        setup.node_type = 'app'
+        setup.is_distributed = True
+        setup.components = ['core', 'librarian', 'worker', 'valkey']
+        setup.setup_docker_compose()
+        services = yaml.safe_load(self.read('docker-compose.yml'))['services']
+        self.assertNotIn('opensearch', services)
+        self.assertEqual(set(services['turkeybite-worker']['depends_on']), {'valkey'})
+        self.assertEqual(set(services['turkeybite-core']['depends_on']), {'valkey'})
+
+    def test_search_node_has_only_opensearch_and_its_volume(self):
+        setup = self.setup()
+        setup.node_type = 'search'
+        setup.is_distributed = True
+        setup.components = ['opensearch']
+        setup.setup_docker_compose()
+        compose = yaml.safe_load(self.read('docker-compose.yml'))
+        self.assertEqual(set(compose['services']), {'opensearch'})
+        self.assertEqual(set(compose['volumes']), {'opensearch_data'})
+        self.assertEqual(compose['services']['opensearch']['ports'],
+                         ['${OPENSEARCH_PORT:-9200}:9200',
+                          '${OPENSEARCH_PERFORMANCE_PORT:-9600}:9600'])
+        self.assertNotIn('OPENSEARCH_DASHBOARD_PORT', dict(
+            (key, value) for key, value, _ in setup.env_settings()))
+
+
 class RetentionPromptTest(Rerun):
     """A rerun offers the period already in .env, never the suggestion for a new install."""
 

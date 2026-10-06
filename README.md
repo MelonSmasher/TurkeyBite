@@ -21,14 +21,13 @@ TurkeyBite relies on the following technologies
 *   Bind9
 *   [Packetbeat](https://www.elastic.co/products/beats/packetbeat) and/or [Browserbeat](https://github.com/MelonSmasher/browserbeat)
 *   OpenSearch
-*   OpenSearch Dashboards
 *   Domain and host lists from many sources
 
 In practice the analysis pipeline looks like this:
 
 ![flow-chart](docs/img/flow.png)
 
-When conceptualizing the diagram above replace redis, elasticsearch, and kibana with valkey, opensearch, and opensearch dashboards respectively.
+When conceptualizing the diagram above replace redis, elasticsearch, and kibana with Valkey, OpenSearch, and the [TurkeyBite Console](console/README.md), respectively. OpenSearch still stores events; the console replaces only its Dashboards UI.
 
 ### What DNS servers does this work with
 
@@ -57,7 +56,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 * **The core, and workers on the `consume` pipeline, check `config.yaml` before they start.** They run `python turkeybite check` and exit, with the reason in `docker compose logs`, if anything is wrong: a CA file missing from that container, the default password, or a setting the workers would refuse. Under the `rq` pipeline a worker runs each job with the settings the core packed into it, so the core's check is the one that counts there, and the worker does not check its own copy.
 * **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
 
-`docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build`.
+`docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build --remove-orphans` (the last flag removes the old Dashboards container after the service is removed from the compose file). To deploy published images instead, see [Published images](#published-images).
 
 ### Prerequisites
 
@@ -108,7 +107,6 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    # Key environment variables (automatically configured by setup)
    OPENSEARCH_INITIAL_ADMIN_PASSWORD=******      # Password for OpenSearch admin
    OPENSEARCH_PASSWORD=******                    # The same password, for the librarian
-   OPENSEARCH_HOSTS='["https://opensearch:9200"]'  # OpenSearch connection URL array
    bootstrap.memory_lock=true                     # Enable memory locking for OpenSearch
    node.name=${OPENSEARCH_HOST}                  # Set node name to match host
    discovery.type=single-node                    # Run in single node mode
@@ -116,7 +114,6 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    VALKEY_HOST=valkey                            # Valkey/Redis hostname or IP
    VALKEY_PORT=6379                             # Valkey/Redis port
    OPENSEARCH_PORT=9200                         # OpenSearch API port
-   OPENSEARCH_DASHBOARD_PORT=5601               # OpenSearch Dashboards port
    BIND9_IP=172.172.0.100                       # Static IP for Bind9 in Docker network
    TURKEYBITE_WORKER_PROCS=2                    # Number of worker processes
    TURKEYBITE_HOSTS_INTERVAL_MIN=720            # Host list refresh interval (minutes)
@@ -171,12 +168,37 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
    docker compose ps
    ```
 
-3. **Access OpenSearch Dashboards**
+3. **Access the TurkeyBite Console**
 
-   Navigate to `http://localhost:5601` in your web browser
-   
-   * Username: `admin`
-   * Password: The password you set in `OPENSEARCH_INITIAL_ADMIN_PASSWORD`
+   Deploy it separately as described in [console/README.md](console/README.md). It connects to OpenSearch with a read-only account; OpenSearch Dashboards is no longer deployed. Put TLS in front of the console and use the configured bootstrap account to sign in.
+
+### Published images
+
+Every push to `master` runs the Python and console CI suites before publishing four separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-core`, `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, and `ghcr.io/melonsmasher/turkeybite-console`. Master commits get `sha-<full-master-commit-sha>` tags. Pushing a Git tag of the form `vMAJOR.MINOR.PATCH` for a commit on `master` reruns both suites and publishes that same version tag to all four images. Invalid version tags and tags outside master history fail validation without publishing. No moving `latest`, `vMAJOR`, or `vMAJOR.MINOR` tags are published: pin all roles to one exact release version (or one successful master commit). CI builds for the default runner architecture (linux/amd64); other architectures require a different build.
+
+For a generated application-node compose file, add the appropriate image variables to `.env` (only the roles present on that node):
+
+```dotenv
+TURKEYBITE_CORE_IMAGE=ghcr.io/melonsmasher/turkeybite-core:sha-<full-master-commit-sha>
+TURKEYBITE_WORKER_IMAGE=ghcr.io/melonsmasher/turkeybite-worker:sha-<full-master-commit-sha>
+TURKEYBITE_LIBRARIAN_IMAGE=ghcr.io/melonsmasher/turkeybite-librarian:sha-<full-master-commit-sha>
+```
+
+Then use `docker compose pull turkeybite-core turkeybite-worker turkeybite-librarian` (omit roles absent from that node), followed by `docker compose up -d --no-build`. `--no-build` matters: the generated file retains local `build` entries for source deployments. Without these variables, `docker compose up -d --build` continues to build locally. GHCR packages may require `docker login ghcr.io` with a package-read token on hosts that cannot pull them anonymously. The [console](console/README.md#deploying) has its own compose file and image variable; it runs on its own server with Postgres and reads the existing OpenSearch cluster. OpenSearch, Valkey, Bind9, and Postgres remain upstream images, not TurkeyBite-native images.
+
+To release, first merge the changes to `master` and choose the next version from the existing release tags. Increment MAJOR for an incompatible change, MINOR for a backward-compatible feature, or PATCH for a backward-compatible fix. For example, after deciding that `v1.2.3` is the correct next version:
+
+```bash
+git switch master
+git pull --ff-only origin master
+git tag -a v1.2.3 -m 'TurkeyBite v1.2.3'
+git push origin v1.2.3
+```
+
+Wait for the tag's **Publish images** workflow to succeed before pulling `ghcr.io/melonsmasher/turkeybite-{core,worker,librarian,console}:v1.2.3` (replace the braces with one role per image). To deploy a release instead of a master commit, set each `TURKEYBITE_*_IMAGE` value above to its `:v1.2.3` tag, including `TURKEYBITE_CONSOLE_IMAGE` on the console host. Tag pushes do not create commits; they identify an existing commit. This workflow never creates or pushes Git tags on its own.
+
+On existing installations, regenerate the compose file with `setup.sh` (or remove the `opensearch-dashboards` service manually from your generated file) and run `docker compose up -d --remove-orphans`; Compose otherwise leaves the old Dashboards container running. This does not remove its image or any OpenSearch indices.
+
 
 ### Data Collection
 
@@ -297,7 +319,7 @@ Each day's events go into an index of their own, `tb-index-YYYY-MM-DD`, where th
   A policy edited so that it deletes nothing counts as longer than any period, so replacing it needs confirming too.
 * **Keeping everything.** `0` keeps indices forever. The librarian takes the policy's template off first, so no new index is attached, then takes the policy off every index it manages, under any prefix, looks again a moment later for any index OpenSearch attached just before, and deletes the policy once none is left under it. Deleting the policy alone would not be enough: ISM gives each index it manages a copy of the policy and goes on running that copy after the policy is deleted. If any index cannot be taken off, the policy is kept, since it can still delete that index, and the librarian says so, exits with an error, and tries again at its next start. With the variable unset, the librarian's log also says if any index still holds such a copy.
 * **Getting there.** At every start the librarian also moves any index still on an older version of the policy onto the current one. If OpenSearch refuses a move, the librarian exits with an error and tries again at its next start. Its OpenSearch setup step exits with an error too when a shorter period is waiting to be confirmed or another policy conflicts, so `docker compose logs turkeybite-librarian` shows why.
-* **Your own policies win.** If another ISM policy has a template matching the same indices, `turkeybite-retention` is kept without a template, so it attaches to no new index, and the librarian logs the conflict loudly for you to settle; no template priority is set that could outrank yours. The librarian leaves alone any index another policy manages. It does rewrite `turkeybite-retention` itself whenever that differs from the period, so change the period through the variable rather than in Dashboards.
+* **Your own policies win.** If another ISM policy has a template matching the same indices, `turkeybite-retention` is kept without a template, so it attaches to no new index, and the librarian logs the conflict loudly for you to settle; no template priority is set that could outrank yours. The librarian leaves alone any index another policy manages. It does rewrite `turkeybite-retention` itself whenever that differs from the period, so change the period through the variable rather than directly in OpenSearch.
 
 **Existing indices are kept until you decide.** An upgrade does not delete history. OpenSearch attaches a policy's template only to indices created after it, and the librarian never attaches the policy to indices you already have. At every start it logs how many TurkeyBite indices the policy does not cover, and how many of those are already older than the period. To bring them under it, list them, then attach:
 
@@ -308,11 +330,11 @@ docker compose exec turkeybite-librarian python turkeybite retention --attach-ex
 
 The second command is the one that deletes. Every index it attaches that is older than the period is gone within minutes, and there is no undo, so take a snapshot first if you may want them back. Only indices named `<prefix>-YYYY-MM-DD` that no ISM policy manages are attached, and nothing is attached while a shorter period is waiting to be confirmed.
 
-**Checking it.** In OpenSearch Dashboards, Index Management lists the policy and the indices it manages. From Dev Tools:
+**Checking it.** Query OpenSearch's ISM API with an account allowed to read the policy and index state:
 
-```
-GET _plugins/_ism/policies/turkeybite-retention
-GET _plugins/_ism/explain/tb-index-*
+```bash
+curl --cacert root-ca.pem -u admin 'https://opensearch:9200/_plugins/_ism/policies/turkeybite-retention'
+curl --cacert root-ca.pem -u admin 'https://opensearch:9200/_plugins/_ism/explain/tb-index-*'
 ```
 
 The first shows the period as `min_index_age`, and its `_seq_no` is the policy's version. In the second, each index the policy manages shows `"policy_id": "turkeybite-retention"` and, once ISM has started on it, the version it is on as `policy_seq_no`; each index no policy manages shows `"index.plugins.index_state_management.policy_id": null`. An index just attached takes a few minutes to show its state.
@@ -370,7 +392,7 @@ OpenSearch reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` only when its data volume i
 
 4. In `config.yaml`, set the `password` of each host under `processor.elastic.hosts`.
 
-5. Recreate the containers so they read the new values: `docker compose up -d --build`. OpenSearch Dashboards takes the new password at its next login.
+5. Recreate the containers so they read the new values: `docker compose up -d --build`. If deploying published images, use `docker compose up -d --no-build` after pulling instead.
 
 In a distributed deployment, do step 2 on the search node and steps 3 to 5 on every node.
 
@@ -432,7 +454,7 @@ To turn verification on with the bundled cluster (checked against `opensearchpro
 
 6. Recreate the containers with `docker compose up -d`. A worker that verifies logs no warning, and the librarian logs `Verifying OpenSearch's certificate against /turkey-bite/opensearch-root-ca.pem`.
 
-On a separate search node, workers connect by the node's own name, which the demo certificate does not carry, so a distributed deployment needs its own certificates. OpenSearch Dashboards has its own setting for this and is not covered here. The opensearch container's own healthcheck talks to `localhost` inside the container and is left as it is.
+On a separate search node, workers connect by the node's own name, which the demo certificate does not carry, so a distributed deployment needs its own certificates. The OpenSearch container's own healthcheck talks to `localhost` inside the container and is left as it is.
 
 ## How traffic is categorised
 

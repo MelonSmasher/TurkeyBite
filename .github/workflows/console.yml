@@ -2,19 +2,18 @@ name: Console
 
 # The console in console/ has its own tests: the API against a real Postgres,
 # since it relies on what only Postgres does, and the app's type check, unit
-# tests and build. They run only when something under console/ changes.
+# tests and build. Pull requests run on console changes; publishing invokes
+# this whole suite for every master commit.
 on:
-  push:
-    branches: [master]
-    paths: ['console/**', '.github/workflows/console.yml']
   pull_request:
     paths: ['console/**', '.github/workflows/console.yml']
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: console-${{ github.event.pull_request.number || github.sha }}
+  group: console-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -134,7 +133,7 @@ jobs:
             -e TBCONSOLE_DATABASE_PASSWORD=tbconsole-ci \
             -e TBCONSOLE_OPENSEARCH_URLS=http://127.0.0.1:9 \
             turkeybite-console
-          for i in $(seq 60); do
+          for _ in $(seq 60); do
             if curl -fsS http://127.0.0.1:8710/readyz; then break; fi
             sleep 2
           done

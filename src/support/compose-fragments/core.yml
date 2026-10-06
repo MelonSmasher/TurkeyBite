@@ -13,6 +13,7 @@ services:
     build:
       context: ./
       dockerfile: docker/core/Dockerfile
+    image: ${TURKEYBITE_CORE_IMAGE:-turkeybite-core:local}
     container_name: turkeybite-core
     restart: unless-stopped
     depends_on:

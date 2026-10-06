@@ -13,6 +13,7 @@ services:
     build:
       context: .
       dockerfile: docker/librarian/Dockerfile
+    image: ${TURKEYBITE_LIBRARIAN_IMAGE:-turkeybite-librarian:local}
     container_name: turkeybite-librarian
     restart: unless-stopped
     depends_on:

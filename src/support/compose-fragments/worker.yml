@@ -13,6 +13,7 @@ services:
     build:
       context: .
       dockerfile: docker/worker/Dockerfile
+    image: ${TURKEYBITE_WORKER_IMAGE:-turkeybite-worker:local}
     container_name: turkeybite-worker
     restart: unless-stopped
     depends_on:
