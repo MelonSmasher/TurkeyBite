@@ -298,3 +298,5 @@ dmypy.json
 
 # Test virtualenv
 .venv/
+
+# The TurkeyBite Console keeps its own rules, in console/.gitignore

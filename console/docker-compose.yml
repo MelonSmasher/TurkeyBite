@@ -1,0 +1,62 @@
+# The console and its Postgres, on a server of their own.
+#
+#   cp console.env.example console.env   # and fill it in
+#   docker compose --env-file console.env up -d --build
+#
+# --env-file lets compose read POSTGRES_PASSWORD from console.env for the
+# lines below; env_file then hands the whole file to the console itself.
+#
+# Put TLS in front of port 8710 with your usual reverse proxy; the console sets
+# Secure cookies and HSTS, and expects to be reached over https. A proxy on
+# the host reaches the container through Docker, which hands the connection
+# over from the network's gateway, 172.31.213.1 below: that one address is
+# what console.env.example trusts to say who the person is. If 172.31.213.0/24
+# is in use on your network, choose another subnet here and change the
+# gateway in TBCONSOLE_FORWARDED_ALLOW_IPS to match.
+name: turkeybite-console
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tbconsole
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in console.env}
+      POSTGRES_DB: tbconsole
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tbconsole"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [console]
+
+  console:
+    build: .
+    image: turkeybite-console
+    restart: unless-stopped
+    env_file: console.env
+    environment:
+      TBCONSOLE_DATABASE_URL: postgresql+asyncpg://tbconsole@postgres:5432/tbconsole
+      # Given on its own, so a password with @ or / in it works unescaped
+      TBCONSOLE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8710:8710"
+    volumes:
+      # The CA that signed OpenSearch's certificate, if it is not public
+      - ./certs:/certs:ro
+    networks: [console]
+
+volumes:
+  pgdata:
+
+networks:
+  console:
+    ipam:
+      config:
+        - subnet: 172.31.213.0/24
+          gateway: 172.31.213.1
