@@ -6,17 +6,22 @@ lock out everyone who shares their address: a school behind one NAT, or
 every user at once when a proxy's address is all the console sees. An address
 trying many usernames is held back, past a looser limit, only on the usernames
 it has already got wrong, so it cannot lock out the others either. A flood
-is bounded by the work it can cause instead: password checks wait their turn
-(passwords.verify_async), so a flood slows itself, not everyone else's first
-try. IPv6 addresses count by their /64, since anyone with one has the whole
-network to rotate through. Names count in the form directories compare
-them in, so width and case variants of one name are one name here.
+is bounded by the work it can cause instead: each address has a few sign-ins
+worked on at once, password checks and directory calls, and a queue behind
+them, and past that is turned away at once (admitted). So a flood from one
+address waits on itself, and every other address is served as before; and
+once it stops, nothing it did lingers. IPv6 addresses count by their /64,
+since anyone with one has the whole network to rotate through. Names count
+in the form directories compare them in, so width and case variants of one
+name are one name here.
 """
 
+import asyncio
 import ipaddress
 import time
 import unicodedata
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 
 WINDOW = 300
 PAIR_LIMIT = 10
@@ -85,3 +90,41 @@ def failed(ip: str | None, username: str) -> None:
     who = source(ip)
     _failures[(who, name(username))].append(now)
     _failures[(who, '')].append(now)
+
+
+# Sign-ins worked on at once per address, and how many more may wait. Those
+# waiting hold nothing but their place: no database connection, no thread
+IN_FLIGHT = 2
+QUEUE = 64
+
+
+class Busy(Exception):
+    """An address with as many sign-ins under way and waiting as it may have."""
+
+
+class _Gate:
+    def __init__(self):
+        self.turns = asyncio.Semaphore(IN_FLIGHT)
+        self.holding = 0
+
+
+_gates: dict[str, _Gate] = {}
+
+
+@asynccontextmanager
+async def admitted(ip: str | None):
+    """A turn for one sign-in from this address, or Busy at once."""
+    who = source(ip)
+    gate = _gates.get(who)
+    if gate is None:
+        gate = _gates[who] = _Gate()
+    if gate.holding >= IN_FLIGHT + QUEUE:
+        raise Busy(who)
+    gate.holding += 1
+    try:
+        async with gate.turns:
+            yield
+    finally:
+        gate.holding -= 1
+        if not gate.holding and _gates.get(who) is gate:
+            del _gates[who]

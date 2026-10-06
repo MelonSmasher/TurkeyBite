@@ -21,7 +21,7 @@
 
 <nav class="sidebar" class:collapsed aria-label="Main">
   <a class="brand" href="/" aria-label={collapsed ? 'TurkeyBite Console home' : undefined}>
-    <Logo size={30} withName={!collapsed} />
+    <Logo size={36} withName={!collapsed} />
   </a>
   <div class="org" class:hidden={collapsed}>
     <span class="org-dot"></span>

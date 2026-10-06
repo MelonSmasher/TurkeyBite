@@ -3,6 +3,7 @@
   import { api, ApiError } from '../lib/api';
   import { focus } from '../lib/components/focus';
   import Logo from '../lib/components/Logo.svelte';
+  import MadeBy from '../lib/components/MadeBy.svelte';
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/stores/session.svelte';
 
@@ -84,7 +85,7 @@
     <div class="glow"></div>
     <div class="grid-bg"></div>
     <div class="brand-inner">
-      <Logo size={40} sub="Console" />
+      <Logo size={72} sub="Console" />
       <h1>See what your network<br />is really doing.</h1>
       <p>Search every lookup and visit TurkeyBite records, follow the evidence behind each category,
         and let rules surface what matters before anyone has to go looking.</p>
@@ -145,6 +146,7 @@
       {#if config?.login_banner}
         <div class="banner">{config.login_banner}</div>
       {/if}
+      <MadeBy tone="plain" />
     </div>
   </section>
 </div>

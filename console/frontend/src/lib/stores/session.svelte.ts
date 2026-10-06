@@ -48,8 +48,10 @@ class Session {
       prefs.adopt(this.me.preferences, this.me.privacy_mode_default, this.me.user.id);
       timeRange.useDefault(this.me.default_range);
       this.#checked = Date.now();
-    } catch {
+    } catch (e) {
       this.me = null;
+      // Signed out, or the session ran out: what was kept for whoever it was goes
+      if ((e as { status?: number }).status === 401) clearPersonal();
     } finally {
       this.loading = false;
     }

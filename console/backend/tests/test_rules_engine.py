@@ -1,5 +1,6 @@
 """Rule types and the engine: what fires, what does not, and how findings are kept."""
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -804,3 +805,111 @@ async def test_a_new_value_exact_page_is_not_called_truncated(search, monkeypatc
     search.answer = lambda body, index=None: next(answers)
     result = await Evaluator(search).evaluate(RuleSpec(name='n', type='new_value', params={'field': 'site'}), NOW)
     assert result.reason == ''
+
+
+# -- round four ------------------------------------------------------------------------
+
+def _paged(pairs_by_field, reject_after=False):
+    """Answers composite aggregations a page at a time, from fixed pairs per
+    group field, as OpenSearch would."""
+    def answer(body, index=None):
+        composite = body['aggs']['c']['composite']
+        field = composite['sources'][0]['g']['terms']['field']
+        if reject_after and composite.get('after'):
+            from tbconsole.search.client import SearchRejected
+            raise SearchRejected(400, "'aria.mensah' is not an IP string literal.")
+        keys = [{'g': g, 'v': v} for g, v in sorted(pairs_by_field[field])]
+        start = 0
+        if composite.get('after'):
+            start = next(i + 1 for i, k in enumerate(keys) if k == composite['after'])
+        page = keys[start:start + composite['size']]
+        part = {'buckets': [{'key': k, 'doc_count': 1} for k in page]}
+        if len(page) == composite['size']:
+            part['after_key'] = page[-1]
+        return {'aggregations': {'c': part}}
+    return answer
+
+
+async def test_a_cut_short_reading_reaches_every_group_field_in_turn(search):
+    users = {(f'user{i:02d}', 'news') for i in range(10)}
+    hosts = {(f'host{i}', 'news') for i in range(4)}
+    search.answer = _paged({'bite.client_user': users, 'bite.client_hostname_short': hosts})
+    evaluator = Evaluator(search)
+    seen: set = set()
+    for _ in range(6):
+        out, truncated = await evaluator._each_group({'match_all': {}},
+                                                     ['bite.client_user', 'bite.client_hostname_short'],
+                                                     [('v', 'bite.purpose')], None, 6, cursor='first_seen')
+        assert len(out) <= 6
+        seen |= {(b['key'], b['values']['v']) for b in out}
+    # The users alone are more than the limit; the hosts are read all the same
+    assert seen == users | hosts
+
+
+async def test_a_reading_position_opensearch_refuses_starts_again(search):
+    evaluator = Evaluator(search)
+    evaluator.state = {'first_seen': {'field': 0, 'after': {'0': {'g': 'aria.mensah', 'v': 'news'}}}}
+    search.answer = _paged({'bite.client': {('10.0.0.5', 'news')}}, reject_after=True)
+    out, _ = await evaluator._each_group({'match_all': {}}, ['bite.client'], [('v', 'bite.purpose')], None, 10,
+                                         cursor='first_seen')
+    assert [b['key'] for b in out] == ['10.0.0.5']
+
+
+async def test_changing_what_a_rule_reads_forgets_where_it_had_got_to(client):
+    from tests.conftest import login, make_user
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    rule = next(r for r in (await client.get('/api/v1/rules')).json() if r['type'] == 'new_value')
+    place = {'first_seen': {'field': 0, 'after': {'0': {'g': 'aria.mensah', 'v': 'news'}}}}
+
+    async def stored_state():
+        async with db.sessionmaker()() as session:
+            return (await session.get(Rule, uuid.UUID(rule['id']))).state
+
+    async def set_state():
+        async with db.sessionmaker()() as session:
+            (await session.get(Rule, uuid.UUID(rule['id']))).state = place
+            await session.commit()
+    await set_state()
+    body = {k: rule[k] for k in ('name', 'description', 'category', 'type', 'query', 'params', 'group_by',
+                                 'severity', 'enabled', 'interval_seconds', 'window_seconds', 'dedup_seconds',
+                                 'schedule', 'exceptions', 'webhook_ids', 'tags', 'title_template')}
+    assert (await client.put(f"/api/v1/rules/{rule['id']}", headers=headers, json={**body, 'severity': 'low'})).status_code == 200
+    assert await stored_state() == place, 'a change to how it alerts keeps its place'
+    assert (await client.put(f"/api/v1/rules/{rule['id']}", headers=headers,
+                             json={**body, 'group_by': ['bite.client']})).status_code == 200
+    assert await stored_state() == {}
+    await set_state()
+    assert (await client.post(f"/api/v1/rules/{rule['id']}/reset", headers=headers)).status_code == 200
+    assert await stored_state() == {}
+
+
+async def test_a_rule_changed_while_it_ran_records_nothing_from_that_run(search):
+    rule = await _rule()
+    search.answer = lambda body, index=None: grouped('bite.client_user', [bucket('ava', 3)])
+    real = search.search
+
+    async def edit_then_answer(body, index=None):
+        # An analyst adds an exception while OpenSearch is answering
+        async with db.sessionmaker()() as other:
+            (await other.get(Rule, rule.id)).exceptions = [{'query': 'user:ava'}]
+            await other.commit()
+        return await real(body, index)
+    search.search = edit_then_answer
+    async with db.sessionmaker()() as session:
+        outcome = await engine.run_rule(session, search, await session.get(Rule, rule.id), now=NOW)
+        await session.commit()
+    assert outcome.status == 'skipped' and 'changed during the run' in outcome.reason
+    async with db.sessionmaker()() as session:
+        assert (await session.execute(select(func.count()).select_from(Finding))).scalar_one() == 0
+
+
+def test_a_window_ending_in_the_first_second_of_active_hours_is_cut_at_their_start():
+    schedule = {'days': None, 'start': '08:00', 'end': '16:00', 'timezone': 'UTC'}
+    opening = datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc)
+    assert engine.window_cut(schedule, opening + timedelta(milliseconds=500)) == opening
+    assert engine.window_cut(schedule, opening) == opening
+    # The window that ends them belongs to them
+    closing = datetime(2026, 10, 5, 16, 0, tzinfo=timezone.utc)
+    assert engine.window_cut(schedule, closing) == opening
+    assert engine.window_cut(None, closing) is None

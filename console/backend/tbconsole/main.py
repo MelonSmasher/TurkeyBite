@@ -171,8 +171,17 @@ def create_app() -> FastAPI:
         async def ask():
             async with db.sessionmaker()() as session:
                 await session.execute(text('SELECT 1'))
+        # Not wait_for, which waits for what it cancels to finish: a query on
+        # a connection to a database that froze can take that long too
+        task = asyncio.ensure_future(ask())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        done, _ = await asyncio.wait({task}, timeout=READY_TIMEOUT)
+        if not done:
+            task.cancel()
         try:
-            await asyncio.wait_for(ask(), timeout=READY_TIMEOUT)
+            if not done:
+                raise TimeoutError('the database did not answer in time')
+            task.result()
         except Exception:
             return JSONResponse({'ok': False, 'detail': 'the database is not answering'},
                                 status_code=503)

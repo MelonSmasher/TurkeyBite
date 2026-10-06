@@ -9,6 +9,7 @@
 // masks it the same way.
 
 import { alias } from './alias';
+import { moveArrival } from './arrival';
 import { qs } from './api';
 import { router } from './router.svelte';
 import { IDENTITY_FIELDS, IDENTITY_NAMES, maskDocument, maskNames, maskPrefixes, maskQueryValues, maskStrings, namesInQuery } from './mask';
@@ -52,7 +53,10 @@ export function hideAddress(): void {
       // A malformed escape: the page says it does not exist
     }
   }
-  if (changed) router.navigate(url.pathname + url.search, { replace: true });
+  if (changed) {
+    moveArrival(location.pathname + location.search, url.pathname + url.search);
+    router.navigate(url.pathname + url.search, { replace: true });
+  }
 }
 
 /** A path segment for a person or machine, hidden in privacy mode. */

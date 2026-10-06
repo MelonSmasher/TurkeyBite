@@ -8,6 +8,7 @@ changes at runtime, such as the LDAP directory, live in the database instead.
 """
 
 import json
+import ssl
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -106,7 +107,8 @@ class Settings(BaseSettings):
     # An HTTP proxy every webhook goes through, when the console's network has
     # no direct way out. The proxy then connects to the receiver itself, so
     # what it may reach is its rules' to decide; the console still refuses
-    # URLs whose names resolve, for it, to addresses webhooks may not reach.
+    # URLs whose names resolve, for it, to addresses webhooks may not reach,
+    # and leaves a name it cannot resolve to the proxy.
     webhook_proxy: str | None = None
     # Certificates, in PEM, that webhook receivers' may be signed by besides
     # the usual public ones: an internal CA's, for a receiver on the LAN
@@ -149,8 +151,17 @@ class Settings(BaseSettings):
     @field_validator('webhook_ca_certs')
     @classmethod
     def _readable_certs(cls, value):
-        if value is not None and not Path(value).is_file():
+        if value is None:
+            return value
+        if not Path(value).is_file():
             raise ValueError(f'TBCONSOLE_WEBHOOK_CA_CERTS names {value}, which is not a file')
+        try:
+            # Read now, once, so a file that is not certificates stops the
+            # console here rather than sink every delivery later
+            ssl.create_default_context().load_verify_locations(cafile=str(value))
+        except (ssl.SSLError, OSError, ValueError) as e:
+            raise ValueError(f'TBCONSOLE_WEBHOOK_CA_CERTS names {value}, which holds no PEM '
+                             f'certificates the console can read') from e
         return value
 
     @model_validator(mode='after')

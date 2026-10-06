@@ -115,16 +115,22 @@ class Target:
 async def resolve(url: str) -> Target:
     """Checks a URL and picks the address delivery will connect to. Raises UnsafeUrl."""
     scheme, host, port = check_shape(url)
-    allow_private = get_settings().webhook_allow_private
+    settings = get_settings()
+    allow_private = settings.webhook_allow_private
     try:
         addresses = [ipaddress.ip_address(host)]
     except ValueError:
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except socket.gaierror as e:
-            raise UnsafeUrl(f'{host} does not resolve.') from e
+            if not settings.webhook_proxy:
+                raise UnsafeUrl(f'{host} does not resolve.') from e
+            # Through a proxy, a name only the proxy can resolve is the
+            # proxy's to reach, by its own rules; one that does resolve here
+            # is still checked below
+            infos = []
         addresses = [ipaddress.ip_address(info[4][0].split('%')[0]) for info in infos]
-    if not addresses:
+    if not addresses and not settings.webhook_proxy:
         raise UnsafeUrl(f'{host} does not resolve.')
     # Every address the name has must be acceptable, not just the first,
     # or a name with one public and one private address would get through
@@ -140,9 +146,9 @@ async def resolve(url: str) -> Target:
     host_header = named if port == default else f'{named}:{port}'
     unique = list(dict.fromkeys(str(a) for a in addresses))
     target = Target(url=url, host=host, host_header=host_header, pinned_url='',
-                    address=unique[0], tls=scheme == 'https', addresses=unique, scheme=scheme,
-                    port=port, path=parts.path or '/', query=parts.query)
-    target.pinned_url = target.url_for(unique[0])
+                    address=unique[0] if unique else '', tls=scheme == 'https', addresses=unique,
+                    scheme=scheme, port=port, path=parts.path or '/', query=parts.query)
+    target.pinned_url = target.url_for(unique[0]) if unique else url
     return target
 
 

@@ -4,6 +4,7 @@
   import { api, setMfaRequiredHandler, setUnauthorizedHandler } from './lib/api';
   import { answerArrival, cameFromElsewhere, noteArrival } from './lib/arrival';
   import EmptyState from './lib/components/EmptyState.svelte';
+  import MadeBy from './lib/components/MadeBy.svelte';
   import Toasts from './lib/components/Toasts.svelte';
   import CommandPalette from './lib/layout/CommandPalette.svelte';
   import Sidebar from './lib/layout/Sidebar.svelte';
@@ -138,6 +139,7 @@
             <div class="skeleton" style="height:320px" aria-busy="true" aria-label="Loading"></div>
           {/if}
         </main>
+        <MadeBy />
       </div>
     </div>
     <CommandPalette bind:open={paletteOpen} />

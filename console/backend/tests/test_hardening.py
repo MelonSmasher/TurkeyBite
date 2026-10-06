@@ -801,10 +801,11 @@ async def test_one_two_factor_token_makes_one_session(client):
 async def test_a_borrowed_session_cannot_guess_the_password(client):
     await make_user('ana')
     headers = await login(client, 'ana')
-    from tbconsole.security import limits
-    for _ in range(limits.PAIR_LIMIT):
+    from tbconsole.config import get_settings
+    for _ in range(get_settings().login_max_failures):
         assert (await client.post('/api/v1/account/mfa/setup', headers=headers,
                                   json={'password': 'guess'})).status_code == 400
+    # Locked: refused whatever the password, the right one too
     assert (await client.post('/api/v1/account/mfa/setup', headers=headers,
                               json={'password': 'correct horse battery'})).status_code == 429
 
@@ -1088,6 +1089,9 @@ def test_a_webhook_proxy_or_ca_file_that_cannot_work_stops_the_console_starting(
     assert Settings(webhook_proxy=' ').webhook_proxy is None
     with pytest.raises(ValidationError, match='not a file'):
         Settings(webhook_ca_certs=str(tmp_path / 'missing.pem'))
+    (tmp_path / 'notes.pem').write_text('these are not certificates')
+    with pytest.raises(ValidationError, match='no PEM'):
+        Settings(webhook_ca_certs=str(tmp_path / 'notes.pem'))
     assert Settings(webhook_ca_certs='').webhook_ca_certs is None
 
 
@@ -1461,15 +1465,73 @@ async def test_a_hanging_directory_is_braked_and_holds_no_database_connection(cl
         raise ldap.LdapUnavailable('no answer')
     monkeypatch.setattr(ldap, 'authenticate', down)
     monkeypatch.setattr(ldap, '_breaker', ldap._Breaker())
-    for _ in range(limits.PAIR_LIMIT):
+    for _ in range(limits.PAIR_LIMIT + 1):
+        # The directory being away is not a wrong password: never counted
+        # against the name, so its owner is not locked out by it
         assert (await client.post('/api/v1/auth/login', json={'username': 'ava', 'password': 'x'})).status_code == 503
-    assert (await client.post('/api/v1/auth/login', json={'username': 'ava', 'password': 'x'})).status_code == 429
     # After a few failures in a row the directory is given a rest: no thread is asked
     calls = []
     monkeypatch.setattr(ldap, 'authenticate', lambda *a: calls.append(a))
     assert (await client.post('/api/v1/auth/login', json={'username': 'zed', 'password': 'x'})).status_code == 503
     assert calls == []
     assert len(await _audit('auth.login')) <= 2, 'one row for the outage, not one per attempt'
+
+
+async def test_one_address_flooding_sign_in_waits_on_itself_and_others_get_in(app, monkeypatch):
+    import asyncio
+    import time as clock
+    from tbconsole.security import limits, passwords
+    await make_user('ana')
+    limits.reset()
+    monkeypatch.setattr(limits, 'QUEUE', 4)
+    real = passwords.verify_password
+
+    def slow(stored, password):
+        clock.sleep(0.15)
+        return real(stored, password)
+    monkeypatch.setattr(passwords, 'verify_password', slow)
+    async with await _client_from(app, '198.51.100.7') as flooder, await _client_from(app, '198.51.100.8') as ana:
+        flood = [flooder.post('/api/v1/auth/login', json={'username': f'junk-{i}', 'password': 'x'})
+                 for i in range(20)]
+        started = clock.monotonic()
+        answers, mine = await asyncio.gather(
+            asyncio.gather(*flood),
+            ana.post('/api/v1/auth/login', json={'username': 'ana', 'password': 'correct horse battery'}))
+    codes = sorted(a.status_code for a in answers)
+    # Two at a time and four waiting from the flooding address; the rest turned away at once
+    assert codes.count(401) == limits.IN_FLIGHT + 4 and codes.count(429) == 20 - limits.IN_FLIGHT - 4
+    assert mine.status_code == 200
+    assert clock.monotonic() - started < 3
+    assert limits._gates == {}, 'nothing is kept once the sign-ins are done'
+    limits.reset()
+
+
+async def test_no_database_connection_is_held_while_a_password_is_checked(client, monkeypatch):
+    from tbconsole import db as database
+    from tbconsole.security import passwords
+    await make_user('ana')
+    await make_user('locked', locked_until=datetime.now(timezone.utc) + timedelta(minutes=5))
+    real = passwords.verify_password
+    held = []
+
+    def watched(stored, password):
+        held.append(database.engine().pool.checkedout())
+        return real(stored, password)
+    monkeypatch.setattr(passwords, 'verify_password', watched)
+    for name, password in (('ana', 'correct horse battery'), ('ana', 'wrong'), ('nobody', 'x'), ('locked', 'x')):
+        await client.post('/api/v1/auth/login', json={'username': name, 'password': password})
+        client.cookies.clear()
+    assert held == [0, 0, 0, 0]
+
+
+async def test_a_locked_account_page_answers_the_same_whatever_the_password(client):
+    await make_user('ana')
+    headers = await login(client, 'ana')
+    for _ in range(5):
+        await client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': 'guess'})
+    wrong = await client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': 'guess again'})
+    right = await client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': 'correct horse battery'})
+    assert (wrong.status_code, wrong.json()) == (right.status_code, right.json()) and right.status_code == 429
 
 
 async def test_the_same_two_factor_token_sent_at_once_makes_one_session(client):
@@ -1493,3 +1555,47 @@ async def test_wrong_passwords_on_the_account_page_lock_the_account(client):
         await client.post('/api/v1/account/mfa/setup', headers=headers, json={'password': 'guess'})
     async with db.sessionmaker()() as session:
         assert (await session.execute(select(User.locked_until))).scalar_one() is not None
+
+
+
+def test_a_list_of_groups_the_directory_cut_short_is_not_an_answer():
+    from types import SimpleNamespace
+    from tbconsole.security import ldap
+
+    class Cut:
+        """A connection whose directory stopped at its size limit."""
+        def __init__(self):
+            self.result = {}
+            self.extend = SimpleNamespace(standard=SimpleNamespace(paged_search=self.paged_search))
+
+        def paged_search(self, *args, **kwargs):
+            self.result = {'result': 4, 'description': 'sizeLimitExceeded'}
+            return [{'type': 'searchResEntry', 'dn': 'cn=students,ou=groups,dc=example,dc=org'}]
+    conn = Cut()
+    cfg = {'group_filter': '(member={dn})', 'group_base_dn': 'ou=groups,dc=example,dc=org', 'attr_groups': ''}
+    with pytest.raises(ldap.LdapUnavailable, match='sizeLimitExceeded'):
+        ldap._groups(conn, cfg, 'uid=ava,ou=people,dc=example,dc=org', {})
+
+
+
+async def test_through_a_proxy_a_name_only_the_proxy_can_resolve_is_sent_there(monkeypatch):
+    from tbconsole.config import get_settings
+
+    class NoDns(_Loop):
+        async def getaddrinfo(self, host, port, type=0):
+            raise socket.gaierror('no name servers here')
+    lookup = _Asyncio()
+    lookup.loop = NoDns()
+    monkeypatch.setattr(safety, 'asyncio', lookup)
+    hook = await _hook('https://hooks.example.test/in')
+    with pytest.raises(safety.UnsafeUrl, match='does not resolve'):
+        await safety.resolve('https://hooks.example.test/in')
+    monkeypatch.setattr(get_settings(), 'webhook_proxy', 'http://proxy.example.test:3128')
+    seen = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(204))) as http:
+        outcome = await dispatcher.send(hook, _delivery(hook), http)
+    assert outcome['error'] is None and seen[0].url.host == 'hooks.example.test'
+    # A name that does resolve here, to somewhere webhooks may not reach, is still refused
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('169.254.169.254'))
+    with pytest.raises(safety.UnsafeUrl, match='may not reach'):
+        await safety.resolve('https://hooks.example.test/in')

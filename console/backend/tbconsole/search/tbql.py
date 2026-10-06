@@ -389,15 +389,17 @@ def _unknown_field(name: str) -> str:
     return f'There is no field called {name!r}.{hint}'
 
 
-# OpenSearch's date math: now, then any steps, then rounding
-_DATE_MATH = re.compile(r'now(?:[+-]\d{1,9}[smhdwMy])*(?:/[smhdwMy])?')
+# OpenSearch's date math: now, then any steps and roundings, in any order
+_DATE_MATH = re.compile(r'now(?:[+-]\d{1,9}[smhdwMy]|/[smhdwMy])*')
 _DATE_STEP = re.compile(r'([+-])(\d+)([smhdwMy])')
 
 
 def _check_date(value: str, tok: Tok) -> None:
     """Refuses a time OpenSearch would choke on, rather than let it fail
-    there: a relative time reaching back past 1970, or a year far out. One
-    Python cannot read is left for OpenSearch, which takes more forms."""
+    there: one that is not a time, a relative time reaching back past 1970,
+    or a year far out. The forms OpenSearch's dates take are date math from
+    now, ISO 8601 as far as it goes (2026, 2026-10, 2026-10-05T09:30Z), and
+    milliseconds since 1970."""
     if value == '*':
         return
     if value.startswith('now'):
@@ -411,11 +413,21 @@ def _check_date(value: str, tok: Tok) -> None:
             except OverflowError:
                 moment = datetime.min.replace(tzinfo=timezone.utc)
                 break
-    else:
+    elif value.isdigit():
         try:
-            moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        except ValueError:
-            return
+            moment = datetime.fromtimestamp(int(value) / 1000, timezone.utc)
+        except (ValueError, OverflowError, OSError) as e:
+            raise TbqlError(f'{value!r} is not a time.', tok.pos, tok.length) from e
+    else:
+        partial = re.fullmatch(r'(\d{4})(?:-(\d{2}))?', value)
+        try:
+            if partial:
+                moment = datetime(int(partial[1]), int(partial[2] or 1), 1, tzinfo=timezone.utc)
+            else:
+                moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError as e:
+            raise TbqlError(f'{value!r} is not a time. Try 2026-10-05, 2026-10-05T09:30 or now-24h.',
+                            tok.pos, tok.length) from e
     if not timerange.EARLIEST <= moment.year <= timerange.LATEST:
         raise TbqlError(f'{value!r} is outside the years {timerange.EARLIEST} to {timerange.LATEST}.',
                         tok.pos, tok.length)

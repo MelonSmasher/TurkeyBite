@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from ..search import fields as F
 from ..search import queries as Q
 from ..search import tbql
-from ..search.client import SearchClient, total
+from ..search.client import SearchClient, SearchRejected, total
 from ..search.timerange import TimeRange, iso
 
 SEVERITIES = ('info', 'low', 'medium', 'high', 'critical')
@@ -408,36 +408,53 @@ class Evaluator:
         """Composite buckets per group field, each as {field, key, ...}; with
         no groups, one field-less set. `extra` are further sources.
 
-        With `cursor`, a name under which the evaluation's state keeps where a
-        cut-short reading got to, field by field, so the next run carries on
-        from there rather than reading the same buckets again."""
+        Each field has its share of `limit`, and what one leaves unused goes
+        to those after it, so a field with more than the limit on its own
+        cannot keep the others from ever being read. With `cursor`, a name
+        under which the evaluation's state keeps where each field's reading
+        got to, so the next run carries on from there, starting with the next
+        field, rather than reading the same buckets again."""
         out: list[dict] = []
         truncated = False
         targets = [(i, name) for i, name in enumerate(groups)] or [(None, None)]
         places = dict(self.state.get(cursor) or {}) if cursor else {}
         first = int(places.get('field', 0) or 0) % len(targets)
-        resume: dict = {'field': 0}
+        afters = dict(places.get('after') or {})
+        resume: dict = {}
         for offset in range(len(targets)):
             index = (first + offset) % len(targets)
             i, name = targets[index]
+            remaining = limit - len(out)
+            share = max(1, remaining // (len(targets) - offset)) if remaining > 0 else 0
             q = query
             sources = list(extra)
             if name is not None:
                 q = {'bool': {'filter': [query, Q.group_filter(groups, i)]}}
                 sources = [('g', name), *extra]
-            remaining = limit - len(out)
-            buckets, more, next_key = await self._composite(
-                q, sources, sub, max(remaining, 0), start_after=(places.get('after') or {}).get(str(index)))
+            start_after = afters.get(str(index))
+            if not share:
+                # No budget left for it this run: it keeps its place
+                if start_after is not None:
+                    resume[str(index)] = start_after
+                truncated = True
+                continue
+            try:
+                buckets, more, next_key = await self._composite(q, sources, sub, share, start_after=start_after)
+            except SearchRejected:
+                if start_after is None:
+                    raise
+                # A place OpenSearch no longer takes, as after the rule was
+                # changed to group by another kind of field: from the start
+                buckets, more, next_key = await self._composite(q, sources, sub, share)
             for b in buckets:
                 key = b.get('key') or {}
                 out.append(dict(b, field=name, key=key.get('g'),
                                 values={k: v for k, v in key.items() if k != 'g'}))
             if more:
                 truncated = True
-                resume = {'field': index, 'after': {str(index): next_key}}
-                break
+                resume[str(index)] = next_key
         if cursor:
-            self.state[cursor] = resume if truncated else {}
+            self.state[cursor] = {'field': (first + 1) % len(targets), 'after': resume} if truncated else {}
         return out, truncated
 
     def _grouped(self, result: dict, groups: list[str]) -> list[dict]:

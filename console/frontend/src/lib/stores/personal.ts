@@ -8,10 +8,16 @@ const UNOWNED = ['tbc.recent', 'tbc.columns'];
 
 let owner: string | null = null;
 
-/** Whose these are, once the session is known. */
-export function ownPersonal(user: string | null): void {
+/** Whose these are, once the session is known. Anyone else's go: a session
+ *  that ended without a sign-out left them, and they are no one's to read. */
+export function ownPersonal(user: string): void {
   owner = user;
-  for (const key of UNOWNED) localStorage.removeItem(key);
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const key = localStorage.key(i);
+    if (key && ((key.startsWith(PREFIX) && !key.startsWith(`${PREFIX}${user}.`)) || UNOWNED.includes(key))) {
+      localStorage.removeItem(key);
+    }
+  }
 }
 
 export function readPersonal<T>(name: string, fallback: T): T {

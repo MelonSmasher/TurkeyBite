@@ -37,6 +37,12 @@ export function cameFromElsewhere(path: string): boolean {
   return true;
 }
 
+/** The page's address rewritten in place, as privacy mode does: a mark on
+ *  the old address moves with it, so the question is still asked. */
+export function moveArrival(from: string, to: string): void {
+  if (sessionStorage.getItem(KEY) === from) sessionStorage.setItem(KEY, to);
+}
+
 export function answerArrival(): void {
   sessionStorage.removeItem(KEY);
 }

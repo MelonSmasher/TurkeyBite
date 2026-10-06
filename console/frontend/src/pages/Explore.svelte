@@ -492,7 +492,9 @@
   .ticon { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: var(--surface-3); color: var(--text-3); }
   .dom { display: inline-block; max-width: 300px; font-size: 0.82rem; }
   .cells { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-  .risk-chip { background: color-mix(in srgb, var(--sev-critical) 9%, transparent); color: var(--delta-bad); border-color: transparent; }
+  /* A shade darker than --delta-bad in light, for contrast on a selected row's tint */
+  .risk-chip { background: color-mix(in srgb, var(--sev-critical) 9%, transparent); color: #a82a07; border-color: transparent; }
+  :global(:root[data-theme='dark']) .risk-chip { color: var(--delta-bad); }
   tr.fresh { animation: flash 1.6s var(--ease); }
   @keyframes flash { from { background: color-mix(in srgb, var(--good) 18%, transparent); } }
   .more { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-top: 1px solid var(--divider); }

@@ -319,7 +319,8 @@ async def delete_search(search_id: str, request: Request,
                         db: AsyncSession = Depends(get_session)) -> dict:
     saved = await _get_search(db, search_id, principal, write=True)
     audit.record(db, 'search.delete', principal=principal, request=request,
-                 target_type='saved_search', target_id=saved.id, target_label=saved.name)
+                 target_type='saved_search', target_id=saved.id, target_label=saved.name,
+                 details={'query': saved.query})
     await db.delete(saved)
     await db.commit()
     return {'ok': True}

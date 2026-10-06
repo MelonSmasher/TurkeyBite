@@ -1,21 +1,14 @@
 <script lang="ts">
+  // The TurkeyBite detective: the console's mark, here and as its icon. On a
+  // cream tile, the artwork's own ground, so the brown turkey reads on a dark
+  // page as well as a light one
   let { size = 28, withName = true, sub = 'Console' }: { size?: number; withName?: boolean; sub?: string } = $props();
-  const id = `logo-${Math.random().toString(36).slice(2, 8)}`;
 </script>
 
 <span class="logo">
-  <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-    <defs>
-      <linearGradient id="{id}-g" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="color-mix(in srgb, var(--accent) 70%, #fff)" />
-        <stop offset="1" stop-color="var(--accent)" />
-      </linearGradient>
-      <mask id="{id}-m"><rect width="32" height="32" fill="#fff" /><circle cx="29" cy="3" r="9" fill="#000" /></mask>
-    </defs>
-    <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#{id}-g)" mask="url(#{id}-m)" />
-    <path d="M10 20.5c2.2-5 5.8-7.6 11-8" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" />
-    <circle cx="11" cy="21" r="2.2" fill="#fff" />
-  </svg>
+  <span class="tile" style:width="{size}px" style:height="{size}px" style:border-radius="{Math.round(size * 0.26)}px">
+    <img src="/turkeybite-logo.png" width={Math.round(size * 0.9)} height={Math.round(size * 0.9)} alt="" />
+  </span>
   {#if withName}
     <span class="name">TurkeyBite<span class="sub">{sub}</span></span>
   {/if}
@@ -23,7 +16,11 @@
 
 <style>
   .logo { display: inline-flex; align-items: center; gap: 10px; }
-  svg { flex: none; filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--accent) 35%, transparent)); }
+  .tile {
+    flex: none; display: grid; place-items: center; background: #fdfaf3;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 6px rgba(0, 0, 0, 0.16);
+  }
+  img { object-fit: contain; }
   .name { display: flex; flex-direction: column; line-height: 1.05; font-weight: 700; letter-spacing: -0.02em; font-size: 1rem; color: var(--text); }
   .sub { font-weight: 500; font-size: 0.74rem; color: var(--text-3); letter-spacing: 0; }
 </style>

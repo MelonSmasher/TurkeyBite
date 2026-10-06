@@ -69,6 +69,9 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = null;
     owner = node;
+    // Inside the page's main landmark, where a screen reader expects content
+    const host = document.querySelector('main') ?? document.body;
+    if (tipEl.parentElement !== host) host.appendChild(tipEl);
     tipEl.textContent = current;
     tipEl.style.opacity = '1';
     tipEl.classList.add('shown');

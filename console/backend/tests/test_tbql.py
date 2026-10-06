@@ -136,5 +136,11 @@ def test_times_opensearch_would_choke_on_are_refused():
                   '@timestamp:>nowish'):
         with pytest.raises(TbqlError):
             compile_(query)
-    for query in ('@timestamp:>now-1d+2h', '@timestamp:<now/d', '@timestamp:2026-10-05', '@timestamp:[2026-01 TO *]'):
+    for query in ('@timestamp:>now-1d+2h', '@timestamp:<now/d', '@timestamp:2026-10-05', '@timestamp:[2026-01 TO *]',
+                  '@timestamp:>now/d+8h', '@timestamp:>now-1d/d+8h', '@timestamp:>1791300000000',
+                  '@timestamp:>2026-10-05T09:30:00Z', '@timestamp:2026'):
         compile_(query)
+    for query in ('@timestamp:2026-13-45', '@timestamp:>yesterday', '@timestamp:>99999999999999999999',
+                  '@timestamp:>999999999999999'):
+        with pytest.raises(TbqlError):
+            compile_(query)

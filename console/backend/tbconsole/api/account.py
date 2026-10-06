@@ -112,10 +112,20 @@ async def _check_password(db: AsyncSession, request: Request, principal: Princip
     session left open on someone's desk is not a way to guess it: wrong answers
     count against the same brake as sign-ins."""
     ip = sessions.client_ip(request)
-    if limits.limited(ip, user.username):
+    # Locked, the answer is the same whatever the password, before it is
+    # even checked: otherwise the lock would still say when a guess was right
+    if limits.limited(ip, user.username) or (user.locked_until
+                                             and user.locked_until > datetime.now(timezone.utc)):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                             'Too many wrong passwords. Wait a few minutes and try again.')
-    if not await passwords.verify_async(user.password_hash, password):
+    try:
+        async with limits.admitted(ip):
+            right = await passwords.verify_async(user.password_hash, password)
+    except limits.Busy as e:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            'Too many checks are under way from your address. Try again in a '
+                            'moment.') from e
+    if not right:
         limits.failed(ip, user.username)
         # And against the account's lockout, as at sign-in
         settings = get_settings()
@@ -127,9 +137,6 @@ async def _check_password(db: AsyncSession, request: Request, principal: Princip
                      outcome='failure', details={'reason': 'wrong password'})
         await db.commit()
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'The password is not right.')
-    if user.locked_until and user.locked_until > datetime.now(timezone.utc):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
-                            'Too many wrong passwords. Wait a few minutes and try again.')
 
 
 @router.post('/password')

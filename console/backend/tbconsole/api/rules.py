@@ -113,6 +113,7 @@ async def _validate(db: AsyncSession, body: RuleBody) -> dict:
 def _assign(rule: Rule, body: RuleBody, params: dict) -> bool:
     """Copies a body onto a rule. True when the definition itself changed."""
     before = {name: getattr(rule, name) for name in defaults.DEFINITION_FIELDS}
+    basis = engine.cursor_basis(rule)
     rule.name = body.name.strip()
     rule.description = body.description
     rule.category = body.category
@@ -129,6 +130,7 @@ def _assign(rule: Rule, body: RuleBody, params: dict) -> bool:
     rule.webhook_ids = [str(parse_uuid(i)) for i in body.webhook_ids]
     rule.tags = sorted({t.strip()[:40] for t in body.tags if t.strip()})
     rule.title_template = body.title_template
+    engine.forget_position_if_changed(rule, basis)
     return any(getattr(rule, name) != before[name] for name in defaults.DEFINITION_FIELDS)
 
 

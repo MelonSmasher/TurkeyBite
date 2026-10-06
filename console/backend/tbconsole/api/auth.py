@@ -130,8 +130,24 @@ async def login(body: LoginBody, request: Request, response: Response,
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
     if limits.limited(sessions.client_ip(request), username):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY)
+    # A few at a time from one address, before anything costly, the database
+    # included: a flood from one address queues behind itself
+    try:
+        async with limits.admitted(sessions.client_ip(request)):
+            return await _sign_in(db, body, request, response, username)
+    except limits.Busy as e:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            'Too many sign-ins are under way from your address. Try again in a '
+                            'moment.') from e
+
+
+async def _sign_in(db: AsyncSession, body: LoginBody, request: Request, response: Response,
+                   username: str) -> dict:
     user = (await db.execute(select(User).where(
         func.lower(User.username) == username.lower()))).scalar_one_or_none()
+    # The pooled connection goes back while the password is checked, which
+    # waits its turn and takes a while by design
+    await db.commit()
 
     if user is not None and user.source == 'service':
         await passwords.verify_async(None, body.password)
@@ -156,19 +172,18 @@ async def login(body: LoginBody, request: Request, response: Response,
         return await _finish(db, user, request, response, 'local')
 
     cfg, bind_password = await _ldap_config(db)
+    # Back to the pool before the password check or the directory, both slow
+    await db.commit()
     if not cfg.get('enabled'):
         await passwords.verify_async(None, body.password)
         await _fail(db, request, username, 'no such local account and LDAP is off')
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, GENERIC)
-    # The pooled connection goes back before the directory is asked, which
-    # can take seconds, or hang
-    await db.commit()
     try:
         identity = await ldap.call(ldap.authenticate, cfg, bind_password, username, body.password)
     except ldap.LdapUnavailable as e:
-        # Counted like a failure, so a flood of sign-ins while the directory
-        # hangs is braked like any other
-        limits.failed(sessions.client_ip(request), username)
+        # Not counted against the name: the directory being away, or the
+        # console turning sign-ins away while it is slow, is not a wrong
+        # password, and the address's own queue already bounds a flood
         audit.look(db, 'auth.login', principal=None, request=request, key='directory-unavailable',
                    details={'reason': 'directory unavailable', 'error': str(e)},
                    actor_name=username, outcome='failure')

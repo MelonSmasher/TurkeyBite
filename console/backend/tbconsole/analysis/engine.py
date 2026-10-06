@@ -135,6 +135,15 @@ def in_schedule(schedule: dict | None, now: datetime) -> bool:
     return _period(schedule, now) is not None
 
 
+def window_cut(schedule: dict | None, end: datetime) -> datetime | None:
+    """Where a window ending at `end` is cut, at the start of the active
+    hours it belongs to: those `end` is in, or, for the window that ends
+    them, those it closes."""
+    if not schedule:
+        return None
+    return active_since(schedule, end if in_schedule(schedule, end) else end - timedelta(seconds=1))
+
+
 def active_since(schedule: dict | None, now: datetime) -> datetime | None:
     """When the active hours that `now` falls in began, so a window can be cut
     there rather than reach into the hours before. Periods that run on into
@@ -414,6 +423,7 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
     moments, note = plan(rule, end)
     window = timedelta(seconds=rule.window_seconds)
     was_enabled = rule.enabled
+    basis = cursor_basis(rule)
     outcome = RunOutcome('ok', reason=note)
     done: list[tuple[datetime, Evaluation]] = []
     state = dict(rule.state or {})
@@ -431,7 +441,7 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
                 break
             recent_since = previous if previous is not None and previous < moment \
                 and moment - previous <= window else None
-            start = active_since(rule.schedule, moment - timedelta(seconds=1)) if rule.schedule else None
+            start = window_cut(rule.schedule, moment)
             try:
                 evaluation = await evaluator.evaluate(spec, moment, recent_since, start, state=state)
             except (RuleError, SearchError) as e:
@@ -468,6 +478,11 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
     if was_enabled and not rule.enabled:
         rule.running_until = None
         return RunOutcome('skipped', reason='switched off during the run')
+    if cursor_basis(rule) != basis:
+        # Edited while it ran, an exception added say: what it found was
+        # found by the old version, so the new one looks again next run
+        rule.running_until = None
+        return RunOutcome('skipped', reason='changed during the run; the next run uses the new version')
     touched: set = set()
     failed = 0
     for moment, evaluation in done:
@@ -499,7 +514,7 @@ async def run_rule(db: AsyncSession, search: SearchClient, rule: Rule, now: date
         rule.consecutive_failures = 0
     first = done[0][0] - window if done else end - window
     if done and rule.schedule:
-        cut = active_since(rule.schedule, done[0][0] - timedelta(seconds=1))
+        cut = window_cut(rule.schedule, done[0][0])
         first = max(first, cut) if cut else first
     db.add(RuleRun(rule_id=rule.id, started_at=now, finished_at=datetime.now(timezone.utc),
                    window_start=first, window_end=done[-1][0] if done else end,
@@ -545,7 +560,7 @@ async def backtest(search: SearchClient, spec: RuleSpec, tr: TimeRange) -> dict:
             previous = None
             moment += timedelta(seconds=step)
             continue
-        start = active_since(spec.schedule, moment - timedelta(seconds=1)) if spec.schedule else None
+        start = window_cut(spec.schedule, moment)
         try:
             evaluation = await evaluator.evaluate(spec, moment, previous, start)
         except BudgetSpent:
@@ -602,12 +617,30 @@ async def sync_builtin_rules(db: AsyncSession) -> dict:
     return {'added': added, 'upgraded': upgraded}
 
 
+# What a rule's saved reading position is a position in: change any of them,
+# and it points at nothing, or at values of the wrong kind
+CURSOR_FIELDS = ('type', 'query', 'params', 'group_by', 'exceptions')
+
+
+def cursor_basis(rule: Rule) -> tuple:
+    return tuple(getattr(rule, name) for name in CURSOR_FIELDS)
+
+
+def forget_position_if_changed(rule: Rule, before: tuple) -> None:
+    """Clears where a first-seen or silence rule had got to, when what it
+    reads has changed since `before`, so it starts again from the beginning."""
+    if cursor_basis(rule) != before:
+        rule.state = {}
+
+
 def _copy_definition(rule: Rule, definition: dict) -> None:
+    before = cursor_basis(rule)
     for name in defaults.DEFINITION_FIELDS:
         if name in definition:
             value = definition[name]
             # Stored as the API stores them, so a save without changes is not a change
             setattr(rule, name, sorted(set(value)) if name == 'tags' else value)
+    forget_position_if_changed(rule, before)
 
 
 def reset_to_default(rule: Rule) -> None:

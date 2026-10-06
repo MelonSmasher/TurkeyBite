@@ -388,7 +388,9 @@ async def add_exception(finding_id: str, body: ExceptionBody, request: Request,
                  'finding': f'F-{finding.number}'}
     # Exceptions are the rule's own, not part of its shipped definition, so
     # adding one leaves a built-in rule able to take the next version
+    basis = engine.cursor_basis(rule)
     rule.exceptions = [*(rule.exceptions or []), exception]
+    engine.forget_position_if_changed(rule, basis)
     changes = await _apply(db, finding, FindingPatch(status='false_positive',
                                                      note=body.note or f'Exception added: {query}'),
                            principal, request)

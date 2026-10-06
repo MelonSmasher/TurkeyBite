@@ -125,7 +125,11 @@ passwords or codes lock a local account for fifteen minutes
 for one username from one address hold that pair back for five minutes, an
 address with a hundred failures in five minutes is held back for the names it
 has failed with but never for one it has not tried, and admins can require a
-second factor for local admins. Someone who lost their
+second factor for local admins. Each address has two sign-ins checked at a
+time and a queue of 64 behind them, past which it is told to try again in a
+moment, so a flood from one address waits on itself while every other
+address signs in as usual; the directory being unreachable never counts
+against anyone's name. Someone who lost their
 authenticator gets back in with
 `python -m tbconsole create-user NAME --password-stdin --reset-mfa`, which also
 ends their sessions; their role stays as it was unless `--role` is given, a
@@ -309,8 +313,10 @@ screenshots in `docs/screenshots/` from the running app.
   older is noted on the rule's run, not evaluated. They read events up to a
   minute behind now (`TBCONSOLE_RULE_INGEST_DELAY_SEC`), for those still on
   their way into OpenSearch.
-- A first-seen or silence rule looks at up to 5,000 values in a run, and the
-  next run carries on where it stopped; a first-seen rule raises at most 1,000
+- A first-seen or silence rule looks at up to 5,000 values in a run, shared
+  between the fields it groups by, and the next run carries on where each
+  stopped; changing what the rule reads starts it again from the beginning. A
+  first-seen rule raises at most 1,000
   findings in one run. Threshold and distinct-count rules look at the 200
   busiest groups per field, and a ratio rule ranks the 2,000 busiest by their
   share. Each says so on its run when it reaches the limit.
