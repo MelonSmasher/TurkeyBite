@@ -4,16 +4,16 @@ on:
   push:
     branches: [master]
     tags: ['v*']
-  workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read
 
-# Do not cancel a release because the same commit also had a master run.
-# The ref separates the two runs; images use only commit-specific/version tags.
+# Preserve every master commit run; cancel only superseded PR validation runs.
+# Tag runs stay separate from master, and a tag's SHA is part of its group.
 concurrency:
-  group: images-${{ github.ref }}
-  cancel-in-progress: false
+  group: images-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   release:
@@ -48,8 +48,46 @@ jobs:
   console-tests:
     uses: ./.github/workflows/console.yml
 
+  build:
+    if: github.event_name == 'pull_request'
+    needs: [release, pipeline-tests, console-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: core
+            context: .
+            dockerfile: docker/core/Dockerfile
+          - role: worker
+            context: .
+            dockerfile: docker/worker/Dockerfile
+          - role: librarian
+            context: .
+            dockerfile: docker/librarian/Dockerfile
+          - role: console
+            context: console
+            dockerfile: console/Dockerfile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Build ${{ matrix.role }} without publishing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.role }}
+
   publish:
-    if: github.repository == 'MelonSmasher/TurkeyBite' && (github.ref == 'refs/heads/master' || github.ref_type == 'tag')
+    if: github.repository == 'MelonSmasher/TurkeyBite' && github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref_type == 'tag')
     needs: [release, pipeline-tests, console-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -85,6 +123,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reject an already published tag
+        env:
+          ROLE: ${{ matrix.role }}
+          VERSION: ${{ needs.release.outputs.version }}
+          GH_USERNAME: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag=$VERSION; else tag="sha-$GITHUB_SHA"; fi
+          IMAGE="ghcr.io/melonsmasher/turkeybite-$ROLE:$tag" python3 docker/check-image-tag.py
 
       - name: Build and publish ${{ matrix.role }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
