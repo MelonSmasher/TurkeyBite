@@ -18,8 +18,9 @@
   .sev {
     display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 8px 0 6px;
     border-radius: 999px; font-size: 0.76rem; font-weight: 600; white-space: nowrap;
-    color: var(--c); background: color-mix(in srgb, var(--c) 12%, transparent);
+    color: color-mix(in srgb, var(--c) 62%, #000); background: color-mix(in srgb, var(--c) 12%, transparent);
   }
+  :global(:root[data-theme='dark']) .sev { color: color-mix(in srgb, var(--c) 60%, #fff); }
   .compact { width: 22px; padding: 0; justify-content: center; }
   .sev-critical { --c: var(--sev-critical); }
   .sev-high { --c: #d9662f; }

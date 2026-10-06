@@ -74,6 +74,13 @@ def finding_body(finding: Finding, redact: bool = False) -> dict:
         'top_categories': evidence.get('top_categories', []),
         'tags': finding.tags,
     }
+    detail = evidence.get('detail') or {}
+    if detail.get('new_value') is not None:
+        # What a first-seen rule found, and in which field: a domain, or a
+        # person or machine, which redaction then hides like the entity
+        field = F.BY_NAME.get(str(detail.get('field') or ''))
+        body['new_value'] = {'field': detail.get('field'), 'value': detail['new_value'],
+                             'identity': bool(field and field.identity)}
     if redact:
         # Who it is about stays in the console, where viewing it is audited:
         # the entity, the whole of it when it was stored cut short, and a
@@ -84,6 +91,8 @@ def finding_body(finding: Finding, redact: bool = False) -> dict:
         if target is not None and target.identity and detail.get('new_value') is not None:
             names.append(str(detail['new_value']))
         body['entity'] = '[redacted]' if finding.entity_value else None
+        if body.get('new_value', {}).get('identity'):
+            body['new_value']['value'] = '[redacted]'
         for name in filter(None, names):
             for key in ('title', 'summary'):
                 body[key] = (body[key] or '').replace(str(name), '[redacted]')

@@ -38,10 +38,7 @@
     {#each items as item (item.id ?? item.key)}
       {@const w = Math.max(2, ((width - 4) * item.value) / top)}
       <li>
-        <svelte:element this={item.href ? 'a' : onselect ? 'button' : 'div'} class="row" href={item.href}
-                        type={!item.href && onselect ? 'button' : undefined}
-                        role={!item.href && !onselect ? 'listitem' : undefined}
-                        onclick={onselect && !item.href ? () => onselect(item) : undefined}>
+        {#snippet row()}
           <span class="label truncate">
             {#if label}{@render label(item)}{:else}{item.label ?? item.key}{/if}
             {#if item.sub}<span class="sub">{item.sub}</span>{/if}
@@ -50,7 +47,14 @@
           <svg class="bar" width={width} height="6" aria-hidden="true">
             <path d={barPath(0, 0, w, 6, 3)} fill={item.color ?? color} />
           </svg>
-        </svelte:element>
+        {/snippet}
+        {#if item.href}
+          <a class="row" href={item.href}>{@render row()}</a>
+        {:else if onselect}
+          <button class="row" type="button" onclick={() => onselect(item)}>{@render row()}</button>
+        {:else}
+          <div class="row">{@render row()}</div>
+        {/if}
       </li>
     {/each}
   </ul>

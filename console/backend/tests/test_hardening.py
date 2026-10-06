@@ -34,13 +34,13 @@ async def _audit(action: str) -> list[AuditEvent]:
 async def _finding(entity='ava', status='new', dedup_key=None, title=None, **extra) -> Finding:
     now = datetime.now(timezone.utc)
     async with db.sessionmaker()() as session:
-        finding = Finding(rule_name='Threat seen', rule_type='threshold', category='threat',
-                          severity=extra.pop('severity', 'high'), status=status,
-                          title=title or f'Threat seen: {entity}', summary='3 events',
-                          entity_field='bite.client_user', entity_value=entity,
-                          dedup_key=dedup_key or uuid.uuid4().hex, first_seen=now, last_seen=now,
-                          event_count=3, evidence={'top_domains': [{'key': 'evil.example', 'count': 3}]},
-                          **extra)
+        finding = Finding(**{'rule_name': 'Threat seen', 'rule_type': 'threshold', 'category': 'threat',
+                             'severity': 'high', 'status': status,
+                             'title': title or f'Threat seen: {entity}', 'summary': '3 events',
+                             'entity_field': 'bite.client_user', 'entity_value': entity,
+                             'dedup_key': dedup_key or uuid.uuid4().hex, 'first_seen': now, 'last_seen': now,
+                             'event_count': 3, 'evidence': {'top_domains': [{'key': 'evil.example', 'count': 3}]},
+                             **extra})
         session.add(finding)
         await session.commit()
         await session.refresh(finding)
@@ -1126,3 +1126,22 @@ async def test_the_sign_in_check_gives_its_connection_back_before_the_request_go
         principal = await optional_principal(StarletteRequest(scope), session)
         assert principal is not None and principal.user.username == 'ana'
         assert not session.in_transaction()
+
+
+async def test_a_first_seen_person_is_named_redacted_and_listed_for_masking(client):
+    from tbconsole.webhooks.service import finding_body
+    finding = await _finding('lab-12', title='First seen person (k.larsen)', entity_field='bite.client_hostname_short',
+                             evidence={'detail': {'field': 'bite.client_user', 'new_value': 'k.larsen'}})
+    body = finding_body(finding)
+    assert body['new_value'] == {'field': 'bite.client_user', 'value': 'k.larsen', 'identity': True}
+    redacted = finding_body(finding, redact=True)
+    assert 'k.larsen' not in str(redacted) and redacted['new_value']['value'] == '[redacted]'
+    hook = await _hook('https://example.org/hook')
+    async with db.sessionmaker()() as session:
+        session.add(WebhookDelivery(webhook_id=hook.id, event='finding.created', status='succeeded',
+                                    payload={'event': 'finding.created', 'finding': body}))
+        await session.commit()
+    await make_user('root', role='admin')
+    await login(client, 'root')
+    listed = (await client.get('/api/v1/webhook-deliveries')).json()
+    assert listed[0]['names'] == ['lab-12', 'k.larsen']

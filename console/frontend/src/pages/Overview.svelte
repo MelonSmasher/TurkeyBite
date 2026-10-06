@@ -115,7 +115,7 @@
   <div class="span-4">
     <section class="card findings-card">
       <div class="card-head">
-        <h3 class="card-title">Open findings</h3>
+        <h2 class="card-title">Open findings</h2>
         <div class="spacer"></div>
         <a class="btn btn-ghost btn-sm" href="/findings?status=open">All <ArrowRight size={14} /></a>
       </div>
@@ -185,7 +185,7 @@
   <div class="span-6">
     <section class="card">
       <div class="card-head">
-        <h3 class="card-title">Who is reaching risky sites</h3>
+        <h2 class="card-title">Who is reaching risky sites</h2>
         <div class="spacer"></div>
         <a class="btn btn-ghost btn-sm" href="/entities?sort=notable">All entities <ArrowRight size={14} /></a>
       </div>
@@ -216,7 +216,7 @@
   <div class="span-6">
     <section class="card">
       <div class="card-head">
-        <h3 class="card-title">What changed</h3>
+        <h2 class="card-title">What changed</h2>
         <span class="card-sub">against the {timeRange.preset ? timeRange.preset.label.toLowerCase().replace('last', 'previous') : 'previous period'}</span>
       </div>
       <div class="card-body">
@@ -312,7 +312,7 @@
   .score { display: inline-grid; place-items: center; min-width: 30px; height: 22px; padding: 0 6px; border-radius: 6px;
     font-weight: 700; font-size: 0.8rem; background: var(--surface-3); color: var(--text-2); }
   .score.warm { background: color-mix(in srgb, var(--sev-high) 18%, transparent); color: #b5531c; }
-  .score.hot { background: color-mix(in srgb, var(--sev-critical) 15%, transparent); color: var(--sev-critical); }
+  .score.hot { background: color-mix(in srgb, var(--sev-critical) 15%, transparent); color: #a8282c; }
   :global(:root[data-theme='dark']) .score.warm { color: var(--sev-high); }
   :global(:root[data-theme='dark']) .score.hot { color: #f97066; }
   .changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }

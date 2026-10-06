@@ -46,7 +46,7 @@
   <div class="grid-12">
     <div class="span-5">
       <section class="card">
-        <div class="card-head"><h3 class="card-title">Background work</h3></div>
+        <div class="card-head"><h2 class="card-title">Background work</h2></div>
         <div class="card-body">
           {#each workers as [name, w] (name)}
             <div class="worker">
@@ -63,7 +63,7 @@
         </div>
       </section>
       <section class="card conn">
-        <div class="card-head"><h3 class="card-title">Connection</h3></div>
+        <div class="card-head"><h2 class="card-title">Connection</h2></div>
         <div class="card-body kv">
           <span class="muted">URLs</span><span class="mono small">{s.opensearch.urls.join(', ')}</span>
           <span class="muted">Indices</span><span class="mono small">{s.opensearch.index_pattern}</span>
@@ -74,7 +74,7 @@
     </div>
     <div class="span-7">
       <section class="card">
-        <div class="card-head"><h3 class="card-title">Indices</h3><span class="card-sub">Newest first, by documents</span></div>
+        <div class="card-head"><h2 class="card-title">Indices</h2><span class="card-sub">Newest first, by documents</span></div>
         <div class="card-body">
           <BarList items={(s.opensearch.indices ?? []).slice(0, 24).map((i) => ({ key: i.index, value: i.docs, sub: bytes(i.bytes) }))} format={num}>
             {#snippet label(item)}<span class="mono small">{item.key}</span>{/snippet}

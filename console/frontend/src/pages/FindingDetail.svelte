@@ -209,7 +209,7 @@
       </div>
 
       <section class="card">
-        <div class="card-head"><MessageSquare size={16} /><h3 class="card-title">Activity</h3></div>
+        <div class="card-head"><MessageSquare size={16} /><h2 class="card-title">Activity</h2></div>
         <div class="card-body">
           {#if canWrite}
             <div class="comment-box">
@@ -237,7 +237,7 @@
 
     <aside class="side-col">
       <section class="card">
-        <div class="card-head"><h3 class="card-title">Details</h3></div>
+        <div class="card-head"><h2 class="card-title">Details</h2></div>
         <div class="card-body kv">
           <span class="muted">Rule</span>
           <span>{#if f.rule_id}<a href="/rules/{f.rule_id}">{f.rule_name}</a>{:else}{f.rule_name}{/if}</span>
@@ -263,7 +263,7 @@
 
       {#if f.rule}
         <section class="card">
-          <div class="card-head"><Workflow size={16} /><h3 class="card-title">How the rule decided</h3></div>
+          <div class="card-head"><Workflow size={16} /><h2 class="card-title">How the rule decided</h2></div>
           <div class="card-body small rule-explain">
             <p>{f.rule.description}</p>
             <div class="mono code-mini">{f.rule.query || '(every event)'}</div>
@@ -279,7 +279,7 @@
       {/if}
 
       <section class="card">
-        <div class="card-head"><Webhook size={16} /><h3 class="card-title">Alerts sent</h3></div>
+        <div class="card-head"><Webhook size={16} /><h2 class="card-title">Alerts sent</h2></div>
         <div class="card-body">
           {#each f.deliveries as d (d.id)}
             <div class="delivery">
@@ -294,7 +294,7 @@
 
       {#if f.related.length}
         <section class="card">
-          <div class="card-head"><h3 class="card-title">Also about them</h3></div>
+          <div class="card-head"><h2 class="card-title">Also about them</h2></div>
           <div class="card-body">
             {#each f.related as r (r.id)}
               <a class="related" href="/findings/{r.id}">
@@ -354,7 +354,8 @@
   .facts .muted { font-size: 0.76rem; }
   .query-line { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 12px; border-radius: var(--radius);
     background: var(--code-bg); border: 1px solid var(--border); }
-  .query-line code { flex: 1; font-size: 0.82rem; color: var(--text-2); overflow-x: auto; white-space: nowrap; }
+  /* Wrapped rather than scrolled, so all of it can be read without a scrollbar to reach */
+  .query-line code { flex: 1; font-size: 0.82rem; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
   .ev { margin-top: 12px; }
   .ev td { padding-top: 7px; padding-bottom: 7px; }
   .small { font-size: 0.8rem; }

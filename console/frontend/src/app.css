@@ -54,8 +54,9 @@
   --divider: rgba(16, 24, 40, 0.06);
   --text: #0f1729;
   --text-2: #3d4757;
-  --text-3: #667085;
-  --text-4: #98a2b3;
+  /* At least 4.5:1 against every surface below, sunken included */
+  --text-3: #545d6d;
+  --text-4: #636b7b;
   --text-on-accent: #ffffff;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.05);
@@ -94,8 +95,8 @@
   --divider: rgba(255, 255, 255, 0.05);
   --text: #f2f4f8;
   --text-2: #c3c8d2;
-  --text-3: #8b93a2;
-  --text-4: #5d6573;
+  --text-3: #9aa1ae;
+  --text-4: #848c9b;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 18px 48px -12px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -123,17 +124,17 @@
   --accent-text: #4c40d6; --accent-grad: linear-gradient(135deg, #7c6cf5, #4f46e5);
 }
 :root[data-accent='ocean'] {
-  --accent: #0b84a5; --accent-hover: #086f8b; --accent-soft: rgba(11, 132, 165, 0.1);
+  --accent: #0a7a99; --accent-hover: #086a85; --accent-soft: rgba(11, 132, 165, 0.1);
   --accent-softer: rgba(11, 132, 165, 0.06); --accent-ring: rgba(11, 132, 165, 0.28);
   --accent-text: #08708c; --accent-grad: linear-gradient(135deg, #22b8cf, #0b7285);
 }
 :root[data-accent='forest'] {
-  --accent: #1f8a4c; --accent-hover: #187340; --accent-soft: rgba(31, 138, 76, 0.1);
+  --accent: #1c7f46; --accent-hover: #166b3b; --accent-soft: rgba(31, 138, 76, 0.1);
   --accent-softer: rgba(31, 138, 76, 0.06); --accent-ring: rgba(31, 138, 76, 0.28);
   --accent-text: #176f3d; --accent-grad: linear-gradient(135deg, #40c057, #2b8a3e);
 }
 :root[data-accent='ember'] {
-  --accent: #d9480f; --accent-hover: #bf3f0c; --accent-soft: rgba(217, 72, 15, 0.1);
+  --accent: #c2410c; --accent-hover: #a8380a; --accent-soft: rgba(217, 72, 15, 0.1);
   --accent-softer: rgba(217, 72, 15, 0.06); --accent-ring: rgba(217, 72, 15, 0.28);
   --accent-text: #b8400d; --accent-grad: linear-gradient(135deg, #ff922b, #e8590c);
 }
@@ -213,6 +214,8 @@ hr { border: 0; border-top: 1px solid var(--divider); margin: 16px 0; }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
 .tabular { font-variant-numeric: tabular-nums; }
 .muted { color: var(--text-3); }
+/* A link inside a sentence is underlined, not told apart by colour alone */
+p a, .muted a, .field-hint a { text-decoration: underline; text-underline-offset: 2px; }
 .subtle { color: var(--text-2); }
 .faint { color: var(--text-4); }
 .nowrap { white-space: nowrap; }
@@ -281,6 +284,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
 .btn-ghost:hover { background: var(--surface-hover); color: var(--text); }
 .btn-danger { color: var(--sev-critical); }
+:root[data-theme='dark'] .btn-danger { color: #ef6b6b; }
 .btn-danger:hover { background: rgba(208, 59, 59, 0.08); border-color: rgba(208, 59, 59, 0.3); }
 .btn-solid-danger { background: var(--sev-critical); color: #fff; border-color: transparent; }
 .btn-solid-danger:hover { background: #b42f2f; }

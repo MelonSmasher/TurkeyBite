@@ -120,7 +120,7 @@
     </div>
     <div class="span-4">
       <section class="card">
-        <div class="card-head"><h3 class="card-title">Also known as</h3></div>
+        <div class="card-head"><h2 class="card-title">Also known as</h2></div>
         <div class="card-body aka">
           {#each identityRows as row (row.field)}
             <div class="aka-row">
@@ -141,7 +141,7 @@
 
     <div class="span-7">
       <section class="card">
-        <div class="card-head"><h3 class="card-title">Domains</h3><span class="card-sub">most visited first</span></div>
+        <div class="card-head"><h2 class="card-title">Domains</h2><span class="card-sub">most visited first</span></div>
         <div class="card-body">
           <table class="table">
             <thead><tr><th>Domain</th><th>Kind</th><th>Risk</th><th class="num">Events</th><th>Last</th></tr></thead>
@@ -170,7 +170,7 @@
 
     <div class="span-6" id="findings">
       <section class="card">
-        <div class="card-head"><ShieldAlert size={16} /><h3 class="card-title">Findings about them</h3></div>
+        <div class="card-head"><ShieldAlert size={16} /><h2 class="card-title">Findings about them</h2></div>
         <div class="card-body">
           {#each p?.findings ?? [] as f (f.id)}
             <a class="finding" href="/findings/{f.id}">
@@ -192,7 +192,7 @@
 
     <div class="span-12">
       <section class="card">
-        <div class="card-head"><History size={16} /><h3 class="card-title">Recent risky events</h3><span class="card-sub">High and medium risk, newest first</span></div>
+        <div class="card-head"><History size={16} /><h2 class="card-title">Recent risky events</h2><span class="card-sub">High and medium risk, newest first</span></div>
         <div class="card-body">
           {#if p?.recent_notable.length}
             <table class="table">

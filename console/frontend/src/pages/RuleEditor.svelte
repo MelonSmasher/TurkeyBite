@@ -367,7 +367,7 @@
 
       {#if !isNew}
         <section class="card">
-          <div class="card-head"><h3 class="card-title">Recent runs</h3></div>
+          <div class="card-head"><h2 class="card-title">Recent runs</h2></div>
           <div class="card-body">
             {#each runs.data ?? [] as r (r.id)}
               <div class="runrow">

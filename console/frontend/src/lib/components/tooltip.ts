@@ -17,11 +17,29 @@ export function tip(node: HTMLElement, text: string | null | undefined) {
   // The tip names an element that shows no name of its own, such as an icon
   // button or a collapsed sidebar link, and keeps naming it as it changes;
   // one whose text can be seen keeps that text as its name
+  // one whose text can be seen keeps that text as its name. A plain span or
+  // div may carry a name only as an image, so an icon gets role="img"; a bit
+  // of a chart, which the chart's own label or table describes, gets none.
   const names = !node.getAttribute('aria-label');
+  const interactive = node.matches('a[href], button, input, select, textarea, [tabindex], [role]');
+  let madeImage = false;
   function label(value: string | null | undefined) {
     if (!names) return;
-    if (value && !node.innerText?.trim()) node.setAttribute('aria-label', value);
-    else node.removeAttribute('aria-label');
+    const unnamed = !node.innerText?.trim();
+    const icon = !interactive && unnamed && !!node.querySelector('svg');
+    if (value && unnamed && (interactive || icon)) {
+      node.setAttribute('aria-label', value);
+      if (icon && !madeImage) {
+        node.setAttribute('role', 'img');
+        madeImage = true;
+      }
+    } else {
+      node.removeAttribute('aria-label');
+      if (madeImage) {
+        node.removeAttribute('role');
+        madeImage = false;
+      }
+    }
   }
   function show() {
     if (!current) return;

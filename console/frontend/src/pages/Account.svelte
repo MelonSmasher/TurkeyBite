@@ -180,7 +180,7 @@
     {/if}
 
     <section class="card">
-      <div class="card-head"><LaptopMinimal size={16} /><h3 class="card-title">Where you are signed in</h3></div>
+      <div class="card-head"><LaptopMinimal size={16} /><h2 class="card-title">Where you are signed in</h2></div>
       <div class="card-body">
         {#each sessions.data ?? [] as s (s.id)}
           <div class="sess">

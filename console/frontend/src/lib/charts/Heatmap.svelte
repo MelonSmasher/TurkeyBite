@@ -66,8 +66,8 @@
 <style>
   .heatmap { display: flex; flex-direction: column; gap: 10px; }
   .grid { display: grid; grid-template-columns: 30px repeat(24, minmax(0, 1fr)); gap: 2px; }
-  .hour { font-size: 0.66rem; color: var(--chart-muted); text-align: left; height: 14px; font-variant-numeric: tabular-nums; }
-  .day { font-size: 0.72rem; color: var(--chart-muted); display: flex; align-items: center; }
+  .hour { font-size: 0.66rem; color: var(--text-3); text-align: left; height: 14px; font-variant-numeric: tabular-nums; }
+  .day { font-size: 0.72rem; color: var(--text-3); display: flex; align-items: center; }
   .cell { aspect-ratio: 1.35; border-radius: 3px; min-height: 10px; transition: transform var(--fast); }
   .cell.active { outline: 2px solid var(--text); outline-offset: 1px; }
   .foot { display: flex; align-items: center; gap: 12px; font-size: 0.8rem; min-height: 20px; }

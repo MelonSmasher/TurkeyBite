@@ -75,7 +75,7 @@
     <EmptyState icon={KeyRound} title="No keys yet" body="Make one for a SIEM, a ticketing system, or a notebook." />
   {:else}
     <table class="table">
-      <thead><tr><th>Key</th><th>Owner</th><th>Scopes</th><th>State</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+      <thead><tr><th>Key</th><th>Owner</th><th>Scopes</th><th>State</th><th>Last used</th><th>Expires</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {#each keys.data ?? [] as k (k.id)}
           <tr class:dim={k.state !== 'active'}>
@@ -148,7 +148,10 @@
   .state { font-size: 0.78rem; font-weight: 650; text-transform: capitalize; padding: 2px 8px; border-radius: 99px; background: var(--surface-3); color: var(--text-3); }
   .state.active { background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--delta-good); }
   .state.revoked { background: color-mix(in srgb, var(--sev-critical) 10%, transparent); color: var(--delta-bad); }
-  tr.dim td { opacity: 0.6; }
+  /* Inactive rows recede by colour, not by fading, so they can still be read */
+  tr.dim td { background: var(--surface-2); }
+  tr.dim td, tr.dim td :global(strong), tr.dim td :global(.muted), tr.dim td :global(.faint) { color: var(--text-3); }
+  tr.dim td :global(.badge), tr.dim td :global(.kind) { color: var(--text-3); background: var(--surface-3); }
   .scopes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .scope { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--radius); border: 1px solid var(--border); cursor: pointer; }
   .scope input { margin-top: 3px; accent-color: var(--accent); }

@@ -36,7 +36,7 @@
 </script>
 
 <header class="topbar">
-  <button class="palette-trigger" onclick={onpalette} aria-label="Search or jump to (command palette)">
+  <button class="palette-trigger" onclick={onpalette} aria-keyshortcuts={isMac ? 'Meta+K' : 'Control+K'}>
     <Search size={15} />
     <span>Search or jump to…</span>
     <span class="keys"><span class="kbd">{isMac ? '⌘' : 'Ctrl'}</span><span class="kbd">K</span></span>
@@ -93,7 +93,8 @@
   {#if session.can('findings:read')}
     <Menu width={380} label="New findings">
       {#snippet trigger({ toggle })}
-        <button class="btn btn-ghost btn-icon bell" onclick={toggle} use:tip={'New findings'} aria-label="New findings">
+        <button class="btn btn-ghost btn-icon bell" onclick={toggle} use:tip={'New findings'}
+                aria-label={recent.data?.total ? `${recent.data.total > 9 ? '9+' : recent.data.total} new findings` : 'New findings'}>
           <Bell size={17} />
           {#if recent.data?.total}<span class="bell-count">{recent.data.total > 9 ? '9+' : recent.data.total}</span>{/if}
         </button>
@@ -122,8 +123,9 @@
 
   <Menu width={240} label="Account">
     {#snippet trigger({ toggle })}
-      <button class="user" onclick={toggle} aria-label="Account menu">
+      <button class="user" onclick={toggle}>
         <Avatar name={session.user?.display_name ?? '?'} size={30} />
+        <span class="sr-only">, your account</span>
       </button>
     {/snippet}
     {#snippet children({ close })}

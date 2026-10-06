@@ -161,6 +161,7 @@ export interface Delivery {
   status: 'pending' | 'succeeded' | 'failed' | 'dead';
   attempts: number;
   entity?: string | null;
+  names?: string[];
   next_attempt_at: string | null;
   last_status_code: number | null;
   last_error: string | null;

@@ -208,7 +208,7 @@ def verify(secret: str, body: bytes, header: str) -> bool:
 
 <section class="card deliveries">
   <div class="card-head">
-    <h3 class="card-title">Deliveries</h3>
+    <h2 class="card-title">Deliveries</h2>
     <span class="card-sub">Newest first</span>
     <div class="spacer"></div>
     <Segmented size="sm" bind:value={deliveryFilter} label="Status" options={[{ value: '', label: 'All' }, { value: 'succeeded', label: 'Delivered' },
@@ -216,13 +216,13 @@ def verify(secret: str, body: bytes, header: str) -> bool:
   </div>
   <div class="card-body">
     <table class="table">
-      <thead><tr><th>Status</th><th>Event</th><th>About</th><th>Webhook</th><th class="num">Tries</th><th>Answer</th><th>When</th><th></th></tr></thead>
+      <thead><tr><th>Status</th><th>Event</th><th>About</th><th>Webhook</th><th class="num">Tries</th><th>Answer</th><th>When</th><th><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {#each deliveries.data ?? [] as d (d.id)}
           <tr class="clickable" use:opens={() => openDelivery(d)}>
             <td><span class="dstate {d.status}">{d.status === 'succeeded' ? 'Delivered' : d.status === 'failed' ? 'Retrying' : d.status === 'dead' ? 'Dead' : 'Queued'}</span></td>
             <td class="mono small">{d.event}</td>
-            <td class="truncate about">{d.title ? maskText(d.title, d.entity) : '–'}</td>
+            <td class="truncate about">{d.title ? maskText(d.title, ...(d.names ?? [d.entity])) : '–'}</td>
             <td class="muted small">{hookName.get(d.webhook_id) ?? '–'}</td>
             <td class="num">{d.attempts}</td>
             <td class="small">{d.last_status_code ? `HTTP ${d.last_status_code}` : d.last_error ? 'No answer' : '–'}{d.duration_ms !== null ? ` · ${d.duration_ms} ms` : ''}</td>
@@ -238,7 +238,7 @@ def verify(secret: str, body: bytes, header: str) -> bool:
 </section>
 
 <section class="card verify">
-  <div class="card-head"><ShieldCheck size={16} /><h3 class="card-title">Checking a delivery is genuine</h3></div>
+  <div class="card-head"><ShieldCheck size={16} /><h2 class="card-title">Checking a delivery is genuine</h2></div>
   <div class="card-body stack">
     <p class="muted">Each delivery carries <code class="inline-code">{meta.data?.signature_header ?? 'X-TurkeyBite-Signature'}: t=…,v1=…</code>, an HMAC-SHA256 of the timestamp and the exact body under the webhook's secret,
       and <code class="inline-code">X-TurkeyBite-Delivery</code>, which stays the same when a delivery is retried, so a receiver can ignore a repeat.</p>
@@ -306,7 +306,7 @@ def verify(secret: str, body: bytes, header: str) -> bool:
         <span class="muted">Created</span><span>{fullTime(detail.created_at)}</span>
       </div>
       {#if detail.response_snippet}<div class="field"><span class="field-label">Response</span><pre class="code">{detail.response_snippet}</pre></div>{/if}
-      <div class="field"><span class="field-label"><Braces size={13} /> As sent to the receiver</span><div class="json"><JsonView value={maskDeep(detail.rendered ?? detail.payload, detail.entity)} /></div></div>
+      <div class="field"><span class="field-label"><Braces size={13} /> As sent to the receiver</span><div class="json"><JsonView value={maskDeep(detail.rendered ?? detail.payload, ...(detail.names ?? [detail.entity]))} /></div></div>
       {#if canWrite}<button class="btn" onclick={() => detail && redeliver(detail)}><RefreshCw size={14} /> Send again</button>{/if}
     </div>
   {/if}
@@ -318,7 +318,8 @@ def verify(secret: str, body: bytes, header: str) -> bool:
   .hook.off { opacity: 0.65; }
   .hook-top { display: flex; align-items: center; gap: 12px; }
   .fmt { flex: none; min-width: 64px; height: 30px; padding: 0 10px; border-radius: 9px; display: grid; place-items: center; font-size: 0.74rem; font-weight: 700;
-    color: var(--hue); background: color-mix(in srgb, var(--hue) 13%, transparent); }
+    color: color-mix(in srgb, var(--hue) 62%, #000); background: color-mix(in srgb, var(--hue) 13%, transparent); }
+  :global(:root[data-theme='dark']) .fmt { color: color-mix(in srgb, var(--hue) 60%, #fff); }
   .hook-names { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .url { font-size: 0.78rem; color: var(--text-3); }
   .routing { display: flex; flex-wrap: wrap; gap: 5px; }

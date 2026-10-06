@@ -87,7 +87,7 @@
 
 <section class="card">
   <table class="table">
-    <thead><tr><th>Account</th><th>Kind</th><th>Role</th><th>Second factor</th><th>Last sign-in</th><th class="num">Keys</th><th>State</th><th></th></tr></thead>
+    <thead><tr><th>Account</th><th>Kind</th><th>Role</th><th>Second factor</th><th>Last sign-in</th><th class="num">Keys</th><th>State</th><th><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
       {#each rows as u (u.id)}
         <tr class:dim={u.disabled}>
@@ -178,8 +178,10 @@
   .bot { width: 32px; height: 32px; border-radius: 99px; display: grid; place-items: center; background: var(--surface-3); color: var(--text-3); }
   .small { font-size: 0.8rem; }
   .kind { font-size: 0.76rem; font-weight: 650; padding: 2px 8px; border-radius: 99px; background: var(--surface-3); color: var(--text-2); }
-  .kind.ldap { background: color-mix(in srgb, var(--s1) 12%, transparent); color: var(--s1); }
-  .kind.service { background: color-mix(in srgb, var(--s7) 12%, transparent); color: var(--s7); }
+  .kind.ldap { --c: var(--s1); }
+  .kind.service { --c: var(--s7); }
+  .kind.ldap, .kind.service { color: color-mix(in srgb, var(--c) 62%, #000); background: color-mix(in srgb, var(--c) 12%, transparent); }
+  :global(:root[data-theme='dark']) .kind.ldap, :global(:root[data-theme='dark']) .kind.service { color: color-mix(in srgb, var(--c) 60%, #fff); }
   .role { text-transform: capitalize; font-size: 0.88rem; border-bottom: 1px dotted var(--text-4); }
   .role-sel { width: 116px; }
   .good { display: inline-flex; align-items: center; gap: 4px; color: var(--delta-good); font-weight: 600; }
@@ -189,6 +191,9 @@
   .st.on { color: var(--delta-good); }
   .st.off { color: var(--text-4); }
   .st.locked { color: var(--delta-bad); }
-  tr.dim td { opacity: 0.55; }
+  /* Inactive rows recede by colour, not by fading, so they can still be read */
+  tr.dim td { background: var(--surface-2); }
+  tr.dim td, tr.dim td :global(strong), tr.dim td :global(.muted), tr.dim td :global(.faint) { color: var(--text-3); }
+  tr.dim td :global(.badge), tr.dim td :global(.kind) { color: var(--text-3); background: var(--surface-3); }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 </style>

@@ -80,7 +80,7 @@
 
     <div class="span-7">
       <section class="card">
-        <div class="card-head"><ShieldCheck size={16} /><h3 class="card-title">Why it is categorised this way</h3></div>
+        <div class="card-head"><ShieldCheck size={16} /><h2 class="card-title">Why it is categorised this way</h2></div>
         <div class="card-body">
           {#if !allCategories.length}
             <p class="muted">No list claims this domain, so its events carry no category.</p>
@@ -115,7 +115,7 @@
     </div>
     <div class="span-5">
       <section class="card">
-        <div class="card-head"><h3 class="card-title">DNS</h3></div>
+        <div class="card-head"><h2 class="card-title">DNS</h2></div>
         <div class="card-body kv">
           <span class="muted">First seen</span><span>{d?.first ? dateTime(d.first) : '–'}</span>
           <span class="muted">Last seen</span><span>{d?.last ? ago(d.last) : '–'}</span>
@@ -147,7 +147,7 @@
 
     <div class="span-6">
       <section class="card">
-        <div class="card-head"><Users size={16} /><h3 class="card-title">Who reached it</h3></div>
+        <div class="card-head"><Users size={16} /><h2 class="card-title">Who reached it</h2></div>
         <div class="card-body">
           <table class="table">
             <thead><tr><th>Entity</th><th class="num">Events</th><th>Last</th></tr></thead>
@@ -162,7 +162,7 @@
     </div>
     <div class="span-6">
       <section class="card">
-        <div class="card-head"><Link2 size={16} /><h3 class="card-title">Findings that mention it</h3></div>
+        <div class="card-head"><Link2 size={16} /><h2 class="card-title">Findings that mention it</h2></div>
         <div class="card-body">
           {#each d?.findings ?? [] as f (f.id)}
             <a class="finding" href="/findings/{f.id}">

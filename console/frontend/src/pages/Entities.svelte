@@ -105,8 +105,8 @@
   .hot { color: var(--delta-bad); font-weight: 650; }
   .score { display: inline-grid; place-items: center; min-width: 32px; height: 22px; padding: 0 6px; border-radius: 6px;
     font-weight: 700; font-size: 0.8rem; background: var(--surface-3); color: var(--text-2); }
-  .score.warm { background: color-mix(in srgb, var(--sev-high) 18%, transparent); color: #b5531c; }
-  .score.hot-score { background: color-mix(in srgb, var(--sev-critical) 15%, transparent); color: var(--sev-critical); }
+  .score.warm { background: color-mix(in srgb, var(--sev-high) 18%, transparent); color: #9a4413; }
+  .score.hot-score { background: color-mix(in srgb, var(--sev-critical) 15%, transparent); color: #a8282c; }
   :global(:root[data-theme='dark']) .score.warm { color: var(--sev-high); }
   :global(:root[data-theme='dark']) .score.hot-score { color: #f97066; }
 </style>

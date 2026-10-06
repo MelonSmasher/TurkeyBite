@@ -144,6 +144,15 @@ def webhook_out(w: Webhook, reveal: bool = False) -> dict:
     }
 
 
+def _delivery_names(d: WebhookDelivery) -> list[str]:
+    finding = (d.payload or {}).get('finding') or {}
+    names = [str(finding['entity'])] if finding.get('entity') else []
+    new_value = finding.get('new_value') or {}
+    if new_value.get('identity') and new_value.get('value') is not None:
+        names.append(str(new_value['value']))
+    return names
+
+
 def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> dict:
     """A delivery. What it says about a finding, its title and who it is
     about, only with `about`, for those who may read findings."""
@@ -155,6 +164,8 @@ def delivery_out(d: WebhookDelivery, full: bool = False, about: bool = True) -> 
         'duration_ms': d.duration_ms, 'created_at': ts(d.created_at),
         'delivered_at': ts(d.delivered_at),
         'entity': ((d.payload or {}).get('finding') or {}).get('entity') if about else None,
+        # Every person or machine the delivery names, for the app to mask
+        'names': _delivery_names(d) if about else [],
         'title': (((d.payload or {}).get('finding') or {}).get('title') if about else None)
         or ((d.payload or {}).get('rule') or {}).get('name') or (d.payload or {}).get('message'),
     }

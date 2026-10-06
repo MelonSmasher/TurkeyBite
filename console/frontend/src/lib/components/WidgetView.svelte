@@ -56,7 +56,7 @@
 <div class="widget span-w{widget.span}" class:editing>
   {#if widget.type === 'note'}
     <section class="card card-pad note">
-      <h3 class="card-title">{widget.title}</h3>
+      <h2 class="card-title">{widget.title}</h2>
       <p class="muted">{widget.note}</p>
     </section>
   {:else if widget.type === 'stat' || (widget.type === 'findings' && widget.findings?.count_only)}

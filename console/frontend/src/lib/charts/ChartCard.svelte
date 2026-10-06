@@ -21,7 +21,7 @@
 <section class="card chart-card">
   <div class="card-head">
     <div class="titles">
-      <h3 class="card-title">{title}</h3>
+      <h2 class="card-title">{title}</h2>
       {#if subtitle}<div class="card-sub">{subtitle}</div>{/if}
     </div>
     <div class="spacer"></div>
