@@ -20,7 +20,8 @@ class ImageTagTest(unittest.TestCase):
     def check(self, status):
         def respond(req, timeout):
             if req.full_url.startswith("https://ghcr.io/token?"):
-                return io.BytesIO(json.dumps({"token": "test-token"}).encode())
+                self.assertIn("Authorization", req.headers)
+                return io.BytesIO(json.dumps({"token": "opaque-value"}).encode())
             self.assertEqual(req.method, "HEAD")
             self.assertEqual(req.full_url, "https://ghcr.io/v2/melonsmasher/turkeybite-core/manifests/v1.2.3")
             if status is not None:
@@ -28,7 +29,7 @@ class ImageTagTest(unittest.TestCase):
             return io.BytesIO(b"")
 
         with mock.patch.object(GUARD.request, "urlopen", side_effect=respond):
-            GUARD.check_image_tag(IMAGE)
+            GUARD.check_image_tag(IMAGE, "actor", "credential")
 
     def test_absent_tag_can_publish(self):
         self.check(404)

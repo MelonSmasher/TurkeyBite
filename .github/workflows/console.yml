@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: console-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  group: console-${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

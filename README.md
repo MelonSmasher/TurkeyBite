@@ -330,12 +330,25 @@ docker compose exec turkeybite-librarian python turkeybite retention --attach-ex
 
 The second command is the one that deletes. Every index it attaches that is older than the period is gone within minutes, and there is no undo, so take a snapshot first if you may want them back. Only indices named `<prefix>-YYYY-MM-DD` that no ISM policy manages are attached, and nothing is attached while a shorter period is waiting to be confirmed.
 
-**Checking it.** Run the queries inside the librarian container so its OpenSearch host is resolvable. Curl prompts for the librarian account's password; the optional mounted CA is used when configured, otherwise these checks follow the librarian's unverified demo connection:
+**Checking it.** First configure certificate verification as described below, then run `docker compose exec turkeybite-librarian sh`. Inside the container, query the ISM API with OpenSearch's Python client. This uses the librarian's configured hostname, mounted CA and account without passing the password on the process command line:
 
-```bash
-docker compose exec turkeybite-librarian sh -c 'if [ -n "$OPENSEARCH_CA_CERT" ]; then set -- --cacert "$OPENSEARCH_CA_CERT"; else set -- --insecure; fi; curl -fsS "$@" -u "${OPENSEARCH_USERNAME:-admin}" "https://${OPENSEARCH_HOST:-opensearch}:9200/_plugins/_ism/policies/turkeybite-retention"'
-docker compose exec turkeybite-librarian sh -c 'if [ -n "$OPENSEARCH_CA_CERT" ]; then set -- --cacert "$OPENSEARCH_CA_CERT"; else set -- --insecure; fi; curl -fsS "$@" -u "${OPENSEARCH_USERNAME:-admin}" "https://${OPENSEARCH_HOST:-opensearch}:9200/_plugins/_ism/explain/tb-index-*"'
+```sh
+test -n "$OPENSEARCH_CA_CERT" && test -f "$OPENSEARCH_CA_CERT" || { echo 'Configure OPENSEARCH_CA_CERT first' >&2; exit 1; }
+python - <<'PY'
+import os
+from opensearchpy import OpenSearch
+
+client = OpenSearch(
+    hosts=[{"host": os.environ.get("OPENSEARCH_HOST", "opensearch"), "port": 9200}],
+    http_auth=(os.environ.get("OPENSEARCH_USERNAME", "admin"), os.environ["OPENSEARCH_PASSWORD"]),
+    use_ssl=True, verify_certs=True, ca_certs=os.environ["OPENSEARCH_CA_CERT"],
+)
+for path in ("/_plugins/_ism/policies/turkeybite-retention", "/_plugins/_ism/explain/tb-index-*"):
+    print(client.transport.perform_request("GET", path))
+PY
 ```
+
+Use the hostname on the server certificate, not an unverified alias. Leave the container shell with `exit`.
 
 The first shows the period as `min_index_age`, and its `_seq_no` is the policy's version. In the second, each index the policy manages shows `"policy_id": "turkeybite-retention"` and, once ISM has started on it, the version it is on as `policy_seq_no`; each index no policy manages shows `"index.plugins.index_state_management.policy_id": null`. An index just attached takes a few minutes to show its state.
 

@@ -8,10 +8,10 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs only for the same ref. A master push and a release
-# tag can point to the same SHA; neither may cancel the other's required tests.
+# A reusable call and a direct PR run have the same ref/SHA. The caller's
+# workflow name separates them; only superseded direct runs cancel each other.
 concurrency:
-  group: tests-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  group: tests-${{ github.workflow }}-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
