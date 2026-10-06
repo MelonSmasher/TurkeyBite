@@ -34,6 +34,7 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,12 +42,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from opensearchpy.exceptions import TransportError
+from opensearchpy.serializer import JSONSerializer
 from redis.exceptions import ConnectionError as ValkeyConnectionError
 
 from fakes import FakeRedis
 from libtb import processor as P
 from libtb.consumer import BACKOFF_START, Consumer
 from libtb.processor import Processor
+
+P_REAL_BULK = P.opensearch_helpers.bulk
 from libtb.queue import ListQueue
 from libtb.sieve import Filters
 
@@ -323,9 +327,33 @@ class ConsumerTest(unittest.TestCase):
                     self.assertEqual((self.waiting(), self.in_flight()), ([], []))
 
     def test_a_bulk_request_resends_what_a_full_queue_refused(self):
-        # Within the request, so only those documents are sent again
-        self.deliver({}, bulk=BULK_AT_END)
-        self.assertEqual(self.cluster.bulk_kwargs[0]['max_retries'], P.BULK_RETRIES)
+        # Within the request, so only those documents are sent again. Run
+        # through opensearch-py's own bulk helper, with only the client faked,
+        # so the resend itself is what is checked, not just a setting passed
+        sent = []
+
+        class FullOnce(object):
+            """A client whose write queue is full for the first document once."""
+
+            transport = SimpleNamespace(serializer=JSONSerializer())
+
+            def bulk(self, body, *args, **kwargs):
+                lines = [json.loads(line) for line in body.splitlines() if line.strip()]
+                docs = [lines[n + 1]['bite']['requested'][0] for n in range(0, len(lines), 2)]
+                sent.append(docs)
+                items = [{'index': {'_index': 'tb-index', 'status': 201}} for _ in docs]
+                if len(sent) == 1:
+                    items[0] = {'index': {'_index': 'tb-index', 'status': 429,
+                                          'error': {'type': 'es_rejected_execution_exception'}}}
+                return {'took': 1, 'errors': len(sent) == 1, 'items': items}
+        client = FullOnce()
+        with mock.patch.object(P.opensearch_helpers, 'bulk', P_REAL_BULK), \
+                mock.patch.object(P, 'opensearch_client', return_value=client), \
+                mock.patch.object(P, 'BULK_INITIAL_BACKOFF', 0), mock.patch.object(P, 'BULK_MAX_BACKOFF', 0):
+            consumer, _, err = self.deliver({}, events=3, bulk=BULK_AT_END)
+        self.assertEqual(len(sent), 2, f'sent once, then the refused document again: {err}')
+        self.assertEqual(sent[1], [sent[0][0]], 'only the refused document')
+        self.assertEqual(consumer.stats['requeued'], 0)
 
     def test_each_host_is_tried_before_giving_up(self):
         self.deliver(BOTH_DOWN, events=1)

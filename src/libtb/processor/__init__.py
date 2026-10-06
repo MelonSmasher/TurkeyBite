@@ -1035,6 +1035,7 @@ class Processor(object):
         docs = buffer['docs']
         buffer['docs'] = []
         buffer['since'] = time.monotonic()
+        misconfigured = None
         for host in self.config['elastic']['hosts']:
             try:
                 ok, errors = opensearch_helpers.bulk(
@@ -1043,6 +1044,8 @@ class Processor(object):
                     max_backoff=BULK_MAX_BACKOFF)
             except Exception as e:
                 _report_host_error(host, e, 'bulk sending')
+                if isinstance(e, ConfigurationError):
+                    misconfigured = e
                 continue
             retry = []
             for error in errors or []:
@@ -1058,6 +1061,12 @@ class Processor(object):
             return ok
         if raise_on_total_failure:
             raise DeliveryError(f'every OpenSearch host refused {len(docs)} documents')
+        if misconfigured is not None:
+            # Kept for the next flush, and the job fails rather than completes:
+            # under the rq pipeline that leaves it with RQ's failed jobs, to be
+            # requeued once this worker's configuration is fixed
+            buffer['docs'] = docs + buffer['docs']
+            raise misconfigured
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
         return 0
 
@@ -1087,6 +1096,7 @@ class Processor(object):
             else:
                 index = self.index_name()
                 delivered = refused = False
+                misconfigured = None
                 for host in self.config['elastic']['hosts']:
                     try:
                         opensearch_client(host).index(index=index, body=bite)
@@ -1100,9 +1110,16 @@ class Processor(object):
                             refused = True
                             break
                         _report_host_error(host, e, 'sending')
+                        if isinstance(e, ConfigurationError):
+                            misconfigured = e
                         continue
                 if not (delivered or refused) and self.strict_delivery:
                     raise DeliveryError('every OpenSearch host failed to take an event')
+                if not (delivered or refused) and misconfigured is not None:
+                    # A host this worker cannot even set up, such as a CA file
+                    # missing from its container: the job fails, so RQ keeps it
+                    # with its failed jobs instead of the event being dropped
+                    raise misconfigured
 
         if self.config['syslog']['enable']:
             try:

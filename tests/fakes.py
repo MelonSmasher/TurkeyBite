@@ -58,6 +58,8 @@ class FakeRedis(object):
 
     def __init__(self, scan_repeats=False, decoded_keys=False):
         self.data = {}
+        # Expiries asked for, in seconds; kept, not enforced
+        self.ttls = {}
         self.calls = []
         self.on_command = None
         self.blocked_for = []
@@ -98,9 +100,21 @@ class FakeRedis(object):
             raise TypeError('WRONGTYPE Operation against a key holding the wrong kind of value')
         return value
 
-    def set(self, key, value):
-        self.data[_key(key)] = _bytes(value)
+    def set(self, key, value, nx=False, ex=None):
+        # Expiry is recorded, not enforced: a test that needs a lapsed key deletes it
         self._did('set', key)
+        if nx and _key(key) in self.data:
+            return None
+        self.data[_key(key)] = _bytes(value)
+        if ex is not None:
+            self.ttls[_key(key)] = ex
+        return True
+
+    def expire(self, key, seconds):
+        self._did('expire', key)
+        if _key(key) not in self.data:
+            return False
+        self.ttls[_key(key)] = seconds
         return True
 
     def delete(self, *keys):

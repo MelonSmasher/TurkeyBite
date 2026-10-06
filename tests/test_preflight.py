@@ -208,10 +208,19 @@ class ShipTimeTest(Workdir):
                 '@timestamp': '2026-10-04T12:00:00Z'}
 
     def ship(self, processor, events):
+        """Ships `events`, as RQ would run that many jobs.
+
+        Returns stderr. The jobs that failed, rather than completed, are
+        counted in self.failed.
+        """
         err = io.StringIO()
+        self.failed = 0
         with redirect_stderr(err):
             for _ in range(events):
-                processor.process_packet(self.packet())
+                try:
+                    processor.process_packet(self.packet())
+                except O.ConfigurationError:
+                    self.failed += 1
         return err.getvalue()
 
     def test_it_is_reported_once_not_once_per_event(self):
@@ -219,6 +228,12 @@ class ShipTimeTest(Workdir):
         self.assertEqual(logged.count('CONFIGURATION ERROR'), 1)
         self.assertIn('ca_certs', logged)
         self.assertIn('turkeybite check', logged)
+
+    def test_every_job_fails_so_rq_keeps_it_rather_than_dropping_its_event(self):
+        # Under the rq pipeline a worker missing the CA file the core has would
+        # otherwise complete each job with its event lost
+        self.ship(self.processor(), 4)
+        self.assertEqual(self.failed, 4)
 
     def test_once_per_container_even_when_every_event_is_a_new_process(self):
         # Under the forking rq.Worker each event is a process of its own
@@ -246,6 +261,9 @@ class ShipTimeTest(Workdir):
                                                         'interval_sec': 0}
         with mock.patch.object(P, '_install_flush_hooks'):
             logged = self.ship(self.processor(), 3)
+        # Each failed, and the documents wait in the buffer for the next flush
+        self.assertEqual(self.failed, 3)
+        self.assertEqual(len(P._bulk_buffers[os.getpid()]['docs']), 3)
         P._bulk_buffers.clear()
         self.assertEqual(logged.count('CONFIGURATION ERROR'), 1)
 

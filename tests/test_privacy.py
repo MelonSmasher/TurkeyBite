@@ -199,6 +199,28 @@ class TrimUrlTest(unittest.TestCase):
             with self.subTest(lead=lead):
                 self.assertNotIn('secret', self.trimmed(f'{lead}https://h.example/?q=secret{tail}'))
 
+    def test_host_mode_keeps_only_the_scheme_of_a_url_with_no_host(self):
+        # What follows a bare scheme is the payload: an address, a page's data
+        self.assertEqual(self.host('mailto:alice@example.org?body=secret'), 'mailto:')
+        self.assertEqual(self.host('mailto:alice@example.org'), 'mailto:')
+        self.assertEqual(self.host('data:text/html;base64,c2VjcmV0'), 'data:')
+        self.assertEqual(self.host('javascript:alert(document.cookie)'), 'javascript:')
+        self.assertEqual(self.host('about:blank'), 'about:')
+        # Trimmed keeps the address, as it keeps a path, and drops the query
+        self.assertEqual(self.trimmed('mailto:alice@example.org'), 'mailto:alice@example.org')
+        self.assertEqual(self.trimmed('about:blank'), 'about:blank')
+
+    def test_a_file_url_with_one_slash_is_trimmed_too(self):
+        self.assertEqual(self.trimmed('file:/Users/alice/secret.txt?q=secret#f'), 'file:/Users/alice/secret.txt')
+        self.assertEqual(self.host('file:/Users/alice/secret.txt?q=secret'), 'file:/')
+        self.assertEqual(self.trimmed('file:\\Users\\alice?q=secret'), 'file:\\Users\\alice')
+
+    def test_the_partner_of_a_dropped_opening_quote_goes_too(self):
+        self.assertEqual(self.trimmed('"https://example.com/a"'), 'https://example.com/a')
+        self.assertEqual(self.trimmed('<https://example.com/a?q=secret>'), 'https://example.com/a')
+        self.assertEqual(self.trimmed('(https://example.com/a(b))'), 'https://example.com/a(b)')
+        self.assertEqual(self.trimmed('https://example.com/a"'), 'https://example.com/a"')
+
     def test_a_file_url_has_no_host_to_keep(self):
         self.assertEqual(self.host('file:///Users/alice/secret.txt?x'), 'file:///')
         self.assertEqual(self.host('file:///C:/Users/alice/a.txt'), 'file:///')
@@ -208,8 +230,8 @@ class TrimUrlTest(unittest.TestCase):
     def test_strings_that_are_not_urls_are_untouched(self):
         for text in ('hello world', 'www.example.com', 'example.com/?q=1', 'cats?dogs#birds',
                      'malicious:quad9', 'v=spf1 include:_spf.example.com ~all',
-                     'Search for https://example.com/?q=1 here', 'mailto:alice@example.org',
-                     'about:blank', 'symptoms of flu - Google Search', '',
+                     'Search for https://example.com/?q=1 here',
+                     'symptoms of flu - Google Search', '',
                      'httpbin is a service?', 'http: the protocol', '2026-10-04T12:00:00Z',
                      '10.0.0.5', 'localhost:8080/a?b'):
             self.assertEqual(self.trimmed(text), text, text)

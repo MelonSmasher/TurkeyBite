@@ -499,11 +499,18 @@ def reconcile(cluster, days, prefix, log=print, now=None, confirm_days=None,
                             f'and {days} days may be shorter.')
         else:
             now_in_force = f'{days} is shorter than the {_days(limit)} the policy applies now.'
+        # With the old copy's period unknown, what is known is how many are
+        # old enough for the new one, not how many more it would delete
+        if orphaned:
+            affected = (f'{len(result["would_delete"])} of the {len(ours_managed)} indices it '
+                        f'manages are {days} days old or more, so ISM could delete them at its '
+                        f'next check')
+        else:
+            affected = (f'That would delete {len(result["would_delete"])} more of the '
+                        f'{len(ours_managed)} indices it manages at ISM\'s next check')
         _banner(log,
-                f'RETENTION NOT SHORTENED: {DAYS_ENV} is {days}. {now_in_force} That '
-                f'would delete {len(result["would_delete"])} more of the {len(ours_managed)} '
-                f'indices it manages at ISM\'s next check, and deleting cannot be undone, so '
-                f'the policy is left as it is.',
+                f'RETENTION NOT SHORTENED: {DAYS_ENV} is {days}. {now_in_force} '
+                f'{affected}, and deleting cannot be undone, so the policy is left as it is.',
                 f'If {days} days is meant, confirm it with: '
                 f'{CONFIRM_COMMAND.format(days=days)}',
                 f'Add --dry-run to list the indices it would delete first.')

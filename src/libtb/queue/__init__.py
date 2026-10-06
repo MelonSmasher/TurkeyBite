@@ -31,7 +31,10 @@ Depth is `LLEN` on the queue, which is the backpressure signal pub/sub could not
 provide at all.
 """
 
+import os
 import re
+import socket
+import uuid
 
 PROCESSING_PREFIX = 'processing:'
 
@@ -97,6 +100,9 @@ def recover_orphans(redis, key, keep_consumers=(), prefix=None, consumers=None):
             shape = generated_names(prefix)
             names = {name for name in names if shape.fullmatch(name[len(base):])}
     names -= {base + consumer for consumer in keep_consumers}
+    # A consumer that holds its name now is running, and its list is its own
+    names = {name for name in names
+             if not redis.get(f'{key}:owner:{name[len(base):]}')}
 
     swept = requeued = 0
     for name in sorted(names):
@@ -109,11 +115,54 @@ def recover_orphans(redis, key, keep_consumers=(), prefix=None, consumers=None):
 
 class ListQueue(object):
 
+    # How long a consumer's name stays reserved without being renewed. A
+    # consumer renews it every batch, and a rest is at most a minute
+    OWNER_TTL = 90
+
     def __init__(self, redis, key, consumer):
         self.redis = redis
         self.key = key
         self.consumer = consumer
         self.processing_key = f'{key}:{PROCESSING_PREFIX}{consumer}'
+        self.owner_key = f'{key}:owner:{consumer}'
+        self.owner = f'{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}'
+        self.reserved = False
+
+    # -- owning the name --------------------------------------------------
+
+    def reserve(self):
+        """Takes this consumer's name for this process.
+
+        Returns False if another running consumer has it. Two consumers given one name share one processing list, and a
+        requeue, which moves items from the list's tail, could then take the
+        other's items while its own were acknowledged and lost. So a name is
+        held by one process at a time: reserved here, renewed while running,
+        and released at the end, or lapsing OWNER_TTL seconds after a process
+        dies without releasing it.
+        """
+        self.reserved = bool(self.redis.set(self.owner_key, self.owner, nx=True, ex=self.OWNER_TTL))
+        return self.reserved
+
+    def renew(self):
+        """Keeps the name reserved.
+
+        Returns False if it is no longer this process's, and True when it was
+        never reserved, as by a test driving a queue.
+        """
+        if not self.reserved:
+            return True
+        held = self.redis.get(self.owner_key)
+        if held is None or (held.decode() if isinstance(held, bytes) else held) != self.owner:
+            return False
+        return bool(self.redis.expire(self.owner_key, self.OWNER_TTL))
+
+    def release(self):
+        if not self.reserved:
+            return
+        held = self.redis.get(self.owner_key)
+        if held is not None and (held.decode() if isinstance(held, bytes) else held) == self.owner:
+            self.redis.delete(self.owner_key)
+        self.reserved = False
 
     # -- producing, used by tests and by any local shim ---------------------
 

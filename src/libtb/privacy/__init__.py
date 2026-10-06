@@ -66,15 +66,21 @@ _BARE_SCHEMES = ('about', 'mailto', 'magnet', 'data', 'javascript', 'tel', 'sms'
 # format and direction marks copying and pasting brings along, and an opening
 # quote or bracket. Then any wrapper schemes, such as view-source: or blob:,
 # kept as they are, and either http or https in any case, with or without
-# slashes, a scheme browsers use bare, or another scheme that is followed by //
-# or by the backslashes browsers read as slashes.
+# slashes, a scheme browsers use bare, file: with any number of slashes, or
+# another scheme that is followed by // or by the backslashes browsers read as
+# slashes.
 _URL_START = re.compile(
-    r'[\s\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff"\'`<(\[\u201c\u2018\u00ab]*'
+    r'(?P<lead>[\s\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff"\'`<(\[\u201c\u2018\u00ab]*)'
     r'(?P<scheme>(?:[A-Za-z][A-Za-z0-9+.\-]*:)*?'
     r'(?:https?:|(?:' + '|'.join(_BARE_SCHEMES) + r'):'
+    r'|file:(?=[/\\])'
     r'|[A-Za-z][A-Za-z0-9+.\-]*:(?=[/\\]{2})))'
     r'(?P<slashes>[/\\]*)',
     re.IGNORECASE)
+
+# What closes each opening quote or bracket a URL can be wrapped in
+_CLOSERS = {'"': '"', "'": "'", '`': '`', '<': '>', '(': ')', '[': ']',
+            '\u201c': '\u201d', '\u2018': '\u2019', '\u00ab': '\u00bb'}
 
 # url_data fields, blanked to what Go's url.URL holds when the URL has no such part
 _TRIMMED_FIELDS = (('User', None), ('RawQuery', ''), ('ForceQuery', False),
@@ -126,15 +132,29 @@ def trim_url(value, mode):
     match = _URL_START.match(value)
     if not match:
         return value
-    rest = value[match.end():]
+    trimmed = _trim(match, value[match.end():], mode)
+    # The opening quote or bracket was dropped with the leading matter, so
+    # its partner is dropped too, rather than left stuck to the URL
+    opener = match.group('lead').strip()[-1:]
+    closer = _CLOSERS.get(opener)
+    if closer and trimmed.endswith(closer):
+        trimmed = trimmed[:-len(closer)].rstrip()
+    return trimmed
+
+
+def _trim(match, rest, mode):
     start = match.group('scheme') + match.group('slashes')
     last = match.group('scheme').lower().rstrip(':').rpartition(':')[2]
     if last in _BARE_SCHEMES and not match.group('slashes'):
         # No authority to keep or drop: about:reader?url=..., mailto:a@b?body=...
-        # lose what follows ? or #, and nothing else
+        # lose what follows ? or #, and in host mode everything after the
+        # scheme, since what follows it is the payload: an address, data
+        if mode == HOST:
+            return start.rstrip()
         return (start + re.split(r'[?#]', rest, maxsplit=1)[0]).rstrip()
-    if last == 'file' and len(match.group('slashes')) >= 3:
-        # file:///path has an empty host, so what follows the slashes is path
+    if last == 'file' and len(match.group('slashes')) != 2:
+        # file:///path and file:/path have no host, so what follows the
+        # slashes is path
         if mode == HOST:
             return start.rstrip()
         return (start + re.split(r'[?#]', rest, maxsplit=1)[0]).rstrip()

@@ -449,6 +449,15 @@ class ShortenTest(Setting, unittest.TestCase):
         self.assertIn(R.CONFIRM_COMMAND.format(days=9), self.log())
         self.assertIn('--dry-run', self.log())
 
+    def test_with_only_a_copy_of_a_deleted_policy_it_counts_what_is_old_enough(self):
+        # The copy's period cannot be read, so how many more would go is not
+        # known; how many are old enough for the new period is
+        for days_ago in (5, 20, 40, 60, 89):
+            self.os.index(f'tb-index-2026-x{days_ago:02d}', days_ago, policy=R.POLICY_ID)
+        self.start(9)
+        self.assertIn('4 of the 5 indices it manages are 9 days old or more', self.log())
+        self.assertNotIn('more of the', self.log())
+
     def test_a_dry_run_lists_them(self):
         self.history()
         self.start(9, dry_run=True)

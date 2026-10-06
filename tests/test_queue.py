@@ -343,3 +343,40 @@ class QueueRecoverCommandTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class OwnershipTest(unittest.TestCase):
+    """One process per consumer name, so no two share a processing list."""
+
+    def setUp(self):
+        self.redis = FakeRedis()
+
+    def test_a_second_consumer_with_the_same_name_cannot_start(self):
+        first, second = ListQueue(self.redis, KEY, 'worker1'), ListQueue(self.redis, KEY, 'worker1')
+        self.assertTrue(first.reserve())
+        self.assertFalse(second.reserve())
+        self.assertTrue(first.renew())
+        first.release()
+        self.assertTrue(second.reserve(), 'free again once released')
+
+    def test_a_consumer_that_lost_its_name_finds_out_at_its_next_batch(self):
+        first, second = ListQueue(self.redis, KEY, 'worker1'), ListQueue(self.redis, KEY, 'worker1')
+        first.reserve()
+        # The reservation lapsed while it hung, and another took the name
+        self.redis.delete(first.owner_key)
+        self.assertTrue(second.reserve())
+        self.assertFalse(first.renew())
+        first.release()
+        self.assertTrue(second.renew(), 'releasing a lost name leaves the new owner alone')
+
+    def test_a_sweep_leaves_a_running_consumers_list_alone(self):
+        running = ListQueue(self.redis, KEY, 'host-01')
+        running.reserve()
+        running.push(b'a')
+        running.claim(1, block_seconds=0)
+        dead = ListQueue(self.redis, KEY, 'host-02')
+        dead.push(b'b')
+        dead.claim(1, block_seconds=0)
+        swept, requeued = recover_orphans(self.redis, KEY, prefix='host')
+        self.assertEqual((swept, requeued), (1, 1))
+        self.assertEqual(running.in_flight(), 1)

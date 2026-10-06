@@ -81,6 +81,14 @@ def consume(consumer, batch_size, quiet):
         password=queue_conf['password']
     )
     queue = ListQueue(redis, queue_conf['channel'], name)
+    # One process per name: two would share a processing list, and a requeue
+    # by one could take the other's batch
+    if not queue.reserve():
+        click.echo(f'Another consumer is already running as {name}. Give this one a '
+                   f'different --consumer, or stop that one first. A name held by a '
+                   f'consumer that died is free again {ListQueue.OWNER_TTL} seconds later.',
+                   err=True)
+        raise SystemExit(1)
     filters = Filters(config['sieve'])
     processor = Processor(config['processor'], config['redis'])
     worker = Consumer(
@@ -91,7 +99,10 @@ def consume(consumer, batch_size, quiet):
     )
     worker.install_signal_handlers()
     print(f'Consuming {queue_conf["channel"]} as {name}')
-    worker.run()
+    try:
+        worker.run()
+    finally:
+        queue.release()
 
 
 @cli.command('queue-recover')

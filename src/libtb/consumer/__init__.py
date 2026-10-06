@@ -221,6 +221,13 @@ class Consumer(object):
                     recovering = None
                 if not self.running:
                     break
+                if not self.queue.renew():
+                    # Another process has this consumer's name, so its
+                    # processing list is no longer this one's alone
+                    print(f'[{self.name}] stopping: another consumer has taken the name '
+                          f'{self.name}', file=sys.stderr)
+                    self.running = False
+                    break
                 self.run_once()
                 now = time.monotonic()
                 if now - last_report >= report_seconds:
