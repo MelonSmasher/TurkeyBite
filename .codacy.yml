@@ -1,0 +1,17 @@
+---
+# Codacy reads this file from the default branch only, so a change to it
+# applies to pull requests once it is merged.
+engines:
+  bandit:
+    exclude_paths:
+      # The console's tests are pytest's, which check with assert, and their
+      # fixtures hold made-up passwords
+      - "console/backend/tests/**"
+  tslint:
+    exclude_paths:
+      # TSLint is deprecated, and its default rules (an explicit public on
+      # every member, a type on every declaration, sorted object keys, no
+      # function declarations) are not this code's style; svelte-check
+      # type-checks the console's app in CI instead. It also reads npm's
+      # lock file as code
+      - "console/frontend/**"
