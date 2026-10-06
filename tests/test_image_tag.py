@@ -1,11 +1,9 @@
 """Registry tag checks must fail closed on unexpected responses."""
 
 import importlib.util
-import io
 import json
 import pathlib
 import unittest
-from urllib import error
 from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
@@ -18,29 +16,37 @@ IMAGE = "ghcr.io/melonsmasher/turkeybite-core:v1.2.3"
 
 class ImageTagTest(unittest.TestCase):
     def check(self, status):
-        def respond(req, timeout):
-            if req.full_url.startswith("https://ghcr.io/token?"):
-                self.assertIn("Authorization", req.headers)
-                return io.BytesIO(json.dumps({"token": "opaque-value"}).encode())
-            self.assertEqual(req.method, "HEAD")
-            self.assertEqual(req.full_url, "https://ghcr.io/v2/melonsmasher/turkeybite-core/manifests/v1.2.3")
-            if status is not None:
-                raise error.HTTPError(req.full_url, status, "registry response", {}, None)
-            return io.BytesIO(b"")
-
-        with mock.patch.object(GUARD.request, "urlopen", side_effect=respond):
-            GUARD.check_image_tag(IMAGE, "actor", "credential")
+        connection = mock.Mock()
+        token_response = mock.Mock(status=200)
+        token_response.read.return_value = json.dumps({"token": token_response.status}).encode()
+        manifest_response = mock.Mock(status=status)
+        connection.getresponse.side_effect = [token_response, manifest_response]
+        with mock.patch.object(GUARD.http.client, "HTTPSConnection", return_value=connection) as create:
+            if status == 200:
+                with self.assertRaisesRegex(RuntimeError, "Refusing to overwrite"):
+                    GUARD.check_image_tag(IMAGE, "actor", "credential")
+            elif status == 404:
+                GUARD.check_image_tag(IMAGE, "actor", "credential")
+            else:
+                with self.assertRaisesRegex(RuntimeError, f"HTTP {status}"):
+                    GUARD.check_image_tag(IMAGE, "actor", "credential")
+        create.assert_called_once_with("ghcr.io", timeout=20)
+        self.assertEqual(connection.request.call_args_list[0].args[:2],
+                         ("GET", "/token?service=ghcr.io&scope=repository%3Amelonsmasher%2Fturkeybite-core%3Apull"))
+        self.assertIn("Authorization", connection.request.call_args_list[0].kwargs["headers"])
+        self.assertEqual(connection.request.call_args_list[1].args[:2],
+                         ("HEAD", "/v2/melonsmasher/turkeybite-core/manifests/v1.2.3"))
+        connection.close.assert_called_once()
 
     def test_absent_tag_can_publish(self):
         self.check(404)
 
     def test_existing_tag_is_not_overwritten(self):
-        with self.assertRaisesRegex(RuntimeError, "Refusing to overwrite"):
-            self.check(None)
+        self.check(200)
 
     def test_auth_and_server_errors_do_not_look_like_absent_tags(self):
         for status in (401, 403, 500):
-            with self.subTest(status=status), self.assertRaises(error.HTTPError):
+            with self.subTest(status=status):
                 self.check(status)
 
 
