@@ -10,6 +10,10 @@ OpenSearch is replaced by FakeSearch, which answers each request with what a
 test hands it and records every body it was sent.
 """
 
+# Bandit's findings are marked nosec line by line: pytest checks with assert
+# (B101), and the fixtures hold made-up passwords (B105, B106). None of this
+# is code that ships.
+
 import asyncio
 import os
 
@@ -152,7 +156,7 @@ async def make_user(username='alice', role='analyst', source='local', password='
 async def login(client, username='alice', password='correct horse battery'):
     """Signs in and returns the CSRF header the session needs for writes."""
     response = await client.post('/api/v1/auth/login', json={'username': username, 'password': password})
-    assert response.status_code == 200, response.text
+    assert response.status_code == 200, response.text  # nosec B101
     return {'X-CSRF-Token': client.cookies.get('tbc_csrf')}
 
 
@@ -162,7 +166,7 @@ def directory(monkeypatch):
 
     from tbconsole.security import ldap as ldap_
     server = Server('mock', get_info=OFFLINE_SLAPD_2_4)
-    seed = Connection(server, user='cn=svc,dc=example,dc=org', password='svc-pw', client_strategy=MOCK_SYNC)
+    seed = Connection(server, user='cn=svc,dc=example,dc=org', password='svc-pw', client_strategy=MOCK_SYNC)  # nosec B106
     seed.strategy.add_entry('cn=svc,dc=example,dc=org', {'userPassword': 'svc-pw', 'objectClass': 'person', 'sn': 'svc'})
     seed.strategy.add_entry('uid=ava,ou=people,dc=example,dc=org', {
         'userPassword': 'ava-pw', 'objectClass': ['person', 'inetOrgPerson'], 'uid': 'ava', 'sn': 'Chen',

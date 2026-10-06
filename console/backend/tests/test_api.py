@@ -1,5 +1,9 @@
 """The API end to end: roles, findings triage, rules, webhooks, dashboards, exports, audit."""
 
+# Bandit's findings are marked nosec line by line: pytest checks with assert
+# (B101), and the fixtures hold made-up passwords (B105, B106). None of this
+# is code that ships.
+
 import uuid
 from datetime import datetime, timezone
 
@@ -30,22 +34,22 @@ async def _finding(rule_id=None, entity='ava', status='new', severity='high', fu
 async def test_viewers_read_but_do_not_write(client):
     await make_user('vic', role='viewer')
     headers = await login(client, 'vic')
-    assert (await client.get('/api/v1/rules')).status_code == 200
-    assert (await client.post('/api/v1/rules', headers=headers, json={'name': 'x', 'type': 'threshold'})).status_code == 403
-    assert (await client.get('/api/v1/users')).status_code == 403
-    assert (await client.get('/api/v1/audit')).status_code == 403
+    assert (await client.get('/api/v1/rules')).status_code == 200  # nosec B101
+    assert (await client.post('/api/v1/rules', headers=headers, json={'name': 'x', 'type': 'threshold'})).status_code == 403  # nosec B101
+    assert (await client.get('/api/v1/users')).status_code == 403  # nosec B101
+    assert (await client.get('/api/v1/audit')).status_code == 403  # nosec B101
 
 
 async def test_built_in_rules_are_there_and_cannot_be_deleted(client):
     await make_user('ana', role='analyst')
     headers = await login(client, 'ana')
     rules = (await client.get('/api/v1/rules')).json()
-    assert len([r for r in rules if r['builtin']]) >= 15
+    assert len([r for r in rules if r['builtin']]) >= 15  # nosec B101
     builtin = rules[0]
-    assert (await client.delete(f"/api/v1/rules/{builtin['id']}", headers=headers)).status_code == 400
+    assert (await client.delete(f"/api/v1/rules/{builtin['id']}", headers=headers)).status_code == 400  # nosec B101
     clone = (await client.post(f"/api/v1/rules/{builtin['id']}/clone", headers=headers)).json()
-    assert clone['name'].startswith('Copy of') and not clone['enabled'] and not clone['builtin']
-    assert (await client.delete(f"/api/v1/rules/{clone['id']}", headers=headers)).status_code == 200
+    assert clone['name'].startswith('Copy of') and not clone['enabled'] and not clone['builtin']  # nosec B101
+    assert (await client.delete(f"/api/v1/rules/{clone['id']}", headers=headers)).status_code == 200  # nosec B101
 
 
 async def test_editing_a_built_in_rule_marks_it_modified_and_reset_restores_it(client):
@@ -56,9 +60,9 @@ async def test_editing_a_built_in_rule_marks_it_modified_and_reset_restores_it(c
                                  'enabled', 'interval_seconds', 'window_seconds', 'dedup_seconds', 'tags', 'title_template')}
     body['params'] = {'threshold': 7}
     edited = (await client.put(f"/api/v1/rules/{rule['id']}", headers=headers, json=body)).json()
-    assert edited['modified'] and edited['params']['threshold'] == 7
+    assert edited['modified'] and edited['params']['threshold'] == 7  # nosec B101
     reset = (await client.post(f"/api/v1/rules/{rule['id']}/reset", headers=headers)).json()
-    assert not reset['modified'] and reset['params']['threshold'] == 3
+    assert not reset['modified'] and reset['params']['threshold'] == 3  # nosec B101
 
 
 async def test_a_rule_with_a_bad_query_is_refused_with_the_reason(client):
@@ -66,7 +70,7 @@ async def test_a_rule_with_a_bad_query_is_refused_with_the_reason(client):
     headers = await login(client, 'ana')
     response = await client.post('/api/v1/rules', headers=headers,
                                  json={'name': 'x', 'type': 'threshold', 'query': 'categry:porn'})
-    assert response.status_code == 400 and 'Did you mean category' in response.json()['detail']
+    assert response.status_code == 400 and 'Did you mean category' in response.json()['detail']  # nosec B101
 
 
 async def test_triage_records_activity_and_the_audit_log(client):
@@ -76,14 +80,14 @@ async def test_triage_records_activity_and_the_audit_log(client):
     me = (await client.get('/api/v1/auth/me')).json()['user']
     response = await client.patch(f'/api/v1/findings/{finding.id}', headers=headers,
                                   json={'status': 'in_progress', 'assignee_id': me['id']})
-    assert response.json()['status'] == 'in_progress' and response.json()['assignee']['username'] == 'ana'
+    assert response.json()['status'] == 'in_progress' and response.json()['assignee']['username'] == 'ana'  # nosec B101
     await client.post(f'/api/v1/findings/{finding.id}/comments', headers=headers, json={'body': 'Looking now'})
     detail = (await client.get(f'/api/v1/findings/{finding.id}')).json()
     kinds = [a['kind'] for a in detail['activity']]
-    assert {'status', 'assign', 'comment'} <= set(kinds)
+    assert {'status', 'assign', 'comment'} <= set(kinds)  # nosec B101
     async with db.sessionmaker()() as session:
         actions = (await session.execute(select(AuditEvent.action))).scalars().all()
-        assert 'finding.update' in actions
+        assert 'finding.update' in actions  # nosec B101
 
 
 async def test_a_false_positive_teaches_the_rule_an_exception(client):
@@ -93,14 +97,14 @@ async def test_a_false_positive_teaches_the_rule_an_exception(client):
     finding = await _finding(rule_id=uuid.UUID(rule['id']), entity='it-admin')
     response = await client.post(f'/api/v1/findings/{finding.id}/exception', headers=headers,
                                  json={'scope': 'entity', 'note': 'IT testing', 'expires_days': 30})
-    assert response.status_code == 200
+    assert response.status_code == 200  # nosec B101
     exception = response.json()['exception']
-    assert exception['query'] == 'user:it-admin' and exception['expires_at']
+    assert exception['query'] == 'user:it-admin' and exception['expires_at']  # nosec B101
     async with db.sessionmaker()() as session:
         stored = await session.get(Rule, uuid.UUID(rule['id']))
         # Exceptions are the rule's own: a built-in rule keeps taking new versions
-        assert not stored.modified and stored.exceptions[-1]['query'] == 'user:it-admin'
-        assert (await session.get(Finding, finding.id)).status == 'false_positive'
+        assert not stored.modified and stored.exceptions[-1]['query'] == 'user:it-admin'  # nosec B101
+        assert (await session.get(Finding, finding.id)).status == 'false_positive'  # nosec B101
 
 
 async def test_an_exception_a_rule_could_not_keep_or_use_is_refused(client):
@@ -113,7 +117,7 @@ async def test_an_exception_a_rule_could_not_keep_or_use_is_refused(client):
         finding = await _finding(rule_id=rule_id, entity=entity[:200] + '…', full=entity)
         response = await client.post(f'/api/v1/findings/{finding.id}/exception', headers=headers,
                                      json={'scope': 'entity'})
-        assert response.status_code == 400 and words in response.json()['detail']
+        assert response.status_code == 400 and words in response.json()['detail']  # nosec B101
     async with db.sessionmaker()() as session:
         stored = await session.get(Rule, rule_id)
         stored.exceptions = [{'query': f'user:u{i}'} for i in range(200)]
@@ -121,7 +125,7 @@ async def test_an_exception_a_rule_could_not_keep_or_use_is_refused(client):
     finding = await _finding(rule_id=rule_id, entity='liam')
     response = await client.post(f'/api/v1/findings/{finding.id}/exception', headers=headers,
                                  json={'scope': 'entity'})
-    assert response.status_code == 409 and 'the most a rule can have' in response.json()['detail']
+    assert response.status_code == 409 and 'the most a rule can have' in response.json()['detail']  # nosec B101
 
 
 async def test_bulk_triage(client):
@@ -130,9 +134,9 @@ async def test_bulk_triage(client):
     findings = [await _finding(entity=f'u{i}') for i in range(3)]
     result = await client.post('/api/v1/findings/bulk', headers=headers,
                                json={'ids': [str(f.id) for f in findings], 'status': 'acknowledged'})
-    assert result.json()['updated'] == 3
+    assert result.json()['updated'] == 3  # nosec B101
     stats = (await client.get('/api/v1/findings/stats')).json()
-    assert stats['by_status']['acknowledged'] == 3
+    assert stats['by_status']['acknowledged'] == 3  # nosec B101
 
 
 async def test_webhooks_refuse_addresses_on_the_consoles_network(client):
@@ -142,7 +146,7 @@ async def test_webhooks_refuse_addresses_on_the_consoles_network(client):
                 'ftp://example.com/x', 'https://user:pw@example.com/x'):
         response = await client.post('/api/v1/webhooks', headers=headers,
                                      json={'name': 'x', 'url': url, 'format': 'json', 'events': ['finding.created']})
-        assert response.status_code == 400, url
+        assert response.status_code == 400, url  # nosec B101
 
 
 async def test_a_webhook_secret_is_shown_once_and_stored_encrypted(client):
@@ -151,28 +155,28 @@ async def test_a_webhook_secret_is_shown_once_and_stored_encrypted(client):
     created = await client.post('/api/v1/webhooks', headers=headers,
                                 json={'name': 'hook', 'url': 'https://93.184.215.14/hook', 'format': 'slack',
                                       'events': ['finding.created'], 'headers': {'Authorization': 'Bearer x'}})
-    assert created.status_code == 201, created.text
+    assert created.status_code == 201, created.text  # nosec B101
     body = created.json()
-    assert body['secret'].startswith('whsec_')
+    assert body['secret'].startswith('whsec_')  # nosec B101
     again = (await client.get(f"/api/v1/webhooks/{body['id']}")).json()
-    assert 'secret' not in again and again['header_names'] == ['Authorization']
+    assert 'secret' not in again and again['header_names'] == ['Authorization']  # nosec B101
     async with db.sessionmaker()() as session:
         from tbconsole.models import Webhook
         stored = await session.get(Webhook, uuid.UUID(body['id']))
-        assert body['secret'] not in stored.secret_enc
+        assert body['secret'] not in stored.secret_enc  # nosec B101
     bad_header = await client.post('/api/v1/webhooks', headers=headers,
                                    json={'name': 'h', 'url': 'https://93.184.215.14/h', 'format': 'json',
                                          'events': ['finding.created'], 'headers': {'X-TurkeyBite-Signature': 'forged'}})
-    assert bad_header.status_code == 400
+    assert bad_header.status_code == 400  # nosec B101
 
 
 async def test_the_last_admin_cannot_be_removed(client):
     root = await make_user('root', role='admin')
     headers = await login(client, 'root')
-    assert (await client.patch(f'/api/v1/users/{root.id}', headers=headers, json={'role': 'viewer'})).status_code == 400
-    assert (await client.delete(f'/api/v1/users/{root.id}', headers=headers)).status_code == 400
+    assert (await client.patch(f'/api/v1/users/{root.id}', headers=headers, json={'role': 'viewer'})).status_code == 400  # nosec B101
+    assert (await client.delete(f'/api/v1/users/{root.id}', headers=headers)).status_code == 400  # nosec B101
     other = await make_user('second', role='admin')
-    assert (await client.patch(f'/api/v1/users/{other.id}', headers=headers, json={'role': 'viewer'})).status_code == 200
+    assert (await client.patch(f'/api/v1/users/{other.id}', headers=headers, json={'role': 'viewer'})).status_code == 200  # nosec B101
 
 
 async def test_directory_roles_are_not_edited_here(client):
@@ -180,7 +184,7 @@ async def test_directory_roles_are_not_edited_here(client):
     ldap_user = await make_user('dir', role='viewer', source='ldap')
     headers = await login(client, 'root')
     response = await client.patch(f'/api/v1/users/{ldap_user.id}', headers=headers, json={'role': 'admin'})
-    assert response.status_code == 400 and 'groups' in response.json()['detail']
+    assert response.status_code == 400 and 'groups' in response.json()['detail']  # nosec B101
 
 
 async def test_built_in_dashboards_are_read_only_but_can_be_cloned(client):
@@ -190,9 +194,9 @@ async def test_built_in_dashboards_are_read_only_but_can_be_cloned(client):
     builtin = next(b for b in boards if b['builtin'])
     response = await client.put(f"/api/v1/dashboards/{builtin['id']}", headers=headers,
                                 json={'name': 'mine now', 'widgets': []})
-    assert response.status_code == 400
+    assert response.status_code == 400  # nosec B101
     clone = (await client.post(f"/api/v1/dashboards/{builtin['id']}/clone", headers=headers)).json()
-    assert clone['mine'] and len(clone['widgets']) == len(builtin['widgets'])
+    assert clone['mine'] and len(clone['widgets']) == len(builtin['widgets'])  # nosec B101
 
 
 async def test_a_private_dashboard_is_invisible_to_others(app, client):
@@ -203,7 +207,7 @@ async def test_a_private_dashboard_is_invisible_to_others(app, client):
     board = (await client.post('/api/v1/dashboards', headers=headers, json={'name': 'private', 'widgets': []})).json()
     other = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver')
     await login(other, 'bob')
-    assert (await other.get(f"/api/v1/dashboards/{board['id']}")).status_code == 404
+    assert (await other.get(f"/api/v1/dashboards/{board['id']}")).status_code == 404  # nosec B101
     await other.aclose()
 
 
@@ -212,17 +216,17 @@ async def test_viewing_a_profile_is_audited(client, search):
     await login(client, 'ana')
     search.answer = lambda body, index=None: {'hits': {'total': {'value': 0}, 'hits': []}, 'aggregations': {}}
     response = await client.get('/api/v1/entities/profile', params={'field': 'user', 'value': 'noah.kim'})
-    assert response.status_code == 200
+    assert response.status_code == 200  # nosec B101
     async with db.sessionmaker()() as session:
         event = (await session.execute(select(AuditEvent).where(AuditEvent.action == 'entity.view'))).scalar_one()
-        assert event.target_id == 'noah.kim' and event.actor_name == 'ana'
+        assert event.target_id == 'noah.kim' and event.actor_name == 'ana'  # nosec B101
 
 
 async def test_a_profile_of_something_that_is_not_an_identity_is_refused(client):
     await make_user('ana', role='analyst')
     await login(client, 'ana')
     response = await client.get('/api/v1/entities/profile', params={'field': 'bite.contexts', 'value': 'porn'})
-    assert response.status_code == 400
+    assert response.status_code == 400  # nosec B101
 
 
 async def test_exports_neutralise_spreadsheet_formulas_and_are_audited(client, search):
@@ -235,27 +239,27 @@ async def test_exports_neutralise_spreadsheet_formulas_and_are_audited(client, s
     search.answer = lambda body, index=None: next(answers)
     response = await client.post('/api/v1/events/export', headers=headers,
                                  json={'query': '', 'format': 'csv', 'columns': ['domain', 'user'], 'limit': 10})
-    assert response.status_code == 200
+    assert response.status_code == 200  # nosec B101
     rows = response.text.splitlines()
-    assert rows[0] == 'bite.requested,bite.client_user'
-    assert rows[1].startswith('"\'=HYPERLINK') and rows[1].endswith("'+cmd")
+    assert rows[0] == 'bite.requested,bite.client_user'  # nosec B101
+    assert rows[1].startswith('"\'=HYPERLINK') and rows[1].endswith("'+cmd")  # nosec B101
     async with db.sessionmaker()() as session:
-        assert (await session.execute(select(AuditEvent).where(AuditEvent.action == 'events.export'))).scalar_one()
+        assert (await session.execute(select(AuditEvent).where(AuditEvent.action == 'events.export'))).scalar_one()  # nosec B101
 
 
 async def test_viewers_cannot_export(client):
     await make_user('vic', role='viewer')
     headers = await login(client, 'vic')
     response = await client.post('/api/v1/events/export', headers=headers, json={'format': 'csv'})
-    assert response.status_code == 403
+    assert response.status_code == 403  # nosec B101
 
 
 async def test_a_query_mistake_comes_back_with_its_position(client):
     await make_user('ana', role='analyst')
     headers = await login(client, 'ana')
     response = await client.post('/api/v1/events/search', headers=headers, json={'query': 'risk:threat AND'})
-    assert response.status_code == 400
-    assert response.json()['query_error']['position'] == 12
+    assert response.status_code == 400  # nosec B101
+    assert response.json()['query_error']['position'] == 12  # nosec B101
 
 
 async def test_documents_are_only_read_from_turkeybite_indices(client, search):
@@ -264,14 +268,14 @@ async def test_documents_are_only_read_from_turkeybite_indices(client, search):
     search.answer = lambda body, index=None: {'hits': {'hits': [
         {'_index': index, '_id': 'abc', '_source': {'bite': {'client_user': 'ava'}}}]}}
     for index in ('.kibana', 'security-auditlog-2026', '..%2Fsecret'):
-        assert (await client.get(f'/api/v1/events/doc/{index}/abc')).status_code == 404
+        assert (await client.get(f'/api/v1/events/doc/{index}/abc')).status_code == 404  # nosec B101
     # Refused before OpenSearch was asked, not because it had nothing
-    assert search.bodies == []
+    assert search.bodies == []  # nosec B101
     response = await client.get('/api/v1/events/doc/tb-index-2026.10.05/abc')
-    assert response.status_code == 200 and len(search.bodies) == 1
+    assert response.status_code == 200 and len(search.bodies) == 1  # nosec B101
     async with db.sessionmaker()() as session:
         viewed = (await session.execute(select(AuditEvent).where(AuditEvent.action == 'event.view'))).scalars().all()
-    assert [e.target_label for e in viewed] == ['ava']
+    assert [e.target_label for e in viewed] == ['ava']  # nosec B101
 
 
 async def test_search_unavailability_is_a_503(client, search):
@@ -283,14 +287,14 @@ async def test_search_unavailability_is_a_503(client, search):
         raise SearchUnavailable('no OpenSearch host could be reached')
     search.search = down
     response = await client.post('/api/v1/events/search', headers=headers, json={'query': ''})
-    assert response.status_code == 503 and response.json()['code'] == 'search_unavailable'
+    assert response.status_code == 503 and response.json()['code'] == 'search_unavailable'  # nosec B101
 
 
 async def test_security_headers_are_set(client):
     response = await client.get('/api/v1/auth/config')
-    assert "default-src 'self'" in response.headers['content-security-policy']
-    assert response.headers['x-frame-options'] == 'DENY'
-    assert response.headers['cache-control'] == 'no-store'
+    assert "default-src 'self'" in response.headers['content-security-policy']  # nosec B101
+    assert response.headers['x-frame-options'] == 'DENY'  # nosec B101
+    assert response.headers['cache-control'] == 'no-store'  # nosec B101
 
 
 async def test_the_overview_puts_each_answer_where_it_belongs(client, search):
@@ -310,10 +314,10 @@ async def test_the_overview_puts_each_answer_where_it_belongs(client, search):
         return {'hits': {'total': {'value': 40}}, 'aggregations': {'notable': {'doc_count': 2}}}
     search.answer = answer
     data = (await client.get('/api/v1/overview')).json()
-    assert data['kpis']['events'] == {'value': 100, 'previous': 40, 'change': 1.5}
-    assert data['kpis']['notable']['previous'] == 2
-    assert data['heat'] == [{'t': '2026-10-05T10:00:00.000Z', 'count': 5, 'notable': 1}]
-    assert data['freshness']['latest_event'].startswith('2026-10-05')
+    assert data['kpis']['events'] == {'value': 100, 'previous': 40, 'change': 1.5}  # nosec B101
+    assert data['kpis']['notable']['previous'] == 2  # nosec B101
+    assert data['heat'] == [{'t': '2026-10-05T10:00:00.000Z', 'count': 5, 'notable': 1}]  # nosec B101
+    assert data['freshness']['latest_event'].startswith('2026-10-05')  # nosec B101
 
 
 async def test_every_accent_the_app_offers_can_be_saved(client):
@@ -323,11 +327,11 @@ async def test_every_accent_the_app_offers_can_be_saved(client):
     for accent in ('iris', 'ocean', 'forest', 'ember', 'rose', 'slate'):
         response = await client.put('/api/v1/account/preferences', headers=headers,
                                     json={'theme': 'dark', 'accent': accent, 'density': 'compact', 'privacy_mode': True})
-        assert response.status_code == 200, accent
+        assert response.status_code == 200, accent  # nosec B101
     me = (await client.get('/api/v1/auth/me')).json()
-    assert me['preferences']['accent'] == 'slate' and me['preferences']['privacy_mode'] is True
+    assert me['preferences']['accent'] == 'slate' and me['preferences']['privacy_mode'] is True  # nosec B101
     bad = await client.put('/api/v1/account/preferences', headers=headers, json={'accent': 'chartreuse'})
-    assert bad.status_code == 400
+    assert bad.status_code == 400  # nosec B101
 
 
 async def test_preferences_saved_at_once_from_two_tabs_both_stay(client):
@@ -340,7 +344,7 @@ async def test_preferences_saved_at_once_from_two_tabs_both_stay(client):
             client.put('/api/v1/account/preferences', headers=headers, json={'privacy_mode': True}),
             client.put('/api/v1/account/preferences', headers=headers, json={'density': 'compact'}))
         me = (await client.get('/api/v1/auth/me')).json()['preferences']
-        assert (me['theme'], me['privacy_mode'], me['density']) == ('dark', True, 'compact')
+        assert (me['theme'], me['privacy_mode'], me['density']) == ('dark', True, 'compact')  # nosec B101
         await client.put('/api/v1/account/preferences', headers=headers,
                          json={'theme': 'light', 'privacy_mode': False, 'density': 'comfortable'})
 
@@ -348,13 +352,13 @@ async def test_preferences_saved_at_once_from_two_tabs_both_stay(client):
 async def test_the_organisations_default_range_reaches_the_app(client):
     await make_user('root', role='admin')
     headers = await login(client, 'root')
-    assert (await client.get('/api/v1/auth/me')).json()['default_range'] == 'now-24h'
+    assert (await client.get('/api/v1/auth/me')).json()['default_range'] == 'now-24h'  # nosec B101
     general = (await client.get('/api/v1/settings/general')).json()
     bad = await client.put('/api/v1/settings/general', headers=headers, json={**general, 'default_range': 'now-9999999d'})
-    assert bad.status_code == 422
+    assert bad.status_code == 422  # nosec B101
     saved = await client.put('/api/v1/settings/general', headers=headers, json={**general, 'default_range': 'now-7d'})
-    assert saved.status_code == 200
-    assert (await client.get('/api/v1/auth/me')).json()['default_range'] == 'now-7d'
+    assert saved.status_code == 200  # nosec B101
+    assert (await client.get('/api/v1/auth/me')).json()['default_range'] == 'now-7d'  # nosec B101
 
 
 async def test_a_tab_left_from_another_persons_session_cannot_save_its_preferences_onto_yours(client):
@@ -364,7 +368,7 @@ async def test_a_tab_left_from_another_persons_session_cannot_save_its_preferenc
     headers = await login(client, 'bob')
     stale = await client.put('/api/v1/account/preferences', headers=headers,
                              json={'privacy_mode': False, 'user_id': carol})
-    assert stale.status_code == 409
+    assert stale.status_code == 409  # nosec B101
     bob = (await client.get('/api/v1/auth/me')).json()['user']['id']
     mine = await client.put('/api/v1/account/preferences', headers=headers, json={'privacy_mode': True, 'user_id': bob})
-    assert mine.status_code == 200 and 'user_id' not in mine.json()
+    assert mine.status_code == 200 and 'user_id' not in mine.json()  # nosec B101

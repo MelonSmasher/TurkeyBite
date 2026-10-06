@@ -1,5 +1,9 @@
 """TBQL: what a query means, and that a mistake is caught where it is made."""
 
+# Bandit's findings are marked nosec line by line: pytest checks with assert
+# (B101), and the fixtures hold made-up passwords (B105, B106). None of this
+# is code that ships.
+
 import pytest
 
 from tbconsole.search import tbql
@@ -11,86 +15,86 @@ def compile_(text):
 
 
 def test_empty_matches_everything():
-    assert compile_('') == {'match_all': {}}
-    assert compile_('   ') == {'match_all': {}}
+    assert compile_('') == {'match_all': {}}  # nosec B101
+    assert compile_('   ') == {'match_all': {}}  # nosec B101
 
 
 def test_a_field_term_is_case_insensitive_on_the_canonical_field():
-    assert compile_('rcode:nxdomain') == {'term': {'bite.response_code': {'value': 'nxdomain', 'case_insensitive': True}}}
+    assert compile_('rcode:nxdomain') == {'term': {'bite.response_code': {'value': 'nxdomain', 'case_insensitive': True}}}  # nosec B101
 
 
 def test_aliases_reach_the_same_field():
-    assert compile_('user:ava') == compile_('bite.client_user:ava') == compile_('username:ava')
+    assert compile_('user:ava') == compile_('bite.client_user:ava') == compile_('username:ava')  # nosec B101
 
 
 def test_a_taxonomy_branch_matches_everything_under_it():
     dsl = compile_('risk:threat')
     should = dsl['bool']['should']
-    assert {'term': {'bite.risk': {'value': 'threat', 'case_insensitive': True}}} in should
-    assert {'prefix': {'bite.risk': {'value': 'threat.', 'case_insensitive': True}}} in should
+    assert {'term': {'bite.risk': {'value': 'threat', 'case_insensitive': True}}} in should  # nosec B101
+    assert {'prefix': {'bite.risk': {'value': 'threat.', 'case_insensitive': True}}} in should  # nosec B101
 
 
 def test_wildcards_become_wildcard_queries():
-    assert compile_('domain:*.tiktok.com') == {
+    assert compile_('domain:*.tiktok.com') == {  # nosec B101
         'wildcard': {'bite.requested': {'value': '*.tiktok.com', 'case_insensitive': True}}}
 
 
 def test_a_quoted_wildcard_is_literal():
-    assert 'term' in compile_('domain:"*.tiktok.com"')
+    assert 'term' in compile_('domain:"*.tiktok.com"')  # nosec B101
 
 
 def test_addresses_and_networks():
-    assert compile_('client:10.0.0.0/8') == {'term': {'bite.client': '10.0.0.0/8'}}
+    assert compile_('client:10.0.0.0/8') == {'term': {'bite.client': '10.0.0.0/8'}}  # nosec B101
     with pytest.raises(TbqlError, match='not an address'):
         compile_('client:lab-12')
 
 
 def test_ranges_and_comparisons():
-    assert compile_('client:[10.0.0.1 TO 10.0.0.9]') == {'range': {'bite.client': {'gte': '10.0.0.1', 'lte': '10.0.0.9'}}}
-    assert compile_('client:{10.0.0.1 TO 10.0.0.9]') == {'range': {'bite.client': {'gt': '10.0.0.1', 'lte': '10.0.0.9'}}}
-    assert compile_('@timestamp:>now-1h') == {'range': {'@timestamp': {'gt': 'now-1h'}}}
+    assert compile_('client:[10.0.0.1 TO 10.0.0.9]') == {'range': {'bite.client': {'gte': '10.0.0.1', 'lte': '10.0.0.9'}}}  # nosec B101
+    assert compile_('client:{10.0.0.1 TO 10.0.0.9]') == {'range': {'bite.client': {'gt': '10.0.0.1', 'lte': '10.0.0.9'}}}  # nosec B101
+    assert compile_('@timestamp:>now-1h') == {'range': {'@timestamp': {'gt': 'now-1h'}}}  # nosec B101
 
 
 def test_booleans():
-    assert compile_('incidental:true') == {'term': {'bite.incidental': True}}
+    assert compile_('incidental:true') == {'term': {'bite.incidental': True}}  # nosec B101
     with pytest.raises(TbqlError, match='true or false'):
         compile_('incidental:maybe')
 
 
 def test_has_tests_for_a_value():
-    assert compile_('has:user') == {'exists': {'field': 'bite.client_user'}}
+    assert compile_('has:user') == {'exists': {'field': 'bite.client_user'}}  # nosec B101
 
 
 def test_precedence_is_not_then_and_then_or():
     dsl = compile_('a OR b c')
-    assert dsl['bool']['minimum_should_match'] == 1
+    assert dsl['bool']['minimum_should_match'] == 1  # nosec B101
     _, right = dsl['bool']['should']
-    assert 'filter' in right['bool']  # b AND c, ORed with a
+    assert 'filter' in right['bool']  # b AND c, ORed with a  # nosec B101
 
 
 def test_minus_negates_but_a_hyphen_does_not():
     dsl = compile_('-incidental:true')
-    assert dsl == {'bool': {'must_not': [{'term': {'bite.incidental': True}}]}}
+    assert dsl == {'bool': {'must_not': [{'term': {'bite.incidental': True}}]}}  # nosec B101
     # A hyphen inside a word is part of the word
     dsl = compile_('host:lab-12')
-    assert dsl['term']['bite.client_hostname_short']['value'] == 'lab-12'
+    assert dsl['term']['bite.client_hostname_short']['value'] == 'lab-12'  # nosec B101
 
 
 def test_value_groups_apply_the_field_to_each_value():
     dsl = compile_('category:(porn OR gambling)')
     values = [t['term']['bite.contexts']['value'] for t in dsl['bool']['should']]
-    assert values == ['porn', 'gambling']
+    assert values == ['porn', 'gambling']  # nosec B101
 
 
 def test_free_text_searches_names_people_and_categories():
     dsl = compile_('youtube.com')
     fields = {list(t['term'])[0] for t in dsl['bool']['should']}
-    assert {'bite.searches', 'bite.requested', 'bite.client_user', 'bite.contexts'} <= fields
+    assert {'bite.searches', 'bite.requested', 'bite.client_user', 'bite.contexts'} <= fields  # nosec B101
 
 
 def test_free_text_that_is_an_address_also_matches_the_client():
     dsl = compile_('10.20.12.44')
-    assert {'term': {'bite.client': '10.20.12.44'}} in dsl['bool']['should']
+    assert {'term': {'bite.client': '10.20.12.44'}} in dsl['bool']['should']  # nosec B101
 
 
 @pytest.mark.parametrize('text, message, position', [
@@ -107,8 +111,8 @@ def test_free_text_that_is_an_address_also_matches_the_client():
 def test_mistakes_say_what_and_where(text, message, position):
     with pytest.raises(TbqlError) as caught:
         compile_(text)
-    assert message in caught.value.message
-    assert caught.value.position == position
+    assert message in caught.value.message  # nosec B101
+    assert caught.value.position == position  # nosec B101
 
 
 def test_an_unknown_field_cannot_reach_opensearch():
@@ -128,7 +132,7 @@ def test_very_long_or_deep_queries_are_refused():
 def test_quote_round_trips():
     for value in ('plain', 'two words', 'say "hi"', 'AND', 'back\\slash'):
         node = tbql.parse(f'user:{tbql.quote(value)}')
-        assert node.tok.value == value
+        assert node.tok.value == value  # nosec B101
 
 
 def test_times_opensearch_would_choke_on_are_refused():

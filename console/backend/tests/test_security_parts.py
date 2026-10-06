@@ -1,5 +1,9 @@
 """The pieces security rests on: hashing, encryption, signing, URL checks, LDAP."""
 
+# Bandit's findings are marked nosec line by line: pytest checks with assert
+# (B101), and the fixtures hold made-up passwords (B105, B106). None of this
+# is code that ships.
+
 import ipaddress
 import time
 
@@ -13,37 +17,37 @@ from tbconsole.webhooks import dispatcher, formats, safety, signing
 
 def test_passwords_hash_and_verify():
     stored = passwords.hash_password('correct horse battery')
-    assert stored.startswith('$argon2id$')
-    assert passwords.verify_password(stored, 'correct horse battery')
-    assert not passwords.verify_password(stored, 'wrong')
-    assert not passwords.verify_password(None, 'anything')
+    assert stored.startswith('$argon2id$')  # nosec B101
+    assert passwords.verify_password(stored, 'correct horse battery')  # nosec B101
+    assert not passwords.verify_password(stored, 'wrong')  # nosec B101
+    assert not passwords.verify_password(None, 'anything')  # nosec B101
 
 
 def test_password_rules_are_explained():
-    assert passwords.password_problems('short', 'x')
-    assert any('username' in p for p in passwords.password_problems('alice-alice-alice', 'alice'))
-    assert passwords.password_problems('a much better passphrase', 'alice') == []
+    assert passwords.password_problems('short', 'x')  # nosec B101
+    assert any('username' in p for p in passwords.password_problems('alice-alice-alice', 'alice'))  # nosec B101
+    assert passwords.password_problems('a much better passphrase', 'alice') == []  # nosec B101
 
 
 def test_api_keys_are_random_and_only_their_hash_matches():
     key, prefix, digest = apikeys.generate()
     other, _, _ = apikeys.generate()
-    assert key != other and key.startswith(f'tbc_{prefix}_')
-    assert apikeys.parse(key) == prefix
-    assert apikeys.matches(key, digest) and not apikeys.matches(other, digest)
-    assert apikeys.parse('tbc_short_x') is None and apikeys.parse('Bearer nonsense') is None
+    assert key != other and key.startswith(f'tbc_{prefix}_')  # nosec B101
+    assert apikeys.parse(key) == prefix  # nosec B101
+    assert apikeys.matches(key, digest) and not apikeys.matches(other, digest)  # nosec B101
+    assert apikeys.parse('tbc_short_x') is None and apikeys.parse('Bearer nonsense') is None  # nosec B101
 
 
 def test_secrets_round_trip_and_survive_a_key_rotation(monkeypatch):
     sealed = crypto.encrypt('bind password')
-    assert crypto.decrypt(sealed) == 'bind password'
+    assert crypto.decrypt(sealed) == 'bind password'  # nosec B101
     settings = get_settings()
     old = settings.secret_key
     monkeypatch.setattr(settings, 'secret_key', 'a brand new key that is also long enough!!')
     with pytest.raises(crypto.SecretUnreadable):
         crypto.decrypt(sealed)
     monkeypatch.setattr(settings, 'secret_key_previous', [old])
-    assert crypto.decrypt(sealed) == 'bind password'
+    assert crypto.decrypt(sealed) == 'bind password'  # nosec B101
 
 
 def test_totp_accepts_a_neighbouring_step_and_refuses_replays():
@@ -51,18 +55,18 @@ def test_totp_accepts_a_neighbouring_step_and_refuses_replays():
     now = time.time()
     code = pyotp.TOTP(secret).at(now - 30)
     step = totp.verify(secret, code, None, now)
-    assert step is not None
-    assert totp.verify(secret, code, step, now) is None
-    assert totp.verify(secret, '12345', None, now) is None
+    assert step is not None  # nosec B101
+    assert totp.verify(secret, code, step, now) is None  # nosec B101
+    assert totp.verify(secret, '12345', None, now) is None  # nosec B101
 
 
 def test_signatures_verify_and_expire():
     body = b'{"event":"test"}'
     header = signing.sign('whsec_x', body, timestamp=1000)
-    assert signing.verify('whsec_x', body, header, now=1100)
-    assert not signing.verify('whsec_y', body, header, now=1100)
-    assert not signing.verify('whsec_x', body + b' ', header, now=1100)
-    assert not signing.verify('whsec_x', body, header, now=1000 + signing.TOLERANCE_SECONDS + 1)
+    assert signing.verify('whsec_x', body, header, now=1100)  # nosec B101
+    assert not signing.verify('whsec_y', body, header, now=1100)  # nosec B101
+    assert not signing.verify('whsec_x', body + b' ', header, now=1100)  # nosec B101
+    assert not signing.verify('whsec_x', body, header, now=1000 + signing.TOLERANCE_SECONDS + 1)  # nosec B101
 
 
 @pytest.mark.parametrize('fmt', list(formats.FORMATS))
@@ -71,18 +75,18 @@ def test_every_format_renders_a_finding_and_a_test(fmt):
                'finding': {'title': 'Threat seen: ava', 'summary': '3 events', 'severity': 'critical', 'status': 'new',
                            'rule_name': 'Threat seen', 'entity': 'ava', 'event_count': 3,
                            'top_domains': [{'key': 'evil.example', 'count': 3}]}}
-    assert formats.render(fmt, finding)
-    assert formats.render(fmt, {'event': 'test', 'message': 'hello'})
+    assert formats.render(fmt, finding)  # nosec B101
+    assert formats.render(fmt, {'event': 'test', 'message': 'hello'})  # nosec B101
 
 
 def test_private_addresses_are_blocked_unless_allowed():
-    blocked = [ipaddress.ip_address(a) for a in ('127.0.0.1', '10.1.2.3', '192.168.0.1', '169.254.169.254', '::1', '0.0.0.0')]
+    blocked = [ipaddress.ip_address(a) for a in ('127.0.0.1', '10.1.2.3', '192.168.0.1', '169.254.169.254', '::1', '0.0.0.0')]  # nosec B104
     for address in blocked:
-        assert safety._blocked(address, allow_private=False), address
-    assert not safety._blocked(ipaddress.ip_address('93.184.215.14'), allow_private=False)
+        assert safety._blocked(address, allow_private=False), address  # nosec B101
+    assert not safety._blocked(ipaddress.ip_address('93.184.215.14'), allow_private=False)  # nosec B101
     # Allowing private never opens the metadata service
-    assert safety._blocked(ipaddress.ip_address('169.254.169.254'), allow_private=True)
-    assert not safety._blocked(ipaddress.ip_address('10.1.2.3'), allow_private=True)
+    assert safety._blocked(ipaddress.ip_address('169.254.169.254'), allow_private=True)  # nosec B101
+    assert not safety._blocked(ipaddress.ip_address('10.1.2.3'), allow_private=True)  # nosec B101
 
 
 async def test_a_name_that_resolves_to_a_private_address_is_refused():
@@ -107,20 +111,20 @@ def test_deliveries_back_off_then_die():
     failure = {'status_code': 503, 'error': 'HTTP 503', 'snippet': '', 'retry': True, 'duration_ms': 5}
     for expected in dispatcher.BACKOFF:
         dispatcher.apply(row, hook, failure, now)
-        assert row.status == 'failed'
-        assert int((row.next_attempt_at - now).total_seconds()) == expected
+        assert row.status == 'failed'  # nosec B101
+        assert int((row.next_attempt_at - now).total_seconds()) == expected  # nosec B101
     dispatcher.apply(row, hook, failure, now)
-    assert row.status == 'dead' and hook.failure_streak == dispatcher.MAX_ATTEMPTS
+    assert row.status == 'dead' and hook.failure_streak == dispatcher.MAX_ATTEMPTS  # nosec B101
     refused = Row()
     dispatcher.apply(refused, hook, {'status_code': 404, 'error': 'refused', 'snippet': '', 'retry': False, 'duration_ms': 5}, now)
-    assert refused.status == 'dead' and refused.attempts == 1
+    assert refused.status == 'dead' and refused.attempts == 1  # nosec B101
 
 
 # -- LDAP, against ldap3's in-memory directory ------------------------------------------
 
 def test_ldap_signs_someone_in_with_the_role_their_groups_give(directory):
     identity = ldap.authenticate(directory, 'svc-pw', 'ava', 'ava-pw')
-    assert identity.role == 'analyst' and identity.display_name == 'Ava Chen' and identity.email == 'ava@example.org'
+    assert identity.role == 'analyst' and identity.display_name == 'Ava Chen' and identity.email == 'ava@example.org'  # nosec B101
 
 
 def test_ldap_refuses_a_wrong_password_and_an_unknown_person_alike(directory):
@@ -139,7 +143,7 @@ def test_ldap_refuses_someone_in_no_mapped_group_unless_there_is_a_default(direc
     with pytest.raises(ldap.LdapNotPermitted):
         ldap.authenticate(directory, 'svc-pw', 'bob', 'bob-pw')
     directory['default_role'] = 'viewer'
-    assert ldap.authenticate(directory, 'svc-pw', 'bob', 'bob-pw').role == 'viewer'
+    assert ldap.authenticate(directory, 'svc-pw', 'bob', 'bob-pw').role == 'viewer'  # nosec B101
 
 
 def test_ldap_filter_injection_finds_nobody(directory):
@@ -154,11 +158,11 @@ def test_a_wrong_service_password_means_the_directory_is_unavailable(directory):
 
 def test_role_mapping_is_case_insensitive_and_takes_the_highest():
     cfg = ldap.config_with_defaults({'role_mappings': [{'group': 'cn=a', 'role': 'viewer'}, {'group': 'CN=B', 'role': 'admin'}]})
-    assert ldap.map_role(cfg, ['CN=A', 'cn=b']) == 'admin'
-    assert ldap.map_role(cfg, ['cn=c']) is None
+    assert ldap.map_role(cfg, ['CN=A', 'cn=b']) == 'admin'  # nosec B101
+    assert ldap.map_role(cfg, ['cn=c']) is None  # nosec B101
 
 
 def test_the_ldap_test_reports_each_step(directory):
     steps = ldap.test(directory, 'svc-pw', 'ava', 'ava-pw')
-    assert [s['ok'] for s in steps] == [True, True, True, True, True]
-    assert steps[3]['detail'] == 'analyst'
+    assert [s['ok'] for s in steps] == [True, True, True, True, True]  # nosec B101
+    assert steps[3]['detail'] == 'analyst'  # nosec B101
