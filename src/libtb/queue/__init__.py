@@ -160,7 +160,7 @@ return moved
 
 
 class NotOwner(Exception):
-    """This process no longer holds the consumer's name it reserved."""
+    """Raised when a process no longer holds the consumer name it reserved."""
 
 
 class ListQueue(object):
