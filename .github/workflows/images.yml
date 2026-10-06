@@ -4,15 +4,23 @@ on:
   push:
     branches: [master]
     tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/images.yml'
+      - '.github/workflows/tests.yml'
+      - '.github/workflows/console.yml'
+      - 'docker/**'
+      - 'console/**'
+      - 'src/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Do not cancel a release because the same commit also had a master run.
-# The ref separates the two runs; images use only commit-specific/version tags.
+# Each commit gets its own group: GitHub otherwise replaces pending runs on
+# the same ref. A tag event remains separate from the master event.
 concurrency:
-  group: images-${{ github.ref }}
+  group: images-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -48,8 +56,7 @@ jobs:
   console-tests:
     uses: ./.github/workflows/console.yml
 
-  publish:
-    if: github.repository == 'MelonSmasher/TurkeyBite' && (github.ref == 'refs/heads/master' || github.ref_type == 'tag')
+  build:
     needs: [release, pipeline-tests, console-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -80,18 +87,28 @@ jobs:
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
 
       - name: Authenticate to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish ${{ matrix.role }}
+      - name: Reject an already published tag
+        if: github.event_name != 'pull_request'
+        env:
+          ROLE: ${{ matrix.role }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag=$VERSION; else tag="sha-$GITHUB_SHA"; fi
+          IMAGE="ghcr.io/melonsmasher/turkeybite-$ROLE:$tag" python3 docker/check-image-tag.py
+
+      - name: Build ${{ matrix.role }} and publish on master or release tags
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ github.ref_type == 'branch' && format('ghcr.io/melonsmasher/turkeybite-{0}:sha-{1}', matrix.role, github.sha) || '' }}
             ${{ needs.release.outputs.version && format('ghcr.io/melonsmasher/turkeybite-{0}:{1}', matrix.role, needs.release.outputs.version) || '' }}

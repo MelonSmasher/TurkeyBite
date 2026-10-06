@@ -174,7 +174,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ### Published images
 
-Every push to `master` runs the Python and console CI suites before publishing four separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-core`, `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, and `ghcr.io/melonsmasher/turkeybite-console`. Master commits get `sha-<full-master-commit-sha>` tags. Pushing a Git tag of the form `vMAJOR.MINOR.PATCH` for a commit on `master` reruns both suites and publishes that same version tag to all four images. Invalid version tags and tags outside master history fail validation without publishing. No moving `latest`, `vMAJOR`, or `vMAJOR.MINOR` tags are published: pin all roles to one exact release version (or one successful master commit). CI builds for the default runner architecture (linux/amd64); other architectures require a different build.
+Every push to `master` runs the Python and console CI suites before publishing four separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-core`, `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, and `ghcr.io/melonsmasher/turkeybite-console`. Master commits get `sha-<full-master-commit-sha>` tags. Pushing a Git tag of the form `vMAJOR.MINOR.PATCH` for a commit on `master` reruns both suites and publishes that same version tag to all four images. The tagged commit must itself contain `.github/workflows/images.yml`; older commits cannot trigger this tag workflow. Invalid version tags and tags outside master history fail validation without publishing. No moving `latest`, `vMAJOR`, or `vMAJOR.MINOR` tags are published: pin all roles to one exact release version (or one successful master commit). CI builds for the default runner architecture (linux/amd64); other architectures require a different build. GHCR tags can be overwritten by users with package-write access; for byte-for-byte reproducibility, record each published image digest and deploy `ghcr.io/melonsmasher/turkeybite-<role>@sha256:<digest>` instead of relying on tag immutability.
 
 For a generated application-node compose file, add the appropriate image variables to `.env` (only the roles present on that node):
 
@@ -186,7 +186,7 @@ TURKEYBITE_LIBRARIAN_IMAGE=ghcr.io/melonsmasher/turkeybite-librarian:sha-<full-m
 
 Then use `docker compose pull turkeybite-core turkeybite-worker turkeybite-librarian` (omit roles absent from that node), followed by `docker compose up -d --no-build`. `--no-build` matters: the generated file retains local `build` entries for source deployments. Without these variables, `docker compose up -d --build` continues to build locally. GHCR packages may require `docker login ghcr.io` with a package-read token on hosts that cannot pull them anonymously. The [console](console/README.md#deploying) has its own compose file and image variable; it runs on its own server with Postgres and reads the existing OpenSearch cluster. OpenSearch, Valkey, Bind9, and Postgres remain upstream images, not TurkeyBite-native images.
 
-To release, first merge the changes to `master` and choose the next version from the existing release tags. Increment MAJOR for an incompatible change, MINOR for a backward-compatible feature, or PATCH for a backward-compatible fix. For example, after deciding that `v1.2.3` is the correct next version:
+To release, first merge the changes to `master` and choose the next version from the existing release tags. Tag a master commit containing the image workflow; tagging an older commit without it cannot start CI. Increment MAJOR for an incompatible change, MINOR for a backward-compatible feature, or PATCH for a backward-compatible fix. Never move or reuse a released tag. For example, after deciding that `v1.2.3` is the correct next version:
 
 ```bash
 git switch master
@@ -330,11 +330,11 @@ docker compose exec turkeybite-librarian python turkeybite retention --attach-ex
 
 The second command is the one that deletes. Every index it attaches that is older than the period is gone within minutes, and there is no undo, so take a snapshot first if you may want them back. Only indices named `<prefix>-YYYY-MM-DD` that no ISM policy manages are attached, and nothing is attached while a shorter period is waiting to be confirmed.
 
-**Checking it.** Query OpenSearch's ISM API with an account allowed to read the policy and index state:
+**Checking it.** Run the queries inside the librarian container so its OpenSearch host is resolvable. Curl prompts for the librarian account's password; the optional mounted CA is used when configured, otherwise these checks follow the librarian's unverified demo connection:
 
 ```bash
-curl --cacert root-ca.pem -u admin 'https://opensearch:9200/_plugins/_ism/policies/turkeybite-retention'
-curl --cacert root-ca.pem -u admin 'https://opensearch:9200/_plugins/_ism/explain/tb-index-*'
+docker compose exec turkeybite-librarian sh -c 'if [ -n "$OPENSEARCH_CA_CERT" ]; then set -- --cacert "$OPENSEARCH_CA_CERT"; else set -- --insecure; fi; curl -fsS "$@" -u "${OPENSEARCH_USERNAME:-admin}" "https://${OPENSEARCH_HOST:-opensearch}:9200/_plugins/_ism/policies/turkeybite-retention"'
+docker compose exec turkeybite-librarian sh -c 'if [ -n "$OPENSEARCH_CA_CERT" ]; then set -- --cacert "$OPENSEARCH_CA_CERT"; else set -- --insecure; fi; curl -fsS "$@" -u "${OPENSEARCH_USERNAME:-admin}" "https://${OPENSEARCH_HOST:-opensearch}:9200/_plugins/_ism/explain/tb-index-*"'
 ```
 
 The first shows the period as `min_index_age`, and its `_seq_no` is the policy's version. In the second, each index the policy manages shows `"policy_id": "turkeybite-retention"` and, once ISM has started on it, the version it is on as `policy_seq_no`; each index no policy manages shows `"index.plugins.index_state_management.policy_id": null`. An index just attached takes a few minutes to show its state.
