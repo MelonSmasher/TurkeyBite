@@ -30,6 +30,8 @@ spec.loader.exec_module(SETUP)
 
 OLD = 'Old-Pass.42x'
 NEW = 'New-Pass.42x'
+# What a writer account signs in with, kept apart from the admin's
+WRITER_SIGN_IN = 'writer-pw'
 
 
 class Rerun(unittest.TestCase):
@@ -192,7 +194,7 @@ class PasswordInStepTest(Rerun):
         self.existing_install()
         config = self.config()
         config['processor']['elastic']['hosts'].append(
-            {'uri': 'https://search-2:9200', 'username': 'tb_writer', 'password': 'writer-pw'})
+            {'uri': 'https://search-2:9200', 'username': 'tb_writer', 'password': WRITER_SIGN_IN})
         with open(os.path.join(self.root, 'config.yaml'), 'w') as fh:
             yaml.safe_dump(config, fh)
         setup = self.setup(yes_no=[True, True])
@@ -202,7 +204,7 @@ class PasswordInStepTest(Rerun):
         self.assertTrue(self.write_both(setup, OLD))
         hosts = self.config()['processor']['elastic']['hosts']
         self.assertEqual([(h['username'], h['password']) for h in hosts],
-                         [('admin', NEW), ('tb_writer', 'writer-pw')])
+                         [('admin', NEW), ('tb_writer', WRITER_SIGN_IN)])
 
     def test_declining_either_file_abandons_the_change(self):
         for config_answer, env_answer in ((False, True), (True, False), (False, False)):

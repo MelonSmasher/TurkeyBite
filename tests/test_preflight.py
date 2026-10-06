@@ -26,6 +26,8 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+# The shell by its full path, rather than whatever PATH finds first
+SH = shutil.which('sh') or '/bin/sh'
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 
 import yaml
@@ -152,7 +154,9 @@ class StartScriptTest(unittest.TestCase):
         env = {'PATH': bin_dir + os.pathsep + '/usr/bin' + os.pathsep + '/bin', 'TMPDIR': root}
         if pipeline:
             env['TURKEYBITE_PIPELINE'] = pipeline
-        result = subprocess.run(['sh', os.path.join(ROOT, script)], cwd=root, env=env,
+        # The repository's own script, with stand-ins on PATH: nothing here
+        # comes from outside the test
+        result = subprocess.run([SH, os.path.join(ROOT, script)], cwd=root, env=env,  # nosec B603
                                 capture_output=True, text=True, timeout=60)
         calls = open(log).read().splitlines() if os.path.exists(log) else []
         return result, calls

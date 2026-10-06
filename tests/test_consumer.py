@@ -480,8 +480,7 @@ class ConsumerTest(unittest.TestCase):
 
     def test_a_long_outage_rests_a_minute_rather_than_overflowing(self):
         # Uncapped, the 1025th failure in a row would raise
-        with self.assertRaises(OverflowError):
-            BACKOFF_START * 2 ** 1024
+        self.assertRaises(OverflowError, lambda: BACKOFF_START * 2 ** 1024)
         consumer = self.consumer()
         consumer.failures = 5000
         with redirect_stderr(io.StringIO()):
@@ -504,7 +503,7 @@ class ConsumerTest(unittest.TestCase):
             consumer.run()
         return err.getvalue()
 
-    def fail(self, command, times, when=lambda *args: True):
+    def drop_valkey(self, command, times, when=lambda *args: True):
         """Makes the fake's `command` raise as Valkey going away does, `times` times."""
         real, failures = getattr(self.redis, command), []
 
@@ -519,7 +518,7 @@ class ConsumerTest(unittest.TestCase):
 
     def test_valkey_going_away_is_waited_out_rather_than_fatal(self):
         self.push(packet('a.example.com'), packet('b.example.com'))
-        self.fail('blmove', 2)
+        self.drop_valkey('blmove', 2)
         consumer = self.consumer()
         err = self.drain(consumer)
         self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com'])
@@ -535,7 +534,7 @@ class ConsumerTest(unittest.TestCase):
         # again before c is claimed; c's acknowledgement trims from the head
         self.cluster.answers = dict(BOTH_DOWN)
         self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
-        self.fail('lmove', 1, when=lambda src, dst, *_: dst == KEY)
+        self.drop_valkey('lmove', 1, when=lambda src, dst, *_: dst == KEY)
         consumer = self.consumer(self.processor(BULK_OFF), batch_size=2,
                                  sleep=lambda seconds: self.cluster.answers.clear())
         self.drain(consumer)
@@ -547,7 +546,7 @@ class ConsumerTest(unittest.TestCase):
         # trims a from the head of the processing list though a was never indexed
         self.cluster.answers = dict(BOTH_DOWN)
         self.push(packet('a.example.com'), packet('b.example.com'), packet('c.example.com'))
-        self.fail('lmove', 1, when=lambda src, dst, *_: dst == KEY)
+        self.drop_valkey('lmove', 1, when=lambda src, dst, *_: dst == KEY)
         consumer = self.consumer(self.processor(BULK_OFF), batch_size=2,
                                  sleep=lambda seconds: self.cluster.answers.clear())
         real = consumer.settle_stranded
@@ -577,7 +576,7 @@ class ConsumerTest(unittest.TestCase):
         self.assertEqual((self.waiting(), self.in_flight()), ([], []))
 
     def test_stop_while_valkey_is_away_exits(self):
-        self.fail('lrange', 1000)
+        self.drop_valkey('lrange', 1000)
         consumer = self.consumer(sleep=lambda seconds: consumer.stop())
         err = io.StringIO()
         with redirect_stdout(io.StringIO()) as out, redirect_stderr(err):

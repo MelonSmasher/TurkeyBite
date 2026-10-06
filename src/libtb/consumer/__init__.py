@@ -166,11 +166,10 @@ class Consumer(object):
         return len(items)
 
     def rest(self):
-        """Waits after a batch was requeued or Valkey did not answer, longer
-        each time in a row.
+        """Waits after a batch was requeued or Valkey did not answer.
 
-        Returns the length of the rest it was due, whether or not stop() cut it
-        short.
+        Each rest in a row is longer than the one before. Returns the length of
+        the rest it was due, whether or not stop() cut it short.
         """
         self.failures += 1
         # The exponent is capped, or a long enough outage would overflow the float
