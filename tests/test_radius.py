@@ -618,6 +618,18 @@ class DefaultNamesTest(unittest.TestCase):
         self.assertEqual((held['e'], held['l']), (LOGGED + 300, LOGGED))
         self.assertIsNone(self.holder(LOGGED + 11 * 60))
 
+    def test_a_late_stop_from_the_access_point_it_left_does_not_move_it_back(self):
+        # Walking between buildings: the new access point reports .220 at 18:21,
+        # the old one's idle-timeout stop for .219 lands at 18:34
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.sessions.take(nps_line(address='10.212.16.220', nas='ap-hall-12', session_id='N2',
+                                    logged='10/07/2026 18:21:34.212', session_time='60'))
+        self.sessions.take(nps_line(status='2', logged='10/07/2026 18:34:34.212', session_time='1500'))
+        self.assertEqual(self.holder(LOGGED + 17 * 60, '10.212.16.220'), 'jsmith')
+        self.assertEqual(json.loads(self.redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:01'))['a'],
+                         '10.212.16.220')
+
     def test_a_start_handled_after_an_interim_without_session_time_is_kept(self):
         self.sessions.take(accept_line())
         self.sessions.take(nps_line(session_time=None, logged='10/07/2026 18:29:34.212'))
@@ -892,6 +904,10 @@ class RealValkeyTest(unittest.TestCase):
                              logged='10/07/2026 18:24:34.212', session_time='900'))
         strict.take(nps_line(klass='G1', status='2', address='10.212.16.252', mac='BA-F7-F8-00-00-07',
                              session_id='G1', logged='10/07/2026 18:34:34.212', session_time='1500'))
+        strict.take(nps_line(klass='G1', address='10.212.16.255', mac='BA-F7-F8-00-00-07', session_id='G2',
+                             nas='ap-hall-12', logged='10/07/2026 18:25:34.212', session_time='60'))
+        strict.take(nps_line(klass='G1', status='2', address='10.212.16.253', mac='BA-F7-F8-00-00-07',
+                             session_id='G1', logged='10/07/2026 18:36:34.212', session_time='1620'))
         strict.take(nps_line(klass='G1', address='10.212.16.254', mac='BA-F7-F8-00-00-08', session_id='H1',
                              session_time=None, logged='10/07/2026 18:29:34.212'))
         strict.take(nps_line(klass='G1', status='1', address='10.212.16.254', mac='BA-F7-F8-00-00-08',
@@ -909,7 +925,9 @@ class RealValkeyTest(unittest.TestCase):
                 dump('turkeybite:radius:ip:10.212.16.240'), dump('turkeybite:radius:ip:10.212.16.241'),
                 moved, dump('turkeybite:radius:ip:10.212.16.250'), dump('turkeybite:radius:ip:10.212.16.251'),
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:06')),
-                dump('turkeybite:radius:ip:10.212.16.252'), dump('turkeybite:radius:ip:10.212.16.254'))
+                dump('turkeybite:radius:ip:10.212.16.252'), dump('turkeybite:radius:ip:10.212.16.254'),
+                dump('turkeybite:radius:ip:10.212.16.255'),
+                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:07')))
 
     def test_the_lua_does_what_the_fake_does(self):
         real = self.story(self.redis)
@@ -934,6 +952,8 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual((gail['e'], gail['l']), (LOGGED + 300, LOGGED))
         self.assertNotIn('x', gail)
         self.assertEqual((real[13]['ap-hall-11|H1']['s'], real[13]['ap-hall-11|H1']['k']), (LOGGED, 1))
+        self.assertNotIn('e', real[14]['ap-hall-12|G2'])
+        self.assertEqual(real[15]['a'], '10.212.16.255')
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

@@ -146,9 +146,11 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 # Then the hash's expiry is renewed, and only the MAX_SESSIONS most recently
 # reported sessions are kept. The device's key holds the address it was last
 # reported with, when (l), and when it was last reported at all (t). A
-# report that gave its address updates it if newer; a roam moves only t and
-# renews its expiry, so the roam keeps it while the session lasts, and the
-# next roam can follow on. Returns 1 if it recorded the report, 0 if not.
+# report that gave its address updates it if newer, except a stop at another
+# address than the one it holds, which may come late from an access point
+# the device has left; a roam moves only t and renews its expiry, so the roam
+# keeps it while the session lasts, and the next roam can follow on. Returns
+# 1 if it recorded the report, 0 if not.
 #   KEYS[1] the address's hash; KEYS[2], if given, the device's last address
 #   ARGV    session key, user or "", MAC or "", start, seen, stopped or "",
 #           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
@@ -162,6 +164,7 @@ local start, seen = tonumber(ARGV[4]), tonumber(ARGV[5])
 local reported_at = seen
 local stopped = tonumber(ARGV[6])
 local moved = stopped ~= nil and ARGV[15] == '1'
+local stop_report = stopped ~= nil and not moved
 local user, device = ARGV[2], ARGV[3]
 local signed, bridged = ARGV[9] == '1', ARGV[10] == '1'
 local slack, reported = tonumber(ARGV[11]), tonumber(ARGV[14])
@@ -254,7 +257,8 @@ if #KEYS > 1 then
       if type(known.t) ~= 'number' or known.t < now then known.t = now end
       redis.call('SET', KEYS[2], cjson.encode(known), 'EX', tonumber(ARGV[12]))
     end
-  elseif not (known and type(known.l) == 'number' and known.l > now) then
+  elseif not (known and type(known.l) == 'number' and known.l > now)
+      and not (stop_report and known and known.a ~= ARGV[13]) then
     local seen_last = now
     if known and type(known.t) == 'number' and known.t > now then seen_last = known.t end
     redis.call('SET', KEYS[2], cjson.encode({a = ARGV[13], l = now, t = seen_last}), 'EX', tonumber(ARGV[12]))
@@ -585,7 +589,8 @@ class Sessions:
             found = self._located(found)
             if found is None:
                 return None
-        if not found.bridged:
+        # A stop says the device left an address, not that it is there now
+        if not found.bridged and found.stopped is None:
             self._left(found)
         return found if self.record(found) else None
 
