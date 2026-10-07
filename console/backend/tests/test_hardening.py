@@ -1708,3 +1708,42 @@ async def test_a_few_addresses_flooding_the_directory_do_not_turn_others_away(ap
     assert [a.status_code for a in answers[-3:]] == [200, 200, 200]  # nosec B101
     assert not any(a.status_code == 503 for a in answers)  # nosec B101
     limits.reset()
+
+
+
+async def test_a_question_to_another_system_is_signed_and_its_answer_read(monkeypatch):
+    from tbconsole.webhooks import signing
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('93.184.215.14'))
+    hook = await _hook('https://sac.example.test/ingest/webhook/turkeybite/')
+    hook.headers_enc = crypto.encrypt('{"X-Webhook-Token": "tok-123"}')
+    seen = []
+
+    def answers(request):
+        seen.append(request)
+        return httpx.Response(200, json={'inventories': [], 'link': '/x'})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answers)) as http:
+        answer = await dispatcher.ask(hook, 'https://sac.example.test/device-lookup/', 'device.lookup',
+                                      {'id': 'q-1', 'address': '10.0.0.5'}, http)
+    assert answer == {'inventories': [], 'link': '/x'}  # nosec B101
+    request = seen[0]
+    assert request.headers['x-webhook-token'] == 'tok-123'  # nosec B101
+    assert request.headers['x-turkeybite-event'] == 'device.lookup'  # nosec B101
+    stamp, mac = (dict(p.split('=', 1) for p in request.headers[signing.HEADER].split(','))[k] for k in ('t', 'v1'))
+    assert signing.sign('s', request.content, int(stamp)).endswith(mac)  # nosec B101
+    # Refused, not JSON, or too big: no answer, in words
+    for response, words in ((httpx.Response(403, json={'error': 'Invalid TurkeyBite signature'}), 'HTTP 403: Invalid'),
+                            (httpx.Response(200, text='<html>'), 'not JSON'),
+                            (httpx.Response(200, content=b'{"a": "' + b'x' * (dispatcher.ASK_MAX_BYTES + 10) + b'"}'),
+                             'too large')):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r, resp=response: resp)) as http:
+            with pytest.raises(dispatcher.AskFailed, match=words):
+                await dispatcher.ask(hook, 'https://sac.example.test/device-lookup/', 'device.lookup', {}, http)
+    # A secret that can no longer be read, after the console's key changed
+    unreadable = await _hook('https://sac.example.test/ingest/webhook/turkeybite/')
+    unreadable.secret_enc = 'not-a-fernet-token'  # nosec B105
+    with pytest.raises(dispatcher.AskFailed, match='cannot be read'):
+        await dispatcher.ask(unreadable, 'https://sac.example.test/device-lookup/', 'device.lookup', {})
+    # Somewhere webhooks may not go, it may not ask either
+    monkeypatch.setattr(safety, 'asyncio', _Asyncio('169.254.169.254'))
+    with pytest.raises(dispatcher.AskFailed, match='may not reach'):
+        await dispatcher.ask(hook, 'https://sac.example.test/device-lookup/', 'device.lookup', {})

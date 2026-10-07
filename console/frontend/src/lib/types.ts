@@ -33,6 +33,7 @@ export interface Me {
   org_name: string;
   privacy_mode_default: boolean;
   default_range: string;
+  device_lookup: boolean;
   mfa_required: boolean;
   version: string;
   api_docs: boolean;

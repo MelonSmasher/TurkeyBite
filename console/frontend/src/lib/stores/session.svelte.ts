@@ -58,6 +58,18 @@ class Session {
     return this.me;
   }
 
+  /** What the console tells this person now, after a change to it, such as
+   *  an admin's to the settings. Their display choices stay as they are here,
+   *  and a refresh that fails changes nothing. */
+  async refresh() {
+    try {
+      const now = await api.get<Me>('/auth/me');
+      if (now.user.id === this.me?.user.id) this.me = now;
+    } catch {
+      // The next request finds out whatever went wrong
+    }
+  }
+
   /** Tells the other tabs who is signed in now, after signing in. */
   announce(user: string) {
     this.#channel?.postMessage({ kind: 'signed-in', user });
@@ -88,6 +100,9 @@ class Session {
     try {
       const now = await api.get<Me>('/auth/me');
       if (now.user.id !== this.me?.user.id) this.#elsewhere();
+      // The same person: what the console tells them may have changed since,
+      // their role or what an admin set up. Their display choices stay as they are here
+      else this.me = now;
     } catch {
       // Signed out: the next request finds out and sends this tab to sign in
     }

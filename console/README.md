@@ -259,6 +259,28 @@ def verify(secret: str, body: bytes, header: str) -> bool:
     return hmac.compare_digest(mac.hexdigest(), parts["v1"])
 ```
 
+### Device lookup
+
+The console can ask another system what its inventories know about a device:
+where it is plugged in, who last used it, its computer account. The Security
+Alert Console answers this, at `/ingest/webhook/turkeybite/device-lookup/`.
+Click an address, a machine's latest one on its profile or the one on any
+event, and the answer shows in a panel here, inventory by inventory.
+
+An admin sets it up under **Authentication → Console → Device lookup**: the
+URL to ask, and which webhook signs the question. The webhook's secret and
+custom headers go with it, as they do with its deliveries, so the other side
+knows the console by the same token and `X-TurkeyBite-Signature`. The URL is
+checked as a webhook's is, so it cannot reach the console's own network
+unless webhooks may.
+
+It needs `findings:write`, at most 20 lookups a minute for one person, and
+each is written to the audit log before it is asked. The answer is taken as
+text and http(s) links, nothing else. In privacy mode, the console asks
+before showing it, since it names people. Only whether lookups are on reaches
+the app, never the URL. With no URL set, which is the default, addresses are
+plain.
+
 ## Security, in short
 
 - Sessions are opaque tokens in HttpOnly, Secure, SameSite cookies, stored only as
@@ -319,7 +341,9 @@ screenshots in `docs/screenshots/` from the running app.
 
 - The sign-in brake per address and username is kept in each process's
   memory; the per-account lockout, which matters more, is in the database and
-  holds across replicas.
+  holds across replicas. The limit of 20 device lookups a minute for one
+  person is kept the same way, so with several replicas it is per replica;
+  the other side keeps its own limit as well.
 - Rules catch up on at most six hours of missed or failed windows; anything
   older is noted on the rule's run, not evaluated. They read events up to a
   minute behind now (`TBCONSOLE_RULE_INGEST_DELAY_SEC`), for those still on

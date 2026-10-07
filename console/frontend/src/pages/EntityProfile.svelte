@@ -7,6 +7,7 @@
   import StatTile from '../lib/charts/StatTile.svelte';
   import TimeChart from '../lib/charts/TimeChart.svelte';
   import { intervalMsOf, RISK_COLOR } from '../lib/charts/util';
+  import DeviceLookup from '../lib/components/DeviceLookup.svelte';
   import DomainLink from '../lib/components/DomainLink.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import EntityLink from '../lib/components/EntityLink.svelte';
@@ -20,6 +21,7 @@
   import { Query } from '../lib/query.svelte';
   import { router } from '../lib/router.svelte';
   import { prefs } from '../lib/stores/prefs.svelte';
+  import { session } from '../lib/stores/session.svelte';
   import { timeRange } from '../lib/stores/timerange.svelte';
   import { errorText } from '../lib/stores/toasts.svelte';
   import { reveal } from '../lib/urlsafe';
@@ -33,6 +35,7 @@
     domains: DomainRow[]; risky_domains: DomainRow[]; purposes: Bucket[]; risks: Bucket[]; services: Bucket[];
     response_codes: Bucket[]; heat: { t: string; count: number; notable: number }[]; heat_range?: { from: string; to: string };
     recent_notable: Hit[]; findings: Finding[]; risk: { score: number; findings: number; by_severity: Record<string, number> };
+    latest_address: { addresses: string[]; at: string | null } | null;
   }
 
   // Read from what App passes, which belongs to this page's route alone
@@ -75,6 +78,15 @@
         <div class="facts muted">
           {#if p?.first}<span>First seen in range {ago(p.first)}</span>{/if}
           {#if p?.last}<span>Last seen {ago(p.last)}</span>{/if}
+          {#if p?.latest_address?.at}
+            <!-- The addresses it was last seen at, which look the device up where an admin linked -->
+            <span class="latest">Latest {p.latest_address.addresses.length === 1 ? 'address' : 'addresses'}
+              {#each p.latest_address.addresses as address (address)}
+                {#if session.me?.device_lookup && session.can('findings:write')}<DeviceLookup value={address} />
+                {:else}<EntityLink field="bite.client" value={address} size="sm" />{/if}
+              {/each}
+              {ago(p.latest_address.at)}</span>
+          {/if}
         </div>
       </div>
     </div>
@@ -92,6 +104,7 @@
     </div>
     <div class="hero-actions">
       <a class="btn" href={exploreLink({ q: exploreQuery, from: timeRange.from, to: timeRange.to })}><ScanSearch size={15} /> Their events</a>
+      {#if p?.latest_address && !p.latest_address.at}<DeviceLookup value={p.latest_address.addresses[0]} label="Device lookup" button />{/if}
       <TimeRangePicker />
     </div>
   </header>
@@ -229,6 +242,7 @@
   h1 { font-size: 1.7rem; word-break: break-all; }
   h1.masked { font-family: var(--font-mono); font-size: 1.4rem; }
   .facts { display: flex; gap: 14px; font-size: 0.84rem; flex-wrap: wrap; }
+  .latest { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .score-block { display: flex; align-items: center; gap: 12px; padding: 4px 18px; border-left: 1px solid var(--divider); }
   .score-text { font-size: 13px; font-weight: 700; fill: var(--text); }
   .score-words { display: flex; flex-direction: column; font-size: 0.86rem; }

@@ -7,6 +7,7 @@
   import type { Hit } from '../types';
   import DomainLink from './DomainLink.svelte';
   import Drawer from './Drawer.svelte';
+  import DeviceLookup from './DeviceLookup.svelte';
   import EntityLink from './EntityLink.svelte';
   import JsonView from './JsonView.svelte';
   import Segmented from './Segmented.svelte';
@@ -63,6 +64,10 @@
     const alias = short[entity.field] ?? entity.field;
     return exploreLink({ q: `${alias}:${quote(String(entity.value))}`, from, to });
   }
+
+  function ipv4First(addresses: string[]): string[] {
+    return [...addresses].sort((a, b) => Number(a.includes(':')) - Number(b.includes(':')));
+  }
 </script>
 
 <Drawer bind:open title={(b.requested ?? ['Event'])[0]} width={680} onclose={() => (hit = null)}>
@@ -85,7 +90,12 @@
         <div class="section-title">Who</div>
         <div class="kv">
           {#if entity}<div class="k">Entity</div><div class="v"><EntityLink field={entity.field} value={entity.value} /></div>{/if}
-          {#if b.client}<div class="k">Address</div><div class="v"><EntityLink field="bite.client" value={b.client} /></div>{/if}
+          {#if b.client}<div class="k">Address</div><div class="v addr"><EntityLink field="bite.client" value={b.client} /><DeviceLookup value={b.client} label="Device lookup" /></div>{/if}
+          {#if !b.client && b.client_ips?.length}
+            <!-- A browser's event: the machine's own addresses, IPv4 first -->
+            <div class="k">Addresses</div>
+            <div class="v addrs">{#each ipv4First(b.client_ips).slice(0, 3) as ip (ip)}<span class="addr"><EntityLink field="bite.client_ips" value={ip} /><DeviceLookup value={ip} label="Device lookup" /></span>{/each}</div>
+          {/if}
           {#if b.client_user}<div class="k">User</div><div class="v"><EntityLink field="bite.client_user" value={b.client_user} /></div>{/if}
           {#if b.client_hostname_short}<div class="k">Machine</div><div class="v"><EntityLink field="bite.client_hostname_short" value={b.client_hostname_short} /></div>{/if}
           {#if b.client_hosts_short?.length}<div class="k">PTR name</div><div class="v"><EntityLink field="bite.client_hosts_short" value={b.client_hosts_short[0]} /></div>{/if}
@@ -167,6 +177,8 @@
 </Drawer>
 
 <style>
+  .addr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .addrs { display: flex; flex-direction: column; gap: 4px; }
   .dh { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .dh h2 { font-size: 1.05rem; }
   .dh-time { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; }

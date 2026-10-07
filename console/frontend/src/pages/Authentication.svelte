@@ -5,6 +5,7 @@
   import PageHeader from '../lib/components/PageHeader.svelte';
   import Switch from '../lib/components/Switch.svelte';
   import { Query } from '../lib/query.svelte';
+  import { session } from '../lib/stores/session.svelte';
   import { PRESETS } from '../lib/stores/timerange.svelte';
   import { errorText, toasts } from '../lib/stores/toasts.svelte';
 
@@ -14,10 +15,11 @@
     attr_email: string; attr_groups: string; group_base_dn: string; group_filter: string;
     role_mappings: { group: string; role: string }[]; default_role: string | null; timeout_sec: number;
   }
-  interface General { org_name: string; login_banner: string; default_range: string; require_mfa_for_local_admins: boolean; privacy_mode_default: boolean }
+  interface General { org_name: string; login_banner: string; default_range: string; require_mfa_for_local_admins: boolean; privacy_mode_default: boolean; device_lookup_url: string; device_lookup_webhook_id: string }
 
   const ldapQ = new Query((signal) => api.get<Ldap>('/settings/ldap', { signal }));
   const generalQ = new Query((signal) => api.get<General>('/settings/general', { signal }));
+  const hooks = new Query((signal) => api.get<{ id: string; name: string }[]>('/webhooks', { signal }));
   let ldap = $state<Ldap | null>(null);
   let general = $state<General | null>(null);
   let urlsText = $state('');
@@ -67,6 +69,8 @@
   async function saveGeneral() {
     try {
       await api.put('/settings/general', general);
+      // What the app was told at sign-in, device lookup included, as now saved
+      await session.refresh();
       toasts.success('Settings saved');
     } catch (e) {
       toasts.error('Could not save', errorText(e));
@@ -172,6 +176,16 @@
             {#each PRESETS as p (p.id)}<option value={p.from}>{p.label}</option>{/each}
           </select>
           <span class="field-hint">Until someone picks another time range.</span></label>
+        <div class="field">
+          <span class="field-label" id="lookup-label">Device lookup</span>
+          <input class="input mono" bind:value={general.device_lookup_url} aria-labelledby="lookup-label"
+                 placeholder="https://sac.example.edu/ingest/webhook/turkeybite/device-lookup/" />
+          <select class="select" bind:value={general.device_lookup_webhook_id} aria-label="Webhook that signs device lookups">
+            <option value="">Signed as which webhook…</option>
+            {#each hooks.data ?? [] as hook (hook.id)}<option value={hook.id}>{hook.name}</option>{/each}
+          </select>
+          <span class="field-hint">Pressing an address asks this system, such as a security console, what its inventories know about the device, and shows the answer here. The question goes signed with the chosen webhook's secret and custom headers, as its deliveries are. Both empty for none.</span>
+        </div>
         <label class="row top"><Switch bind:checked={general.privacy_mode_default} label="Privacy mode by default" />
           <span>Start everyone in privacy mode <span class="muted small">People are shown as aliases until someone chooses to see names.</span></span></label>
         <button class="btn btn-primary" onclick={saveGeneral}><Save size={15} /> Save</button>
