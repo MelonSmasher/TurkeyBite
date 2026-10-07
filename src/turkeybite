@@ -331,6 +331,51 @@ def audit(reference, top, examples, categories, index_path, min_publishers, disa
         print(f'\nAsked the resolvers {checker.queries} times.')
 
 
+@cli.command('retag')
+@click.option('--apply', 'apply_now', is_flag=True, default=False,
+              help='Write the new labels. Without it nothing is written and the '
+                   'report says what would change.')
+@click.option('--index', 'pattern', default=None,
+              help='Indices to relabel. Defaults to every daily index, '
+                   '<processor.elastic.index_prefix>-*.')
+@click.option('--batch-size', default=1000, show_default=True,
+              help='Events read per scroll page and written per bulk request.')
+@click.option('--limit', default=None, type=int,
+              help='Stop after reading this many events, for a trial run.')
+def retag(apply_now, pattern, batch_size, limit):
+    """Relabel stored events with the lists and settings as they are now.
+
+    Runs every stored DNS lookup and page visit back through the worker's own
+    categorisation against the current domain index and config.yaml, and
+    replaces the fields that decision writes (bite.contexts, the candidates,
+    claims, sources and facets) where they differ. Rebuild the index first,
+    with `turkeybite index`, so it holds the lists you mean to apply. See
+    libtb/retag for what is and is not replaced.
+    """
+    from opensearchpy import OpenSearch
+    from libtb.opensearch import client_kwargs
+    from libtb.retag import format_report, run
+
+    config = read_config()
+    try:
+        processor = Processor(config['processor'], config['redis'])
+        elastic = config['processor']['elastic']
+        client = OpenSearch(**client_kwargs(elastic['hosts'][0]))
+    except (OSError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise click.ClickException(f'configuration: {e}')
+    pattern = pattern or elastic['index_prefix'] + '-*'
+    click.echo(f'{"Relabelling" if apply_now else "Dry run over"} {pattern}', err=True)
+    try:
+        result = run(client, processor, pattern, apply=apply_now,
+                     batch_size=batch_size, limit=limit, log=lambda m: click.echo(m, err=True))
+    except (RuntimeError, ValueError) as e:
+        raise click.ClickException(str(e))
+    for line in format_report(result, apply_now):
+        click.echo(line)
+    if apply_now and result['counts'].get('failed'):
+        raise SystemExit(1)
+
+
 @cli.command('overlap')
 @click.option('--index', 'index_path', default=None,
               help='Index file to measure. Defaults to the configured path.')

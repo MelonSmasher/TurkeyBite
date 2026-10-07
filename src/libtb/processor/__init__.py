@@ -529,6 +529,16 @@ class Processor(object):
         """
         return self._resolvers
 
+    def resolver_checker(self):
+        """The Checker that asks the resolvers, or None when they are off.
+
+        A worker shares one per process; `turkeybite retag` sets
+        `self.checker` to its own throttled one.
+        """
+        if hasattr(self, 'checker'):
+            return self.checker
+        return checker_for(self.resolver_conf())
+
     def privacy(self):
         """What events keep of their URLs and the raw packet, see libtb.privacy.
 
@@ -616,7 +626,7 @@ class Processor(object):
         # index and answered from Valkey.
         if mode == 'index':
             claims, verdict = second_opinion(host, claims, verdict, self.min_publishers(),
-                                             checker_for(self.resolver_conf()), navigation)
+                                             self.resolver_checker(), navigation)
 
         contexts = verdict['asserted']
         extra = {
@@ -680,6 +690,77 @@ class Processor(object):
         verdict = resolve(claims, self.min_publishers())
         return verdict['asserted'], sources_of(claims), matched_keys(claims)
 
+    def categorise_lookup(self, searches, chain):
+        """Categories for a DNS lookup: the name asked for, then its CNAME chain.
+
+        Returns (contexts, extra), extra holding every field the verdict puts
+        on the event and nothing else, so `turkeybite retag` replaces exactly
+        what a worker would write today.
+        """
+        contexts, extra = self.resolve_contexts(searches)
+        corrected = extra.pop(CORRECTED, ())
+
+        # The answer section, which Packetbeat has already parsed and which bite
+        # has never carried. Merged after resolve_contexts so compare mode keeps
+        # measuring question-for-question agreement rather than comparing a
+        # chain-enriched answer against one that never had a chain.
+        match_source = ['question'] if contexts else []
+        if chain:
+            chain_contexts, chain_sources, chain_matched = self.resolve_chain(chain)
+            if chain_contexts:
+                extra['cname_matched_on'] = chain_matched
+                extra['cname_contexts'] = chain_contexts
+                # In compare mode Valkey stays authoritative and the chain is
+                # recorded without being merged, so that mode measures the index
+                # rather than an index-enriched answer. It doubles as a dry run:
+                # cname_contexts shows what merging would add before it does.
+                if self.index_settings()[0] == 'index':
+                    # A correction on the name that was asked for holds over
+                    # whatever that name happens to be hosted on, read
+                    # through the taxonomy as resolve() reads it. These are
+                    # the corrections themselves, not what they suppressed on
+                    # the name, since the name may have had no such claim.
+                    cancelled = {c for c in chain_contexts if cancels(corrected, c)}
+                    added = set(chain_contexts) - cancelled
+                    if cancelled:
+                        extra['contexts_suppressed'] = sorted(
+                            set(extra.get('contexts_suppressed') or []) | cancelled)
+                    demoted = set()
+                    if extra.get('incidental'):
+                        # So does the incidental mark. connect.facebook.net is
+                        # hosted on scontent.xx.fbcdn.net, which the lists call
+                        # Facebook, and merging that back would undo the mark.
+                        kept, demoted = demote_incidental(added)
+                        added, demoted = set(kept), set(demoted)
+                    if added:
+                        match_source.append('cname')
+                    contexts = sorted(set(contexts) | added)
+                    held_back = sorted((set(extra.get('contexts_candidate') or []) | demoted)
+                                       - added)
+                    if held_back:
+                        extra['contexts_candidate'] = held_back
+                    else:
+                        extra.pop('contexts_candidate', None)
+                    if chain_sources:
+                        extra['sources'] = sorted(set(extra.get('sources') or [])
+                                                  | set(chain_sources))
+        if match_source:
+            extra['match_source'] = match_source
+
+        # After the chain merge, so a category the chain contributed is faceted
+        # like any other
+        extra.update(taxonomy_fields(contexts))
+        return contexts, extra
+
+    def categorise_visit(self, searches):
+        """Categories for a page someone opened, as (contexts, extra), see categorise_lookup."""
+        # A history entry is a page the person opened, so the incidental mark,
+        # which is about lookups made on someone else's behalf, does not apply
+        contexts, extra = self.resolve_contexts(searches, navigation=True)
+        extra.pop(CORRECTED, None)
+        extra.update(taxonomy_fields(contexts))
+        return contexts, extra
+
     def process_dns_packet(self, data):
         # Related context from lists
         contexts = []
@@ -740,61 +821,10 @@ class Processor(object):
         if not searches:
             return False
 
-        contexts, extra = self.resolve_contexts(searches)
-        corrected = extra.pop(CORRECTED, ())
-
-        # The answer section, which Packetbeat has already parsed and which bite
-        # has never carried. Merged after resolve_contexts so compare mode keeps
-        # measuring question-for-question agreement rather than comparing a
-        # chain-enriched answer against one that never had a chain.
         chain = cname_chain(data)
-        match_source = ['question'] if contexts else []
+        contexts, extra = self.categorise_lookup(searches, chain)
         if chain:
             extra['cname_chain'] = chain
-            chain_contexts, chain_sources, chain_matched = self.resolve_chain(chain)
-            if chain_contexts:
-                extra['cname_matched_on'] = chain_matched
-                extra['cname_contexts'] = chain_contexts
-                # In compare mode Valkey stays authoritative and the chain is
-                # recorded without being merged, so that mode measures the index
-                # rather than an index-enriched answer. It doubles as a dry run:
-                # cname_contexts shows what merging would add before it does.
-                if self.index_settings()[0] == 'index':
-                    # A correction on the name that was asked for holds over
-                    # whatever that name happens to be hosted on, read
-                    # through the taxonomy as resolve() reads it. These are
-                    # the corrections themselves, not what they suppressed on
-                    # the name, since the name may have had no such claim.
-                    cancelled = {c for c in chain_contexts if cancels(corrected, c)}
-                    added = set(chain_contexts) - cancelled
-                    if cancelled:
-                        extra['contexts_suppressed'] = sorted(
-                            set(extra.get('contexts_suppressed') or []) | cancelled)
-                    demoted = set()
-                    if extra.get('incidental'):
-                        # So does the incidental mark. connect.facebook.net is
-                        # hosted on scontent.xx.fbcdn.net, which the lists call
-                        # Facebook, and merging that back would undo the mark.
-                        kept, demoted = demote_incidental(added)
-                        added, demoted = set(kept), set(demoted)
-                    if added:
-                        match_source.append('cname')
-                    contexts = sorted(set(contexts) | added)
-                    held_back = sorted((set(extra.get('contexts_candidate') or []) | demoted)
-                                       - added)
-                    if held_back:
-                        extra['contexts_candidate'] = held_back
-                    else:
-                        extra.pop('contexts_candidate', None)
-                    if chain_sources:
-                        extra['sources'] = sorted(set(extra.get('sources') or [])
-                                                  | set(chain_sources))
-        if match_source:
-            extra['match_source'] = match_source
-
-        # After the chain merge, so a category the chain contributed is faceted
-        # like any other
-        extra.update(taxonomy_fields(contexts))
         extra.update(domain_fields(searches[0]))
 
         resolved = resolved_addresses(dig(data, 'dns', 'resolved_ip'))
@@ -924,11 +954,7 @@ class Processor(object):
         if not searches:
             return False
 
-        # A history entry is a page the person opened, so the incidental mark,
-        # which is about lookups made on someone else's behalf, does not apply
-        contexts, extra = self.resolve_contexts(searches, navigation=True)
-        extra.pop(CORRECTED, None)
-        extra.update(taxonomy_fields(contexts))
+        contexts, extra = self.categorise_visit(searches)
         extra.update(domain_fields(searches[0]))
         identity = client_identity(dig(data, 'data', 'event', 'data'))
 

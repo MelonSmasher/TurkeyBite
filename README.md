@@ -530,3 +530,20 @@ docker compose exec turkeybite-worker python turkeybite audit lists/top-1m.csv -
 Popular is not the same as harmless, so read the report rather than trusting it: popular sites really are social networks, and some really are adult. A threat category on a top 10,000 domain is a different matter, and the report names the lists behind every one. Then either correct the host in the [ignorelist](vols/lists/ignorelist.md), or, if one list keeps appearing, lower its `trust`.
 
 Corroboration is only worth something between independent lists, and `derived_from` is the only record of which lists copy which. `turkeybite overlap` reads the index and reports every pair of lists where one holds at least half of the other's names, marking with `!` the pairs that are weighed as independent although their agreement may be one opinion counted twice. It also measures each declared `derived_from` against the lists it names. A heavy overlap is a reason to read the publishers' documentation, not proof of copying: two good lists of popular gambling sites will overlap because there are only so many popular gambling sites.
+
+### Relabelling stored events
+
+An event's categories are decided once, when a worker processes it. Changing a list's `trust`, dropping a list or adding an ignorelist correction affects new events only. `turkeybite retag` runs every stored DNS lookup and page visit back through the worker's own categorisation, against the current index and `config.yaml`, and rewrites the fields that decision produces where they differ: `bite.contexts`, `contexts_candidate`, `contexts_suppressed`, `claims`, `sources`, `matched_on`, `match_source`, the CNAME fields, `purpose`, `service`, `risk` and `index_built_at`. Nothing else on an event is touched: not who looked it up, not when, not the raw packet, and `processor.privacy` is not applied again.
+
+```bash
+docker compose exec turkeybite-librarian python turkeybite index                 # build the index from the lists you mean
+docker compose exec turkeybite-librarian python turkeybite retag --limit 200000   # dry run on a sample
+docker compose exec turkeybite-librarian python turkeybite retag                  # dry run over everything
+docker compose exec turkeybite-librarian python turkeybite retag --apply
+```
+
+Without `--apply` nothing is written and the report says how many events would change and which categories would be added and removed. `--index` narrows it to some indices, such as `tb-index-2026-09-*`. It needs `index` mode, and stops rather than writing anything if the index cannot be read. An event already in line is not written, so a run that stopped partway can be started again and writes only what is left. Each write is conditional on the copy that was read, so an event something else changed in the meantime is counted as a conflict and left alone. On a dual-socket server it read about 11,000 events a second, so 100 million take about three hours; most events repeat a few hundred thousand names, and each name's verdict is worked out once.
+
+The public resolvers are never asked. With `processor.evidence.resolvers` on, the answers an event already holds in `bite.resolvers` are reused, so a threat a resolver confirmed stays confirmed. A name that was not sent to them at the time, because no list flagged it then, stays a candidate.
+
+Events from before `bite.searches` existed are relabelled from `bite.requested`, whose first entry is the same name.
