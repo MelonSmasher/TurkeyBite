@@ -77,9 +77,10 @@ KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'ca
 # when the name it gave is not a person's; `start`, `seen` and `stopped` are
 # epoch seconds, `stopped` None while the session lasts. `signed` says the
 # user is the account NPS authenticated, `bridged` that the address is the
-# one the device had before it roamed.
-Session = namedtuple('Session', 'address key user mac start seen stopped klass signed bridged',
-                     defaults=(False, False))
+# one the device had before it roamed, and `reported` when the device was
+# last reported with it.
+Session = namedtuple('Session', 'address key user mac start seen stopped klass signed bridged reported',
+                     defaults=(False, False, None))
 
 ACCESS_ACCEPT, ACCOUNTING_REQUEST = '2', '4'
 START, STOP, INTERIM = '1', '2', '3'
@@ -120,17 +121,20 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #     session that reused the id, and replaces it.
 #   - A name NPS authenticated is not replaced by one a device gave.
 #   - An address the session reported itself is not demoted to a roam's.
-# Then the hash's expiry is renewed, only the MAX_SESSIONS most recently
-# reported sessions are kept, and, for a report that gave its address, the
-# device's last address is updated if this report is newer.
+# Then the hash's expiry is renewed, and only the MAX_SESSIONS most recently
+# reported sessions are kept. For a report that gave its address, the
+# device's last address is updated if this report is newer; for a roam, its
+# expiry is renewed, so the roam keeps it while the session lasts.
 #   KEYS[1] the address's hash; KEYS[2], if given, the device's last address
 #   ARGV    session key, user, MAC or "", start, seen, stopped or "",
 #           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
-#           clock slack, seconds to keep the device's address, the address
+#           clock slack, seconds to keep the device's address, the address,
+#           for a roam when the device last reported the address or ""
 RECORD_SCRIPT = """
 local start, seen = tonumber(ARGV[4]), tonumber(ARGV[5])
 local stopped = tonumber(ARGV[6])
 local user, signed, bridged = ARGV[2], ARGV[9] == '1', ARGV[10] == '1'
+local reported = tonumber(ARGV[14])
 local held = redis.call('HGET', KEYS[1], ARGV[1])
 if held then
   local ok, old = pcall(cjson.decode, held)
@@ -141,13 +145,17 @@ if held then
     if type(old.e) == 'number' and (stopped == nil or old.e > stopped) then stopped = old.e end
     if old.a == 1 and not signed and type(old.u) == 'string' then user, signed = old.u, true end
     if old.b == nil then bridged = false end
+    if reported == nil and type(old.r) == 'number' then reported = old.r end
   end
 end
 local value = {u = user, s = start, l = seen}
 if ARGV[3] ~= '' then value.m = ARGV[3] end
 if stopped then value.e = stopped end
 if signed then value.a = 1 end
-if bridged then value.b = 1 end
+if bridged then
+  value.b = 1
+  if reported then value.r = reported end
+end
 redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(value))
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[7]))
 local keep = tonumber(ARGV[8])
@@ -163,7 +171,9 @@ if redis.call('HLEN', KEYS[1]) > keep then
   table.sort(rows, function(a, b) return a[2] < b[2] end)
   for i = 1, #rows - keep do redis.call('HDEL', KEYS[1], rows[i][1]) end
 end
-if #KEYS > 1 and ARGV[10] ~= '1' then
+if #KEYS > 1 and ARGV[10] == '1' then
+  redis.call('EXPIRE', KEYS[2], tonumber(ARGV[12]))
+elseif #KEYS > 1 then
   local newer = true
   local last = redis.call('GET', KEYS[2])
   if last then
@@ -362,20 +372,25 @@ def logged_at(fields, zone, received=None):
     Timestamp is in the NPS server's zone, which its time and Windows keep
     right. In the hour a change back from summer time repeats, the reading
     is taken that is nearest when Filebeat read the line, and not after it;
-    without that, the one nearest the access point's Event-Timestamp, which
-    is UTC. The access point's clock is not used otherwise: one was seen to
-    be an hour and three-quarters out.
+    without that, or when Filebeat read it over an hour after both, the one
+    nearest the access point's Event-Timestamp, which is UTC. The access
+    point's clock is not used otherwise: one was seen to be an hour and
+    three-quarters out.
     """
     local = _clock(fields.get('Timestamp'))
     if local is None or zone is None:
         return None
     readings = sorted({tz.enfold(local, fold=fold).replace(tzinfo=zone).timestamp() for fold in (0, 1)})
+    stamp = _clock(fields.get('Event-Timestamp'))
+    stamp = stamp.replace(tzinfo=timezone.utc).timestamp() if stamp is not None else None
     near = received
     if near is not None:
         readings = [reading for reading in readings if reading <= near + CLOCK_SLACK] or readings
+        # Filebeat catching up reads both readings well after either
+        if stamp is not None and len(readings) > 1 and near - readings[-1] > 3600:
+            near = stamp
     else:
-        near = _clock(fields.get('Event-Timestamp'))
-        near = near.replace(tzinfo=timezone.utc).timestamp() if near is not None else None
+        near = stamp
     if near is None:
         return readings[0]
     return min(readings, key=lambda reading: abs(reading - near))
@@ -470,10 +485,12 @@ class Sessions:
         if found is None or found.seen < self.clock() - self.conf.keep_sec:
             return None
         if received is not None and found.seen > received + CLOCK_SLACK:
-            self.warn(f'NPS lines are dated after Filebeat read them, so they are not recorded: is '
-                      f'processor.radius.timezone the NPS servers\' time zone? A line logged at '
-                      f'{printable(fields.get("Timestamp"), 40)} was read at {_utc(received)}.')
+            self.warn('NPS lines are dated after Filebeat read them, so they are not recorded: is '
+                      'processor.radius.timezone the NPS servers\' time zone?')
             return None
+        if _whole_hours_out(fields, found.seen + (_seconds(fields.get('Acct-Delay-Time')) or 0)):
+            self.warn('NPS lines are dated a whole number of hours from their access points\' clocks: '
+                      'is processor.radius.timezone the NPS servers\' time zone?')
         found = self._named(found)
         if not found.user:
             return None
@@ -511,7 +528,7 @@ class Sessions:
         except (TypeError, ValueError):
             return None
         if not (isinstance(last, dict) and isinstance(last.get('l'), (int, float))
-                and last['l'] - CLOCK_SLACK <= found.start <= last['l'] + ROAM_SEC):
+                and abs(found.start - last['l']) <= ROAM_SEC):
             return None
         where = address(last.get('a'))
         if where is None:
@@ -519,7 +536,7 @@ class Sessions:
         for held in _decode(self.redis.hgetall(self.key('ip', where))):
             if held.get('m') != found.mac and not held.get('b') and held['l'] > last['l']:
                 return None
-        return found._replace(address=where, bridged=True)
+        return found._replace(address=where, bridged=True, reported=last['l'])
 
     def record(self, found):
         """Merges one report into its address's sessions."""
@@ -529,7 +546,8 @@ class Sessions:
         self.redis.eval(RECORD_SCRIPT, len(keys), *keys, found.key, found.user, found.mac or '',
                         found.start, found.seen, '' if found.stopped is None else found.stopped,
                         self.conf.keep_sec, MAX_SESSIONS, int(bool(found.signed)), int(bool(found.bridged)),
-                        CLOCK_SLACK, self.conf.grace_sec, found.address)
+                        CLOCK_SLACK, self.conf.grace_sec, found.address,
+                        '' if found.reported is None else found.reported)
         # This process at least sees the change at once
         self._cache.pop(found.address, None)
 
@@ -547,18 +565,25 @@ class Sessions:
         return held
 
     def holder(self, where, when):
-        """The session that held an address at a time, {u, m, s, l, e, a, b}, or None.
+        """The session that held an address at a time, {u, m, s, l, e, a, b, r}, or None.
 
-        One reported with the address beats one that took it on roaming; then
-        the later start wins, and ties go the same way in every worker.
+        A session that took the address on roaming loses it to another
+        device reported with the address after its own device last was.
+        Then the later start wins, and ties go the same way in every worker.
         """
         where = address(where)
         if where is None:
             return None
         covering = [held for held in self._sessions(where)
                     if held['s'] - CLOCK_SLACK <= when <= self._end(held)]
-        return max(covering, key=lambda held: (not held.get('b'), held['s'], held['l'], held['u']),
-                   default=None)
+        reported = [held for held in covering if not held.get('b')]
+
+        def overruled(held):
+            since = held.get('r', held['s'])
+            return held.get('b') and any(other.get('m') != held.get('m') and other['l'] > since
+                                         for other in reported)
+        return max((held for held in covering if not overruled(held)),
+                   key=lambda held: (held['s'], held['l'], held['u']), default=None)
 
     def _end(self, held):
         stopped = held.get('e')
@@ -567,5 +592,14 @@ class Sessions:
         return held['l'] + self.conf.grace_sec
 
 
-def _utc(seconds):
-    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+def _whole_hours_out(fields, logged):
+    """Whether NPS's time is a whole number of hours from the access point's, as a wrong zone makes it.
+
+    An access point's clock can be out by anything, so only an offset of whole
+    hours, to within CLOCK_SLACK, is taken as the zone's.
+    """
+    stamp = _clock(fields.get('Event-Timestamp'))
+    if stamp is None:
+        return False
+    out = abs(logged - stamp.replace(tzinfo=timezone.utc).timestamp())
+    return out >= 3600 - CLOCK_SLACK and min(out % 3600, 3600 - out % 3600) <= CLOCK_SLACK

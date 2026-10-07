@@ -324,7 +324,7 @@ class Consumer(object):
             if isinstance(e, VALKEY_ERRORS):
                 raise
             # Valkey refusing the list must not stop the DNS events too
-            report_once(f'The accounting list {key} could not be read: {type(e).__name__}: {e}')
+            report_once(f'The accounting list {key} could not be read: {type(e).__name__}')
             return 0
         for raw in items:
             try:

@@ -192,6 +192,9 @@ class LoggedAtTest(unittest.TestCase):
         self.assertEqual(self.logged('11/01/2026 01:30:00', received=first + 2), first)
         # Whatever an access point's clock an hour and three-quarters out says
         self.assertEqual(self.logged('11/01/2026 01:30:00', '11/01/2026 04:48:00', received=second + 2), second)
+        # But Filebeat catching up hours later leaves it to the access point's
+        self.assertEqual(self.logged('11/01/2026 01:30:00', '11/01/2026 05:29:58', received=second + 4 * 3600),
+                         first)
 
     def test_the_access_points_clock_is_not_otherwise_believed(self):
         # One was seen to be an hour and three-quarters out
@@ -326,14 +329,36 @@ class SessionsTest(unittest.TestCase):
                                              logged='10/07/2026 18:21:00.000', klass=None)))
         self.assertEqual(self.holder(LOGGED + 5 * 60), 'bob')
 
-    def test_an_address_reported_beats_one_taken_on_roaming(self):
+    def test_another_device_reported_with_the_address_since_beats_a_roam(self):
         record = self.sessions.record
-        record(radius.Session('10.0.0.5', 'ap|1', 'bob', None, 1000, 1600, None, None))
-        record(radius.Session('10.0.0.5', 'ap|2', 'alice', None, 1500, 1500, None, None, bridged=True))
+        record(radius.Session('10.0.0.5', 'ap|1', 'bob', 'b', 1000, 1600, None, None))
+        record(radius.Session('10.0.0.5', 'ap|2', 'alice', 'a', 1500, 1500, None, None, bridged=True,
+                              reported=1400))
         self.assertEqual(self.holder(1550, '10.0.0.5'), 'bob')
         # Until the roamed session reports the address itself
-        record(radius.Session('10.0.0.5', 'ap|2', 'alice', None, 1500, 1700, None, None))
+        record(radius.Session('10.0.0.5', 'ap|2', 'alice', 'a', 1500, 1700, None, None))
         self.assertEqual(self.holder(1550, '10.0.0.5'), 'alice')
+
+    def test_but_a_stale_session_from_before_does_not(self):
+        # Bob's last report on the address is at 18:19 and he never stops;
+        # Alice reports it until 18:25, then roams at 18:31
+        self.take(nps_line(user='bob@example.edu', mac='BA-F7-F8-00-00-02', session_id='B1', session_time='600',
+                           klass=None))
+        self.take(nps_line(user='alice@example.edu', session_id='A1', session_time='60', status='2', klass=None,
+                           logged='10/07/2026 18:25:34.212'))
+        self.take(nps_line(user='alice@example.edu', session_id='A2', address=None, status='1',
+                           session_time=None, klass=None, logged='10/07/2026 18:27:00.000'))
+        self.assertEqual(self.holder(LOGGED + 14 * 60), 'alice')
+
+    def test_a_roam_keeps_its_device_and_starts_either_side_of_the_last_report(self):
+        self.take(nps_line(status='2', klass=None))
+        device = 'turkeybite:radius:mac:ba:f7:f8:00:00:01'
+        self.redis.ttls[device] = 5
+        # A make-before-break roam: the new session started before the old stopped
+        roamed = self.take(nps_line(status='1', address=None, session_id='AA01', session_time=None, klass=None,
+                                    logged='10/07/2026 18:19:34.212', delay='100'))
+        self.assertEqual(roamed.address, '10.212.16.219')
+        self.assertEqual(self.redis.ttls[device], 1200)
 
     def test_but_not_one_seen_too_long_ago(self):
         self.take(nps_line(status='2', klass=None))
@@ -370,9 +395,21 @@ class SessionsTest(unittest.TestCase):
 
     def test_a_line_dated_after_it_was_read_says_the_timezone_is_wrong(self):
         # NPS in Berlin, read as New York's: six hours in the future
-        self.assertIsNone(self.take(nps_line(logged='10/08/2026 00:19:34.212'), received=LOGGED + 1))
+        for minute in range(3):
+            self.assertIsNone(self.take(nps_line(logged=f'10/08/2026 00:1{minute}:34.212'), received=LOGGED + 1))
+        self.assertEqual(set(self.warned), {self.warned[0]})
         self.assertIn('processor.radius.timezone', self.warned[0])
         self.assertEqual(self.redis.data, {})
+
+    def test_a_zone_west_of_the_servers_is_said_too(self):
+        # NPS in Chicago, read as New York's: an hour early, and recorded
+        self.assertIsNotNone(self.take(nps_line(logged='10/07/2026 17:19:34.212', event='10/07/2026 22:19:33'),
+                                       received=LOGGED + 1))
+        self.assertIn('whole number of hours', self.warned[0])
+
+    def test_an_access_point_merely_out_is_not(self):
+        self.take(nps_line(event='10/07/2026 20:37:35'), received=LOGGED + 1)
+        self.assertEqual(self.warned, [])
 
     def test_a_session_id_reused_after_its_stop_is_a_new_session(self):
         self.take(nps_line(user='alice@example.edu', status='2', session_time='300', klass=None,
@@ -502,7 +539,7 @@ class ProcessorTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()), mock.patch('libtb.processor.report_once') as said:
             self.on.process_packet(dns_event())
         self.assertNotIn('client_user', self.shipped[0]['bite'])
-        self.assertIn('NOPERM', said.call_args[0][0])
+        self.assertTrue(said.call_args[0][0].endswith('without a user: ResponseError'))
 
     def test_valkey_not_answering_is_left_to_the_consumer(self):
         self.on.sessions.holder = mock.Mock(side_effect=RedisConnectionError('gone'))
@@ -583,7 +620,7 @@ class ConsumerTest(unittest.TestCase):
         with mock.patch.object(self.redis, 'lpop', side_effect=ResponseError('WRONGTYPE')), \
                 mock.patch('libtb.consumer.report_once') as said:
             self.run_once(consumer)
-        self.assertIn('WRONGTYPE', said.call_args[0][0])
+        self.assertEqual(said.call_args[0][0], 'The accounting list turkeybite:nps could not be read: ResponseError')
         self.assertEqual(len(self.shipped), 1)
 
     def test_lines_sent_to_the_dns_queue_are_said_to_be_misrouted(self):
@@ -648,6 +685,7 @@ class RealValkeyTest(unittest.TestCase):
                                klass=None, mac='BA-F7-F8-00-00-04', session_id='D2',
                                logged='10/07/2026 18:20:00.000'))
         bridged = json.loads(redis.hget('turkeybite:radius:ip:10.212.16.230', 'ap-hall-11|D2'))
+        bridged['ttl'] = redis.ttl('turkeybite:radius:mac:ba:f7:f8:00:00:04') if hasattr(redis, 'ttl') else 1200
         sessions.take(nps_line(user='dana@example.edu', address='10.212.16.230', session_time='600',
                                klass=None, mac='BA-F7-F8-00-00-04', session_id='D2',
                                logged='10/07/2026 18:30:00.000'))
@@ -676,7 +714,7 @@ class RealValkeyTest(unittest.TestCase):
                          ('jsmith', LOGGED - 600, LOGGED + 720, LOGGED + 720, 1))
         self.assertEqual(real[0]['ap-hall-11|R1']['u'], 'carol')
         self.assertNotIn('e', real[0]['ap-hall-11|R1'])
-        self.assertEqual(real[2].get('b'), 1)
+        self.assertEqual((real[2].get('b'), real[2].get('r'), real[2]['ttl']), (1, LOGGED, 1200))
         self.assertNotIn('b', real[1]['ap-hall-11|D2'])
         self.assertEqual(real[3]['a'], '10.212.16.230')
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)

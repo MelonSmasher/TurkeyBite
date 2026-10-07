@@ -843,7 +843,7 @@ class Processor(object):
             raise
         except RedisError as e:
             report_once(f'Could not read who held an address from Valkey, so DNS events go '
-                        f'without a user: {type(e).__name__}: {e}')
+                        f'without a user: {type(e).__name__}')
             return {}
         if held is None:
             return {}

@@ -168,12 +168,13 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where):
+                slack, device_sec, where, reported):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         value = self._merged(keys[0], field, {
             'u': user, 's': float(start), 'l': float(seen),
             'e': float(stopped) if stopped not in ('', b'') else None,
-            'a': str(signed) == '1', 'b': str(bridged) == '1'}, float(slack))
+            'a': str(signed) == '1', 'b': str(bridged) == '1',
+            'r': float(reported) if reported not in ('', b'') else None}, float(slack))
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
         if device:
             stored['m'] = device
@@ -183,10 +184,14 @@ class FakeRedis(object):
             stored['a'] = 1
         if value['b']:
             stored['b'] = 1
+            if value['r'] is not None:
+                stored['r'] = value['r']
         self.hset(keys[0], field, json.dumps(stored))
         self.expire(keys[0], int(keep_sec))
         self._trim(keys[0], int(keep))
-        if len(keys) > 1 and str(bridged) != '1':
+        if len(keys) > 1 and str(bridged) == '1':
+            self.expire(keys[1], int(device_sec))
+        elif len(keys) > 1:
             self._remember_device(keys[1], where, float(seen), int(device_sec))
         return 1
 
@@ -208,6 +213,8 @@ class FakeRedis(object):
             value['u'], value['a'] = old['u'], True
         if old.get('b') is None:
             value['b'] = False
+        if value['r'] is None and _number(old.get('r')):
+            value['r'] = old['r']
         return value
 
     def _trim(self, key, keep):
