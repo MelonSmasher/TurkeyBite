@@ -38,6 +38,7 @@ import sys
 from collections import Counter, namedtuple
 
 from opensearchpy import OpenSearch, helpers
+from opensearchpy.exceptions import OpenSearchException
 
 from libtb.evidence import resolve
 from libtb.evidence.resolvers import BLOCKED, PROVIDERS, SOURCES, qualifies
@@ -86,15 +87,25 @@ def default_pattern(prefix):
     return index_pattern(prefix)
 
 
-def client_for(elastic):
-    """An OpenSearch client over every host in processor.elastic.
+def client_for(elastic, connect=OpenSearch):
+    """A client for the first host in processor.elastic that answers.
 
-    The client fails over between them, as the workers do. They are one
-    cluster, so the TLS settings and credentials of the first are the rest's.
+    Each host is tried with its own TLS settings and credentials, in order,
+    as the workers try them. A run stays on the host it starts with: a scroll
+    belongs to the node that opened it, so it cannot move mid-run. Raises
+    OSError naming every host when none answers.
     """
-    kwargs = client_kwargs(elastic['hosts'][0])
-    kwargs['hosts'] = [client_kwargs(host)['hosts'][0] for host in elastic['hosts']]
-    return OpenSearch(**kwargs)
+    failures = []
+    for host in elastic['hosts']:
+        client = connect(**client_kwargs(host))
+        try:
+            if client.ping():
+                return client
+            failures.append(f'{host["uri"]}: no answer')
+        except (OpenSearchException, OSError) as e:
+            failures.append(f'{host["uri"]}: {e}')
+        client.close()
+    raise OSError('no OpenSearch host answered: ' + '; '.join(failures))
 
 
 class ReplayChecker:

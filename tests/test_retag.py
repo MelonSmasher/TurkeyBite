@@ -27,7 +27,7 @@ from libtb.evidence import resolvers as R
 from libtb.index import Source
 from libtb.index.builder import apply_ignorelist, build
 from libtb.processor import Processor
-from libtb.retag import VERDICT_FIELDS, Options, default_pattern, run
+from libtb.retag import VERDICT_FIELDS, Options, client_for, default_pattern, run
 
 VENDOR = Source('vendor', 'nextdns', 'high', False, ())
 STEVENBLACK = Source('stevenblack', 'StevenBlack', 'medium', False, ())
@@ -396,6 +396,47 @@ class RetagTest(unittest.TestCase):
         self.assertEqual(default_pattern('tb-index'), 'tb-index-2*')
         with self.assertRaises(ValueError):
             default_pattern('tb-*')
+
+
+class ClientTest(unittest.TestCase):
+    """Which OpenSearch host a run uses, and with whose settings."""
+
+    HOSTS = {'hosts': [
+        {'uri': 'https://down.example.edu:9200', 'username': 'a', 'password': 'Pw-one.1'},
+        {'uri': 'http://up.example.edu:9201', 'username': 'b', 'password': 'Pw-two.2'},
+    ]}
+
+    def connect(self, answers):
+        made = []
+
+        def connect(**kwargs):
+            client = mock.Mock()
+            client.kwargs = kwargs
+            answer = answers[kwargs['hosts'][0]['host']]
+            if isinstance(answer, Exception):
+                client.ping.side_effect = answer
+            else:
+                client.ping.return_value = answer
+            made.append(client)
+            return client
+        return connect, made
+
+    def test_a_host_that_is_down_is_passed_over_for_the_next_with_its_own_settings(self):
+        connect, made = self.connect({'down.example.edu': OSError('refused'),
+                                      'up.example.edu': True})
+        client = client_for(self.HOSTS, connect)
+        self.assertIs(client, made[1])
+        self.assertEqual(client.kwargs['http_auth'], ('b', 'Pw-two.2'))
+        self.assertFalse(client.kwargs['use_ssl'])
+        made[0].close.assert_called_once()
+
+    def test_no_host_answering_names_them_all(self):
+        connect, _ = self.connect({'down.example.edu': OSError('refused'),
+                                   'up.example.edu': False})
+        with self.assertRaises(OSError) as raised:
+            client_for(self.HOSTS, connect)
+        self.assertIn('down.example.edu', str(raised.exception))
+        self.assertIn('up.example.edu', str(raised.exception))
 
 
 if __name__ == '__main__':
