@@ -358,8 +358,8 @@ def retag(apply_now, pattern, batch_size, limit):
     config = read_config()
     try:
         processor = Processor(config['processor'], config['redis'])
-        client = client_for(config['processor']['elastic'])
         pattern = pattern or default_pattern(config['processor']['elastic']['index_prefix'])
+        client = client_for(config['processor']['elastic'], pattern)
     except (OSError, KeyError, IndexError, TypeError, ValueError) as e:
         raise click.ClickException(f'configuration: {e}')
     click.echo(f'{"Relabelling" if apply_now else "Dry run over"} {pattern}', err=True)

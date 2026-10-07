@@ -53,14 +53,19 @@ from libtb.retention import index_pattern
 VERDICT_FIELDS = (
     'contexts', 'contexts_candidate', 'contexts_suppressed', 'incidental',
     'claims', 'sources', 'matched_on', 'match_source',
-    'cname_contexts', 'cname_matched_on', 'resolvers',
+    'cname_contexts', 'cname_matched_on',
     'purpose', 'service', 'risk', 'risk_severity', 'unmapped_contexts',
     'index_built_at', 'contexts_index', 'context_match', 'index_error',
 )
 
+# What the public resolvers answered when the event was processed. Evidence
+# rather than verdict: read, replayed where it could still count, and never
+# written, since no run can ask for it again.
+RESOLVERS = 'resolvers'
+
 # Read from each event: the inputs to the decision and the decision itself
-READ_FIELDS = ['bite.type', 'bite.searches', 'bite.requested', 'bite.cname_chain'] + [
-    'bite.' + field for field in VERDICT_FIELDS]
+READ_FIELDS = ['bite.type', 'bite.searches', 'bite.requested', 'bite.cname_chain',
+               'bite.' + RESOLVERS] + ['bite.' + field for field in VERDICT_FIELDS]
 
 # Painless, one source for every update so OpenSearch compiles it once
 SCRIPT = ('for (e in params.set.entrySet()) { ctx._source.bite[e.getKey()] = e.getValue(); } '
@@ -87,25 +92,26 @@ def default_pattern(prefix):
     return index_pattern(prefix)
 
 
-def client_for(elastic, connect=OpenSearch):
-    """A client for the first host in processor.elastic that answers.
+def client_for(elastic, pattern, connect=OpenSearch):
+    """A client for the first host in processor.elastic that can read `pattern`.
 
     Each host is tried with its own TLS settings and credentials, in order,
-    as the workers try them. A run stays on the host it starts with: a scroll
-    belongs to the node that opened it, so it cannot move mid-run. Raises
-    OSError naming every host when none answers.
+    as the workers try them, by searching the indices the run will read: an
+    account allowed that may still be refused the cluster root, so a ping
+    would turn away hosts the run can use. A run stays on the host it starts
+    with, since a scroll belongs to the node that opened it. Raises OSError
+    naming every host when none can be read.
     """
     failures = []
     for host in elastic['hosts']:
         client = connect(**client_kwargs(host))
         try:
-            if client.ping():
-                return client
-            failures.append(f'{host["uri"]}: no answer')
+            client.search(index=pattern, body={'size': 0}, request_timeout=30)
+            return client
         except (OpenSearchException, OSError) as e:
             failures.append(f'{host["uri"]}: {e}')
         client.close()
-    raise OSError('no OpenSearch host answered: ' + '; '.join(failures))
+    raise OSError(f'no OpenSearch host could read {pattern}: ' + '; '.join(failures))
 
 
 class ReplayChecker:
@@ -113,8 +119,8 @@ class ReplayChecker:
 
     The same rule as the live checker: a provider's answer is a vote only when
     it could settle a candidate, and the verdict is weighed again after each
-    block. Every answer the event holds is kept on it, vote or not: none can
-    be asked for again, and a later run under other lists may need it.
+    block. The event keeps every answer it holds whatever this decides, see
+    RESOLVERS.
     """
 
     def __init__(self, adult):
@@ -124,13 +130,14 @@ class ReplayChecker:
 
     def corroborate(self, _host, claims, verdict, min_publishers):
         """(claims, verdict, statuses), as resolvers.Checker.corroborate returns them."""
-        statuses = dict(self.answers)
+        statuses = {}
         for provider in self.providers:
             if not qualifies(provider, claims, verdict):
                 continue
             status = self.answers.get(provider.name)
             if status is None:
                 continue
+            statuses[provider.name] = status
             if status == BLOCKED:
                 claims = list(claims) + [(None, SOURCES[provider.name], provider.vote)]
                 verdict = resolve(claims, min_publishers)
@@ -201,7 +208,7 @@ class Retagger:
         if found is None:
             return None
         kind, host, chain = found
-        answers = bite.get('resolvers') if self.replay is not None else None
+        answers = bite.get(RESOLVERS) if self.replay is not None else None
         answers = answers if isinstance(answers, dict) else {}
         key = (kind, host, chain, tuple(sorted(answers.items())))
         found = self.cache.get(key)

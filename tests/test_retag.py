@@ -21,6 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 
+from opensearchpy.exceptions import AuthorizationException
+
 from libtb import psl
 from libtb import processor as P
 from libtb.evidence import resolvers as R
@@ -308,6 +310,14 @@ class RetagTest(unittest.TestCase):
         self.assertEqual(bite['resolvers'], {'quad9': 'blocked'})
         self.assertNotIn('malicious:quad9', bite['claims'])
 
+    def test_stored_answers_are_kept_with_the_resolvers_switched_off(self):
+        old = self.stored('bad.example.com', ['malicious'], resolvers={'quad9': 'blocked'})
+        cluster, _ = self.retag([old])
+        bite = cluster.bite(0)
+        # Not counted, since the setting says not to, and not removed either
+        self.assertEqual(bite['contexts'], [])
+        self.assertEqual(bite['resolvers'], {'quad9': 'blocked'})
+
     # -- one generation per run ---------------------------------------------------
 
     def rebuild(self, built_at, entries):
@@ -417,27 +427,29 @@ class ClientTest(unittest.TestCase):
             client.kwargs = kwargs
             answer = answers[kwargs['hosts'][0]['host']]
             if isinstance(answer, Exception):
-                client.ping.side_effect = answer
-            else:
-                client.ping.return_value = answer
+                client.search.side_effect = answer
+            # The cluster root is refused everywhere, as for a least-privilege
+            # account; only the indices matter
+            client.ping.side_effect = AssertionError('the root was asked')
             made.append(client)
             return client
         return connect, made
 
     def test_a_host_that_is_down_is_passed_over_for_the_next_with_its_own_settings(self):
         connect, made = self.connect({'down.example.edu': OSError('refused'),
-                                      'up.example.edu': True})
-        client = client_for(self.hosts(), connect)
+                                      'up.example.edu': None})
+        client = client_for(self.hosts(), 'tb-index-2*', connect)
         self.assertIs(client, made[1])
         self.assertEqual(client.kwargs['http_auth'], ('b', 'second-sign-in'))
         self.assertFalse(client.kwargs['use_ssl'])
+        self.assertEqual(client.search.call_args.kwargs['index'], 'tb-index-2*')
         made[0].close.assert_called_once()
 
-    def test_no_host_answering_names_them_all(self):
+    def test_no_host_able_to_read_names_them_all(self):
         connect, _ = self.connect({'down.example.edu': OSError('refused'),
-                                   'up.example.edu': False})
+                                   'up.example.edu': AuthorizationException(403, 'forbidden')})
         with self.assertRaises(OSError) as raised:
-            client_for(self.hosts(), connect)
+            client_for(self.hosts(), 'tb-index-2*', connect)
         self.assertIn('down.example.edu', str(raised.exception))
         self.assertIn('up.example.edu', str(raised.exception))
 
