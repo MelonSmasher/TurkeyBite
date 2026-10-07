@@ -50,7 +50,7 @@ from redis.exceptions import ConnectionError as ValkeyConnectionError
 from redis.exceptions import TimeoutError as ValkeyTimeoutError
 
 from libtb.privacy import TRIMMED, trim_url
-from libtb.radius import attributes
+from libtb.radius import ACCESS_ACCEPT, address, attributes, printable
 from libtb.util import dig
 from libtb.processor import DeliveryError
 from libtb.queue import NotOwner
@@ -67,6 +67,9 @@ VALKEY_ERRORS = (ValkeyConnectionError, ValkeyTimeoutError)
 # How often a batch being handled renews the consumer's name, well inside
 # ListQueue.OWNER_TTL, so a slow batch cannot outlast the reservation
 RENEW_SECONDS = 20.0
+
+# The most lines of NPS's log taken from the accounting list at a time
+ACCOUNTING_BATCH = 500
 
 
 def describe(data, verdict, urls=TRIMMED):
@@ -107,16 +110,25 @@ def describe(data, verdict, urls=TRIMMED):
             line = line + ' - ' + short_hostname
         return line
 
-    if packet_type == 'nps':
-        fields = attributes(data.get('message'))
-        line = '[NPS][Accounting] ' + verdict
-        if fields.get('Framed-IP-Address'):
-            line = line + ': ' + fields['Framed-IP-Address']
-        if fields.get('User-Name'):
-            line = line + ' - ' + fields['User-Name']
-        return line
-
     return None
+
+
+def describe_accounting(data, verdict):
+    """Builds the log line for a line of NPS's log, taken from the accounting list.
+
+    Only what libtb.radius would accept as an address, and the name without
+    control characters, so a line cannot forge another in the log.
+    """
+    fields = attributes(dig(data, 'message'))
+    kind = 'Accept' if fields.get('Packet-Type') == ACCESS_ACCEPT else 'Accounting'
+    line = f'[NPS][{kind}] {verdict}'
+    where = address(fields.get('Framed-IP-Address'))
+    if where:
+        line = line + ': ' + where
+    who = printable(fields.get('User-Name') or fields.get('SAM-Account-Name'), 100)
+    if who:
+        line = line + ' - ' + who
+    return line
 
 
 class NameLost(Exception):
@@ -148,7 +160,7 @@ class Consumer(object):
         # Set when another process took this consumer's name, so it stopped
         self.name_lost = False
         self.stats = {'claimed': 0, 'kept': 0, 'dropped': 0, 'unreadable': 0,
-                      'indexed': 0, 'requeued': 0, 'batches': 0}
+                      'indexed': 0, 'requeued': 0, 'batches': 0, 'accounting': 0}
 
     def stop(self, *_):
         """Finish the batch in hand, then exit. Supervisor stops us with TERM."""
@@ -278,8 +290,38 @@ class Consumer(object):
             self.queue.ack(acked)
             self.failures = 0
 
+    def take_accounting(self):
+        """Records what waits on the accounting list, see libtb.radius. Returns lines taken.
+
+        Taken at most once, with LPOP: lines in hand when a worker dies are
+        lost, which costs no more than the next interim update puts back. With
+        processor.radius off they are taken and dropped, so the list cannot
+        grow without end.
+        """
+        key = self.processor.accounting_list()
+        redis = getattr(self.queue, 'redis', None)
+        if not key or redis is None:
+            return 0
+        items = redis.lpop(key, ACCOUNTING_BATCH) or []
+        for raw in items:
+            try:
+                data = json.loads(raw.decode('utf-8') if isinstance(raw, bytes) else raw)
+                recorded = self.processor.process_nps(data)
+            except Exception as e:
+                if isinstance(e, VALKEY_ERRORS):
+                    raise
+                # A line we cannot read costs that line and no more
+                print(f'[{self.name}] skipped an unreadable accounting line: {e}', file=sys.stderr)
+                self.stats['unreadable'] += 1
+                continue
+            if self.log_events:
+                print(describe_accounting(data, 'Recorded' if recorded else 'Dropped'))
+        self.stats['accounting'] += len(items)
+        return len(items)
+
     def run_once(self):
         """One claim, handle, acknowledge cycle. Returns items claimed."""
+        self.take_accounting()
         items = self.queue.claim(self.batch_size, self.block_seconds)
         if not items:
             return 0

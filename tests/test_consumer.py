@@ -207,7 +207,7 @@ class ConsumerTest(unittest.TestCase):
         self.assertEqual(self.indexed(), ['a.example.com', 'b.example.com', 'c.example.com'])
         self.assertEqual((self.waiting(), self.in_flight()), ([], []))
         self.assertEqual(consumer.stats, {'claimed': 4, 'kept': 3, 'dropped': 1, 'unreadable': 0,
-                                          'indexed': 3, 'requeued': 0, 'batches': 1})
+                                          'indexed': 3, 'requeued': 0, 'batches': 1, 'accounting': 0})
 
     def test_nothing_is_acknowledged_until_the_flush(self):
         self.push(packet('a.example.com'), packet('b.example.com'))

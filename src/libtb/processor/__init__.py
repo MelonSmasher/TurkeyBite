@@ -25,6 +25,9 @@ from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
 from redis import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from opensearchpy import OpenSearch
 from opensearchpy import helpers as opensearch_helpers
 from dns import reversename, resolver, exception
@@ -505,8 +508,6 @@ class Processor(object):
             self.process_dns_packet(data)
         elif data['type'] == 'browser.history':
             self.process_browser_history(data)
-        elif data['type'] == 'nps':
-            self.process_nps(data)
         else:
             return False
 
@@ -806,25 +807,40 @@ class Processor(object):
             self._radius_sessions = held
         return held[1]
 
+    def accounting_list(self):
+        """The Valkey list Filebeat sends NPS's log lines to, <channel>:nps, or None."""
+        channel = self.redis_conf.get('channel')
+        return f'{channel}:nps' if channel else None
+
     def process_nps(self, data):
-        """Records the session an NPS accounting line reports. Nothing is indexed."""
+        """Records what a line of NPS's log says, see libtb.radius. Nothing is indexed.
+
+        Returns whether it recorded a session; with processor.radius off it never does.
+        """
         sessions = self.radius_sessions()
-        if sessions is None:
+        if sessions is None or not isinstance(data, dict):
             return False
-        found = radius.session(radius.attributes(data.get('message')),
-                               radius.iso_seconds(data.get('@timestamp')), self._radius.realms)
-        if found is None:
-            return False
-        sessions.record(found)
-        return True
+        return sessions.take(data.get('message'), radius.iso_seconds(data.get('@timestamp'))) is not None
 
     def address_holder(self, client, timestamp):
-        """bite.client_user and bite.client_mac for whoever held an address at a time, or {}."""
+        """bite.client_user and bite.client_mac for whoever held an address at a time, or {}.
+
+        Never costs the event: Valkey not answering requeues the batch, as for
+        anything else the worker asks it, and any other refusal leaves the
+        event without a user.
+        """
         sessions = self.radius_sessions()
         if sessions is None or not isinstance(client, str):
             return {}
         when = radius.iso_seconds(timestamp)
-        held = sessions.holder(client, time.time() if when is None else when)
+        try:
+            held = sessions.holder(client, time.time() if when is None else when)
+        except (RedisConnectionError, RedisTimeoutError):
+            raise
+        except RedisError as e:
+            report_once(f'Could not read who held an address from Valkey, so DNS events go '
+                        f'without a user: {type(e).__name__}: {e}')
+            return {}
         if held is None:
             return {}
         who = {'client_user': held['u']}

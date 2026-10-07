@@ -22,8 +22,10 @@ publish is half done, say.
 """
 
 import fnmatch
+import json
 
 from libtb.queue import ACK_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
+from libtb.radius import RECORD_SCRIPT
 
 
 def _bytes(value):
@@ -125,9 +127,11 @@ class FakeRedis(object):
         return True
 
     def eval(self, script, numkeys, *keys_and_args):
-        """Run the queue's Lua scripts, in Python."""
+        """Run the queue's Lua scripts, and libtb.radius's, in Python."""
         keys, args = keys_and_args[:numkeys], keys_and_args[numkeys:]
         self._did('eval', keys[0])
+        if script == RECORD_SCRIPT:
+            return self._record(keys[0], *args)
         held = self.data.get(_key(keys[0]))
         mine = held == _bytes(args[0])
         if script == RENEW_SCRIPT:
@@ -150,6 +154,42 @@ class FakeRedis(object):
                 moved += 1
             return moved
         raise NotImplementedError('a script the fake does not know')
+
+    def _record(self, key, field, user, device, start, seen, stopped, keep_sec, keep):
+        """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
+        start, seen = float(start), float(seen)
+        stopped = float(stopped) if stopped not in ('', b'') else None
+        try:
+            old = json.loads(self._hash(key).get(_bytes(field)) or 'null')
+        except ValueError:
+            old = None
+        if isinstance(old, dict):
+            if isinstance(old.get('s'), (int, float)):
+                start = old['s']
+            if isinstance(old.get('l'), (int, float)) and old['l'] > seen:
+                seen = old['l']
+            if isinstance(old.get('e'), (int, float)) and (stopped is None or old['e'] > stopped):
+                stopped = old['e']
+        value = {'u': user, 's': start, 'l': seen}
+        if device:
+            value['m'] = device
+        if stopped is not None:
+            value['e'] = stopped
+        self.hset(key, field, json.dumps(value))
+        self.expire(key, int(keep_sec))
+        if self.hlen(key) > int(keep):
+            rows = []
+            for name, raw in self.hgetall(key).items():
+                try:
+                    held = json.loads(raw)
+                except ValueError:
+                    held = None
+                last = held['l'] if isinstance(held, dict) and isinstance(held.get('l'), (int, float)) else -1
+                rows.append((last, name))
+            rows.sort(key=lambda row: row[0])
+            for _, name in rows[:len(rows) - int(keep)]:
+                self.hdel(key, name)
+        return 1
 
     def delete(self, *keys):
         removed = 0
@@ -174,6 +214,16 @@ class FakeRedis(object):
         self._store_list(key, items)
         self._did('lpush', key)
         return len(items)
+
+    def lpop(self, key, count=None):
+        """Pops from the head; with a count, a list of up to that many, or None when empty."""
+        self._did('lpop', key)
+        items = self._list(key)
+        taken = items[:1 if count is None else count]
+        self._store_list(key, items[len(taken):])
+        if count is None:
+            return taken[0] if taken else None
+        return taken or None
 
     def llen(self, key):
         self._did('llen', key)
@@ -291,39 +341,19 @@ class FakeRedis(object):
 
 
 class FakePipeline(object):
-    """Queues commands and runs them on execute, recording how many each time.
-
-    UNLINKs are not recorded in `calls`, so a sweep's can be told from those
-    made one at a time; the rest run as the fake runs them.
-    """
+    """Queues UNLINKs and runs them on execute, recording how many each time."""
 
     def __init__(self, redis):
         self.redis = redis
         self.queued = []
 
     def unlink(self, *keys):
-        self.queued.extend(('unlink', (_key(key),)) for key in keys)
-        return self
-
-    def hset(self, key, field, value):
-        self.queued.append(('hset', (key, field, value)))
-        return self
-
-    def expire(self, key, seconds):
-        self.queued.append(('expire', (key, seconds)))
-        return self
-
-    def hlen(self, key):
-        self.queued.append(('hlen', (key,)))
+        self.queued.extend(_key(key) for key in keys)
         return self
 
     def execute(self):
-        results = []
-        for command, args in self.queued:
-            if command == 'unlink':
-                results.append(1 if self.redis.data.pop(args[0], None) is not None else 0)
-            else:
-                results.append(getattr(self.redis, command)(*args))
+        results = [1 if self.redis.data.pop(key, None) is not None else 0
+                   for key in self.queued]
         self.redis.executions.append(len(self.queued))
         self.queued = []
         return results

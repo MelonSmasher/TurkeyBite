@@ -46,9 +46,8 @@ def matches_domain(host, domain):
 
 
 class Filters(object):
-    # Packet types we care about. nps is a line of Windows NPS's RADIUS
-    # accounting log, which Filebeat sends; see libtb.radius.
-    packets = ['dns', 'browser.history', 'nps']
+    # Packet types we care about
+    packets = ['dns', 'browser.history']
     valids = ['OK']
 
     def __init__(self, config):
@@ -224,9 +223,6 @@ class Filters(object):
                         return self.dns(data)
                     elif data['type'] == 'browser.history':
                         return self.browserbeat(data)
-                    elif data['type'] == 'nps':
-                        # The processor reads what it needs and drops the rest
-                        return isinstance(data.get('message'), str)
                     else:
                         return False
         # If we made it here, we don't want this packet

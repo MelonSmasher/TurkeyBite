@@ -280,68 +280,98 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    name is whatever the phone called itself, so every iPhone is `iphone`, and
    findings pile hundreds of people onto that one name. On 802.1X Wi-Fi, NPS
    knows who signed in on each device and which address it was given. Send
-   NPS's accounting log to TurkeyBite, and each DNS lookup records the person
-   who held its address at the time as `bite.client_user`, and the device as
+   NPS's log to TurkeyBite, and each DNS lookup records the person who held
+   its address at the time as `bite.client_user`, and the device as
    `bite.client_mac`. Findings and profiles then name the person.
 
    On every NPS server, open the NPS console, go to **Accounting → Change Log
    File Properties**, and:
-   - on **Settings**, tick *Accounting requests* and *Periodic accounting
-     status*;
-   - on **Log File**, choose **DTS Compliant**.
+   - on **Settings**, tick *Accounting requests*, *Authentication requests*
+     and *Periodic accounting status*;
+   - on **Log File**, choose **DTS Compliant**, and a new file **Daily**.
 
    The access points must send accounting with interim updates. Check that
-   the log's lines carry `Framed-IP-Address`. Then install
-   [Filebeat](https://www.elastic.co/beats/filebeat) on each server. It needs
-   to reach Valkey, as Packetbeat does:
+   the log's accounting lines carry `Framed-IP-Address`, and that its
+   Access-Accept lines carry `SAM-Account-Name`.
+
+   The name a device gives, `User-Name`, is its outer identity. For many
+   profiles that is `anonymous`, and anyone can set it to someone else's name.
+   The account NPS actually authenticated is in the Access-Accept, and the
+   session's `Class` ties the two together. TurkeyBite uses that account
+   whenever it has seen the Access-Accept, which is why authentication
+   requests are logged too.
+
+   Then install [Filebeat](https://www.elastic.co/beats/filebeat) on each
+   server. It sends the lines to their own Valkey list, `<redis.channel>:nps`,
+   and needs to reach Valkey, as Packetbeat does:
 
    ```yaml
-   # filebeat.yml on each NPS server
+   # filebeat.yml on each NPS server. Comment out output.elasticsearch,
+   # which the Windows package turns on: Filebeat takes one output.
    filebeat.inputs:
      - type: filestream
        id: nps-accounting
        paths:
          # NPS's default; use the directory set on the Log File tab
          - 'C:\Windows\System32\LogFiles\IN*.log'
-       # Accounting requests only: NPS also logs sign-ins when told to
-       include_lines: ['<Packet-Type data_type="0">4</Packet-Type>']
-       fields:
-         type: nps
-       fields_under_root: true
+       # Accounting requests and Access-Accepts only
+       include_lines: ['<Packet-Type data_type="0">[24]</Packet-Type>']
+       # Not the days before Filebeat started
+       ignore_older: 24h
 
    output.redis:
      hosts: ["valkey.domain.com:6379"]
      password: "your_valkey_password"
      db: 0
-     key: "turkeybite"
+     key: "turkeybite:nps"
      datatype: "list"
    ```
 
-   Then turn it on in `config.yaml`. List your own realm and NetBIOS domain,
-   so that `jsmith@example.edu` and `EXAMPLE\jsmith` are recorded as `jsmith`,
-   as Browserbeat names people:
+   Then turn it on in `config.yaml`:
+   - `timezone` is the time zone the NPS servers log in.
+   - `realms` lists your own realm and NetBIOS domain, so that
+     `jsmith@example.edu` and `EXAMPLE\jsmith` are recorded as `jsmith`, as
+     Browserbeat names people.
 
    ```yaml
    processor:
      radius:
        enable: true
+       timezone: America/New_York
        realms: [example.edu, example]
    ```
 
-   Workers keep each address's sessions in Valkey, in the queue's database,
-   for a day after the last report. The accounting lines themselves are not
-   indexed, and with `radius` off they are dropped.
+   Restart the librarian on this version before turning it on. It maps
+   `bite.client_mac` in the indices that already exist, and an index that has
+   mapped it as text would break every profile spanning that day.
+
+   Each worker takes what waits on the list before each batch of DNS events.
+   It keeps each address's sessions in Valkey, in the queue's database, for a
+   day after the last report. The lines themselves are not indexed. With
+   `radius` off they are taken and dropped, so the list cannot grow without
+   end.
 
    - **How long an address counts as a person's.** A session holds its address
-     from its start until `grace_sec` (20 minutes) after an access point last
-     reported it. Keep that above the access points' interim interval.
-   - **Roaming.** After a stop, the address stays the person's for the same
-     20 minutes, so a phone that roams to another access point keeps its user.
+     from its start until it stops. While it has not stopped, it holds it
+     until `grace_sec` (20 minutes) after an access point last reported it.
+     Keep that above the access points' interim interval.
+   - **After a stop.** The address is nobody's after a stop, because DHCP may
+     give it to another device. A lookup credited to nobody is better than one
+     credited to the wrong person.
+   - **Roaming.** A phone that roams to another access point stops one session
+     and starts another, often before the new one reports an address. A
+     session reported without an address takes the one its device last had,
+     if that was within `grace_sec`.
    - **Two sessions at once.** When two sessions cover a lookup, the one that
      started later wins.
-   - **A device's first minutes.** Lookups a device makes before an access
-     point first reports its address have no user. For many access points,
-     the first report with an address is the first interim update.
+   - **What it cannot do.**
+     - Lookups a device makes on joining, before an access point first reports
+       its address, have no user.
+     - Lookups over IPv6 have none, since NPS reports IPv4 addresses.
+     - Lines are taken at most once: those in hand when a worker dies are
+       lost, until the next interim update.
+   - **Who can claim an address.** Anyone who can write to Valkey can claim an
+     address for anyone, as they can already write events.
 
 ### Maintenance
 

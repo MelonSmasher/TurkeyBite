@@ -398,7 +398,10 @@ class LibrarianRetentionTest(unittest.TestCase):
         librarian = Librarian(self)
         result, calls = librarian.run(OPENSEARCH_HOST='search.example.edu')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('_index_template', calls[-1])
+        self.assertIn('_index_template', calls[-2])
+        # Then the fields added since today's index was made, in it too
+        self.assertIn('https://search.example.edu:9200/tb-index-*/_mapping', calls[-1])
+        self.assertIn('client_mac', calls[-1])
         self.assertEqual(librarian.python,
                          ['python turkeybite retention --url https://search.example.edu:9200'])
 
