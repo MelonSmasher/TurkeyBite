@@ -38,6 +38,7 @@ import yaml
 
 from libtb import opensearch, psl
 from libtb import processor as P
+from libtb.evidence import categorise
 from libtb.index.builder import build, collect_entries, load_sources, source_table
 from libtb.processor import Processor
 from libtb.sieve import Filters
@@ -51,8 +52,10 @@ FIXTURES = os.path.join(HERE, 'fixtures')
 LISTS = {
     'gambling/hagezi-gambling': ['*.casino-example.co.uk', 'bet-example.com'],
     'gambling/PheeLeep-barikada': ['*.casino-example.co.uk'],
-    'tracking/Easyprivacy': ['*.collect.tracker-example.net'],
+    'tracking/Easyprivacy': ['*.collect.tracker-example.net', 'pixel.solo-tracker-example.net'],
     'tracking/notrack-blocklist': ['casino-example.collect.tracker-example.net'],
+    'url-shorteners/hagezi-urlshortener': ['short-example.com', 'files-example.com'],
+    'url-shorteners/PeterDaveHello-url-shorteners': ['short-example.com'],
 }
 
 
@@ -229,6 +232,24 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(doc['bite']['url'], fixture('browserbeat_history.json')
                          ['data']['event']['data']['entry']['url'])
         self.assertIn('8f3a2c91d4', json.dumps(doc))
+
+    def verdict(self, host):
+        """What the shipped list settings make of one host, as a worker weighs it."""
+        index = P.domain_index('lists/index/domains.tbidx')
+        return categorise(index, host, self.processor.min_publishers(),
+                          psl_path=os.path.join('lists', 'tld', 'public_suffix_list.dat'),
+                          disabled=self.processor.disabled_categories())[1]
+
+    def test_a_broad_tracker_list_alone_is_only_a_candidate(self):
+        verdict = self.verdict('pixel.solo-tracker-example.net')
+        self.assertEqual(verdict['asserted'], [])
+        self.assertEqual(verdict['candidate'], ['tracking'])
+
+    def test_a_url_shortener_needs_the_curated_list(self):
+        self.assertEqual(self.verdict('short-example.com')['asserted'], ['url-shorteners'])
+        files = self.verdict('files-example.com')
+        self.assertEqual(files['asserted'], [])
+        self.assertEqual(files['candidate'], ['url-shorteners'])
 
 
 if __name__ == '__main__':

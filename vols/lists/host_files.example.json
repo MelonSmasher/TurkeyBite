@@ -402,6 +402,14 @@
         "publisher": "hagezi",
         "trust": "medium"
     },
+    {
+        "url": "https://raw.githubusercontent.com/PeterDaveHello/url-shorteners/master/list",
+        "categories": ["url-shorteners"],
+        "file": "lists/url-shorteners/PeterDaveHello-url-shorteners",
+        "name": "PeterDaveHello-url-shorteners",
+        "publisher": "PeterDaveHello",
+        "trust": "high"
+    },
 
     {
         "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/fakenews-only/hosts",
