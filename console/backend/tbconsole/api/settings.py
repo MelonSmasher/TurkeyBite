@@ -197,6 +197,14 @@ async def get_general(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
     return await settings_store.general(db)
 
 
+async def _missing_webhook(db: AsyncSession, hook_id: str) -> bool:
+    """Whether the webhook with this id is gone, or the id is none."""
+    try:
+        return await db.get(Webhook, uuid.UUID(hook_id)) is None
+    except ValueError:
+        return True
+
+
 @router.put('/general')
 async def put_general(body: GeneralBody, request: Request,
                       principal: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
@@ -211,14 +219,12 @@ async def put_general(body: GeneralBody, request: Request,
     if bool(url) != bool(hook_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             'Device lookup needs both its URL and the webhook that signs its questions.')
-    # Checked when it is being chosen, so a save of something else is never refused for it
-    if hook_id and 'device_lookup_webhook_id' in changes:
-        try:
-            hook = await db.get(Webhook, uuid.UUID(hook_id))
-        except ValueError:
-            hook = None
-        if hook is None:
+    if hook_id and await _missing_webhook(db, hook_id):
+        if 'device_lookup_webhook_id' in changes:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'That webhook does not exist.')
+        # Deleted since, perhaps while this was being saved: device lookup is
+        # off, rather than refuse a save of something else for it
+        saved['device_lookup_url'] = saved['device_lookup_webhook_id'] = ''
     await settings_store.put(db, 'general', saved, principal.user.id)
     audit.record(db, 'settings.general', principal=principal, request=request, details=changes)
     await db.commit()

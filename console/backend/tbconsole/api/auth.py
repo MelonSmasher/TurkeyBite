@@ -11,6 +11,7 @@ account for fifteen minutes, and an address that fails often is slowed down.
 """
 
 import unicodedata
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -22,7 +23,7 @@ from .. import __version__, audit, settings_store
 from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, current_principal, optional_principal, origin_ok
-from ..models import User, UserSession
+from ..models import User, UserSession, Webhook
 from ..security import crypto, ldap, limits, lockout, passwords, sessions, totp
 from .common import user_out
 
@@ -313,6 +314,17 @@ async def logout(request: Request, response: Response,
     return {'ok': True}
 
 
+async def _device_lookup_on(db: AsyncSession, general: dict) -> bool:
+    """Whether device lookup is set up, its webhook still there."""
+    url, hook_id = general.get('device_lookup_url'), general.get('device_lookup_webhook_id')
+    if not url or not hook_id:
+        return False
+    try:
+        return await db.get(Webhook, uuid.UUID(hook_id)) is not None
+    except ValueError:
+        return False
+
+
 @router.get('/me')
 async def me(principal: Principal = Depends(current_principal),
              db: AsyncSession = Depends(get_session)) -> dict:
@@ -327,7 +339,7 @@ async def me(principal: Principal = Depends(current_principal),
         'org_name': general['org_name'],
         'privacy_mode_default': general['privacy_mode_default'],
         # Whether addresses can be looked up; where, and with what, is the admins' business
-        'device_lookup': bool(general.get('device_lookup_url') and general.get('device_lookup_webhook_id')),
+        'device_lookup': await _device_lookup_on(db, general),
         'default_range': general['default_range'] if general['default_range'] in settings_store.DEFAULT_RANGES
         else 'now-24h',
         'mfa_required': bool(general['require_mfa_for_local_admins'] and user.source == 'local'

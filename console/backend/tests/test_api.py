@@ -517,6 +517,17 @@ async def test_deleting_the_webhook_device_lookup_signs_with_turns_lookups_off(c
     # And other settings still save
     saved = await client.put('/api/v1/settings/general', headers=headers, json={'org_name': 'Elsewhere'})
     assert saved.status_code == 200  # nosec B101
+    # Even when a save raced the deletion and put the old id back: lookup is
+    # off, and the next save clears it
+    from tbconsole import settings_store
+    async with db.sessionmaker()() as session:
+        general = await settings_store.general(session)
+        await settings_store.put(session, 'general', {**general, 'device_lookup_url': 'https://sac.example.edu/x',
+                                                      'device_lookup_webhook_id': hook_id}, None)
+        await session.commit()
+    assert (await client.get('/api/v1/auth/me')).json()['device_lookup'] is False  # nosec B101
+    cleared = await client.put('/api/v1/settings/general', headers=headers, json={'org_name': 'Again'})
+    assert cleared.status_code == 200 and cleared.json()['device_lookup_webhook_id'] == ''  # nosec B101
 
 
 def test_an_answer_of_the_wrong_shape_is_read_as_nothing():
