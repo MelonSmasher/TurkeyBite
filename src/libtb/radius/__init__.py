@@ -122,9 +122,11 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #   - A name NPS authenticated is not replaced by one a device gave.
 #   - An address the session reported itself is not demoted to a roam's.
 # Then the hash's expiry is renewed, and only the MAX_SESSIONS most recently
-# reported sessions are kept. For a report that gave its address, the
-# device's last address is updated if this report is newer; for a roam, its
-# expiry is renewed, so the roam keeps it while the session lasts.
+# reported sessions are kept. The device's key holds the address it was last
+# reported with, when (l), and when it was last reported at all (t). A
+# report that gave its address updates it if newer; a roam moves only t and
+# renews its expiry, so the roam keeps it while the session lasts, and the
+# next roam can follow on.
 #   KEYS[1] the address's hash; KEYS[2], if given, the device's last address
 #   ARGV    session key, user, MAC or "", start, seen, stopped or "",
 #           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
@@ -171,17 +173,23 @@ if redis.call('HLEN', KEYS[1]) > keep then
   table.sort(rows, function(a, b) return a[2] < b[2] end)
   for i = 1, #rows - keep do redis.call('HDEL', KEYS[1], rows[i][1]) end
 end
-if #KEYS > 1 and ARGV[10] == '1' then
-  redis.call('EXPIRE', KEYS[2], tonumber(ARGV[12]))
-elseif #KEYS > 1 then
-  local newer = true
+if #KEYS > 1 then
+  local now = tonumber(ARGV[5])
+  local device = nil
   local last = redis.call('GET', KEYS[2])
   if last then
     local ok, v = pcall(cjson.decode, last)
-    if ok and type(v) == 'table' and type(v.l) == 'number' and v.l > tonumber(ARGV[5]) then newer = false end
+    if ok and type(v) == 'table' then device = v end
   end
-  if newer then
-    redis.call('SET', KEYS[2], cjson.encode({a = ARGV[13], l = tonumber(ARGV[5])}), 'EX', tonumber(ARGV[12]))
+  if ARGV[10] == '1' then
+    if device then
+      if type(device.t) ~= 'number' or device.t < now then device.t = now end
+      redis.call('SET', KEYS[2], cjson.encode(device), 'EX', tonumber(ARGV[12]))
+    end
+  elseif not (device and type(device.l) == 'number' and device.l > now) then
+    local seen_last = now
+    if device and type(device.t) == 'number' and device.t > now then seen_last = device.t end
+    redis.call('SET', KEYS[2], cjson.encode({a = ARGV[13], l = now, t = seen_last}), 'EX', tonumber(ARGV[12]))
   end
 end
 return 1
@@ -441,7 +449,7 @@ class Sessions:
     In the queue's database, since the librarian sweeps the host lists':
 
         <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, a, b}
-        <prefix>:radius:mac:<mac>      the address a device last reported, {a, l}
+        <prefix>:radius:mac:<mac>      the address a device last reported, {a, l, t}
         <prefix>:radius:class:<class>  the account an Access-Accept named
 
     The first expires `keep_hours` after its last report, the second
@@ -488,7 +496,7 @@ class Sessions:
             self.warn('NPS lines are dated after Filebeat read them, so they are not recorded: is '
                       'processor.radius.timezone the NPS servers\' time zone?')
             return None
-        if _whole_hours_out(fields, found.seen + (_seconds(fields.get('Acct-Delay-Time')) or 0)):
+        if _whole_hours_out(fields, found.seen):
             self.warn('NPS lines are dated a whole number of hours from their access points\' clocks: '
                       'is processor.radius.timezone the NPS servers\' time zone?')
         found = self._named(found)
@@ -518,8 +526,8 @@ class Sessions:
         """The session at the address its device had before it roamed, or None.
 
         Only for a session that starts within ROAM_SEC of its device's last
-        report, and only if no other device has been reported with the
-        address since.
+        report, with the address or on a roam before, and only if no other
+        device has been reported with the address since.
         """
         if not found.mac:
             return None
@@ -527,8 +535,10 @@ class Sessions:
             last = json.loads(self.redis.get(self.key('mac', found.mac)) or 'null')
         except (TypeError, ValueError):
             return None
-        if not (isinstance(last, dict) and isinstance(last.get('l'), (int, float))
-                and abs(found.start - last['l']) <= ROAM_SEC):
+        if not (isinstance(last, dict) and isinstance(last.get('l'), (int, float))):
+            return None
+        moments = [last['l']] + ([last['t']] if isinstance(last.get('t'), (int, float)) else [])
+        if not any(abs(found.start - moment) <= ROAM_SEC for moment in moments):
             return None
         where = address(last.get('a'))
         if where is None:
@@ -574,9 +584,10 @@ class Sessions:
         where = address(where)
         if where is None:
             return None
-        covering = [held for held in self._sessions(where)
-                    if held['s'] - CLOCK_SLACK <= when <= self._end(held)]
-        reported = [held for held in covering if not held.get('b')]
+        sessions = self._sessions(where)
+        covering = [held for held in sessions if held['s'] - CLOCK_SLACK <= when <= self._end(held)]
+        # Any device reported with it before the lookup, whether or not it still holds it
+        reported = [held for held in sessions if not held.get('b') and held['s'] - CLOCK_SLACK <= when]
 
         def overruled(held):
             since = held.get('r', held['s'])
@@ -593,7 +604,10 @@ class Sessions:
 
 
 def _whole_hours_out(fields, logged):
-    """Whether NPS's time is a whole number of hours from the access point's, as a wrong zone makes it.
+    """Whether NPS's time, less the delay, is a whole number of hours from the access point's.
+
+    A wrong zone makes it so; an access point that held its accounting for an
+    hour does not, since the delay is taken off.
 
     An access point's clock can be out by anything, so only an offset of whole
     hours, to within CLOCK_SLACK, is taken as the zone's.

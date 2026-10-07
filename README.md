@@ -375,8 +375,9 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      session that starts without one, within two minutes of its device last
      being reported, takes the address the device had then. It doesn't if
      another device has been reported with that address since.
-   - **Two sessions at once.** When two sessions cover a lookup, one reported
-     with the address beats one that took it on roaming. Otherwise the one
+   - **Two sessions at once.** A session that took its address on roaming
+     loses it to another device reported with the address after its own
+     device last was. Otherwise, when two sessions cover a lookup, the one
      that started later wins.
    - **What it cannot do.**
      - Lookups a device makes on joining, before an access point first reports

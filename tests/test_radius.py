@@ -360,6 +360,26 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(roamed.address, '10.212.16.219')
         self.assertEqual(self.redis.ttls[device], 1200)
 
+    def test_a_phone_roaming_again_keeps_its_person(self):
+        self.take(nps_line(status='2', klass=None))
+        # Through a second access point that never reports the address, to a third
+        self.take(nps_line(status='1', address=None, nas='ap-hall-12', session_id='AA01', session_time=None,
+                           logged='10/07/2026 18:19:36.212', klass=None))
+        self.take(nps_line(status='2', address=None, nas='ap-hall-12', session_id='AA01', session_time='900',
+                           logged='10/07/2026 18:34:36.212', klass=None))
+        third = self.take(nps_line(status='1', address=None, nas='ap-hall-13', session_id='AA02',
+                                   session_time=None, logged='10/07/2026 18:34:40.212', klass=None))
+        self.assertEqual(third.address, '10.212.16.219')
+        self.assertEqual(self.holder(LOGGED + 16 * 60), 'jsmith')
+
+    def test_a_roam_stays_overruled_after_the_device_that_took_the_address_stops(self):
+        record = self.sessions.record
+        record(radius.Session('10.0.0.5', 'ap|2', 'alice', 'a', 1000, 1000, None, None, bridged=True,
+                              reported=950))
+        # Bob is reported with the address after Alice's device last was, then stops
+        record(radius.Session('10.0.0.5', 'ap|1', 'bob', 'b', 1100, 1200, 1200, None))
+        self.assertIsNone(self.holder(1500, '10.0.0.5'))
+
     def test_but_not_one_seen_too_long_ago(self):
         self.take(nps_line(status='2', klass=None))
         self.assertIsNone(self.take(nps_line(status='1', address=None, session_id='AA01', session_time=None,
@@ -409,6 +429,10 @@ class SessionsTest(unittest.TestCase):
 
     def test_an_access_point_merely_out_is_not(self):
         self.take(nps_line(event='10/07/2026 20:37:35'), received=LOGGED + 1)
+        self.assertEqual(self.warned, [])
+
+    def test_nor_one_that_held_its_accounting_an_hour(self):
+        self.assertIsNotNone(self.take(nps_line(delay='3600', event='10/07/2026 21:19:34'), received=LOGGED + 1))
         self.assertEqual(self.warned, [])
 
     def test_a_session_id_reused_after_its_stop_is_a_new_session(self):
