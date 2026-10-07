@@ -38,23 +38,11 @@ CORRECTED = '_corrected'
 # One OpenSearch client per process, per host. Unlike the read-only mmap above,
 # a socket is not fork-safe, so this must never be shared across a fork. Keyed on
 # pid so a forked child builds its own rather than reusing a parent's connection.
-#
-# Under the default RQ worker, which forks a job per event, this saves nothing:
-# the child is discarded after one document. It is worth having anyway because
-# ship_bite previously built a client and completed a TLS handshake per document,
-# and because with rq.SimpleWorker the process persists and the connection is
-# genuinely reused.
 _opensearch_clients = {}
 
 
 # Reverse DNS answers, keyed on client address. The same handful of clients
 # recur constantly, so most events can be answered without a query at all.
-#
-# Worth having only when the process outlives a job. Under the consume path or
-# rq.SimpleWorker it does; under the forking rq.Worker each child is discarded
-# after one event and this stays empty, which is harmless. Unlike the OpenSearch
-# socket above this needs no pid key: a child inherits a copy of the dict and
-# can read it without corrupting the parent's.
 _ptr_cache = {}
 
 # Resolver objects hold configuration, not a socket, so one per nameserver set
@@ -176,9 +164,7 @@ def opensearch_client(host):
     try:
         kwargs = client_kwargs(host)
     except ValueError as e:
-        # The settings were checked at start, so this is a host whose
-        # configuration came from elsewhere, such as a job the core queued
-        # with its own config.yaml, or a CA file gone since the check
+        # Settings were checked at start, but a CA file may have gone since.
         raise ConfigurationError(str(e)) from e
     client = OpenSearch(**kwargs)
     _opensearch_clients[key] = client
@@ -496,13 +482,10 @@ class Processor(object):
     # Set by the consumer, which acknowledges a batch only after it is indexed
     # and so can requeue one that is not. When OpenSearch does not take an
     # event, process_packet then raises DeliveryError rather than dropping it.
-    # The RQ path leaves it off: a job has nothing to requeue to, and is lossy
-    # by design. A class attribute, so a processor pickled before it existed
-    # still has it.
     strict_delivery = False
 
     def __init__(self, config, redis_conf):
-        """Inlet class responsible for taking queued jobs from the Redis queue and processing their context."""
+        """Enrich consumer packets and ship their context to enabled outputs."""
         self.config = config
         self.redis_conf = redis_conf
         # Read once here so a mistake in the evidence settings stops the process
@@ -511,8 +494,7 @@ class Processor(object):
         self._resolvers = resolver_settings((config.get('evidence') or {}).get('resolvers'))
         # The same for the OpenSearch hosts. This is also where a host with the
         # default admin password is refused, and where a host used without
-        # verifying its certificate is reported. Under the rq pipeline that is
-        # the core, whose processor travels with every job.
+        # verifying its certificate is reported.
         check_hosts(config.get('elastic'))
         self._privacy = privacy_settings(config.get('privacy'))
 
@@ -553,14 +535,7 @@ class Processor(object):
         Trimmed URLs and the packet kept, unless processor.privacy says
         otherwise. Parsed once, when the processor starts.
         """
-        try:
-            return self._privacy
-        except AttributeError:
-            # Under the rq pipeline a job carries the processor the core
-            # pickled, and one queued by a core older than these settings has
-            # none. Its configuration is read now rather than failing the job.
-            self._privacy = privacy_settings(self.config.get('privacy'))
-            return self._privacy
+        return self._privacy
 
     def disabled_categories(self):
         """Taxonomy branches or paths switched off, see libtb.evidence.
@@ -637,8 +612,8 @@ class Processor(object):
 
         # Asked only in index mode, since compare mode measures the lists
         # against Valkey and a vote from outside both would muddy that. Outside
-        # the guard above, so a fault here, or RQ stopping a job that ran too
-        # long, is not mistaken for a broken index and answered from Valkey.
+        # the guard above, so a resolver fault is not mistaken for a broken
+        # index and answered from Valkey.
         if mode == 'index':
             claims, verdict = second_opinion(host, claims, verdict, self.min_publishers(),
                                              checker_for(self.resolver_conf()), navigation)
@@ -984,14 +959,8 @@ class Processor(object):
     def bulk_settings(self):
         """Bulk buffering settings. Off by default, deliberately.
 
-        Batching only helps when a worker process handles more than one job,
-        which needs rq.SimpleWorker. It also introduces a loss window: RQ marks
-        a job finished when process_packet returns, so anything still sitting in
-        the buffer when a worker dies uncleanly is gone with no record. Flush
-        hooks cover a clean stop and a SIGTERM from supervisor, not a SIGKILL.
-
-        That window closes properly with Redis Streams, where the ack happens
-        after the flush. Until then this stays opt-in.
+        Consumers acknowledge their processing lists only after flushing, so
+        buffered events remain recoverable if the worker stops uncleanly.
         """
         settings = (self.config['elastic'].get('bulk') or {})
         return (
@@ -1021,8 +990,7 @@ class Processor(object):
         batch a replay. A batch that is requeued is requeued whole, so
         documents indexed in it are indexed again: at-least-once delivery
         already allows that, and losing the rest does not. A document refused
-        for good, by a mapping error say, is logged and not retried. The RQ
-        path passes nothing and keeps its behaviour, which is to log and drop.
+        for good, by a mapping error say, is logged and not retried.
         """
         if raise_on_total_failure is None:
             raise_on_total_failure = self.strict_delivery
@@ -1062,10 +1030,8 @@ class Processor(object):
         if raise_on_total_failure:
             raise DeliveryError(f'every OpenSearch host refused {len(docs)} documents')
         if misconfigured is not None:
-            # Kept for the next flush, and the job fails rather than completes:
-            # under the rq pipeline that leaves it with RQ's failed jobs, to be
-            # requeued once this worker's configuration is fixed. ship_bite
-            # takes that job's own document back out
+            # Keep earlier documents for the next flush. ship_bite removes the
+            # current failed event so retrying it does not index it twice.
             buffer['docs'] = docs + buffer['docs']
             raise misconfigured
         print(f"Dropped {len(docs)} documents: every OpenSearch host failed", file=sys.stderr)
@@ -1097,10 +1063,8 @@ class Processor(object):
                     # Raises DeliveryError for the consumer when this flush fails
                     self.flush_bulk(force=False)
                 except ConfigurationError:
-                    # This job fails, and RQ keeps it to requeue once the
-                    # configuration is fixed: its document goes with it, so
-                    # the requeue does not index it twice, and the buffer
-                    # holds no more than it did while the fault lasts
+                    # This event failed; remove its buffered copy before the
+                    # caller retries it after fixing the configuration.
                     buffer['docs'] = [kept for kept in buffer['docs'] if kept is not doc]
                     raise
             else:
@@ -1126,9 +1090,8 @@ class Processor(object):
                 if not (delivered or refused) and self.strict_delivery:
                     raise DeliveryError('every OpenSearch host failed to take an event')
                 if not (delivered or refused) and misconfigured is not None:
-                    # A host this worker cannot even set up, such as a CA file
-                    # missing from its container: the job fails, so RQ keeps it
-                    # with its failed jobs instead of the event being dropped
+                    # A host this worker cannot set up, such as a missing CA
+                    # file, must surface rather than silently drop the event.
                     raise misconfigured
 
         if self.config['syslog']['enable']:

@@ -1,8 +1,5 @@
 """One process that drains the durable queue and indexes what survives.
 
-Replaces the Inlet plus RQ plus the RQ worker for the new path. Previously an
-event made two trips through Redis: in on pub/sub, then out again through the RQ
-queue with a pickle in between. Here it makes one.
 
 The ordering is the point:
 
@@ -11,9 +8,8 @@ The ordering is the point:
     flush to OpenSearch    one bulk request
     acknowledge            only now do the items leave the processing list
 
-Because the acknowledgement happens after the flush, bulk buffering stops being
-a loss window and becomes free. That is the trade O2 could not make under RQ,
-which marked a job finished the moment the processor returned.
+Because acknowledgement happens after the flush, bulk buffering introduces no
+loss window: an interrupted batch remains in its processing list for replay.
 
 A batch OpenSearch does not take is requeued whole rather than acknowledged,
 whether bulk buffering is on or off: when every host refuses, or when it asks
@@ -53,7 +49,8 @@ import time
 from redis.exceptions import ConnectionError as ValkeyConnectionError
 from redis.exceptions import TimeoutError as ValkeyTimeoutError
 
-from libtb.inlet import describe
+from libtb.privacy import TRIMMED, trim_url
+from libtb.util import dig
 from libtb.processor import DeliveryError
 from libtb.queue import NotOwner
 
@@ -69,6 +66,47 @@ VALKEY_ERRORS = (ValkeyConnectionError, ValkeyTimeoutError)
 # How often a batch being handled renews the consumer's name, well inside
 # ListQueue.OWNER_TTL, so a slow batch cannot outlast the reservation
 RENEW_SECONDS = 20.0
+
+
+def describe(data, verdict, urls=TRIMMED):
+    """Builds the log line for an observed packet.
+
+    Fields are read through dig() or checked for their type first, so a
+    malformed packet cannot terminate the consumer while building its log.
+
+    `urls` is processor.privacy.urls. The log keeps no more of a URL than the
+    event does: a container log is a store too, and a trimmed event beside a
+    log holding the full URL would protect nothing. It defaults to trimmed, so
+    a caller that forgets to pass it fails closed.
+
+    Returns None for a packet we have nothing to say about.
+    """
+    packet_type = dig(data, 'type')
+
+    if packet_type == 'dns':
+        resource = dig(data, 'resource')
+        if not isinstance(resource, str):
+            return None
+        line = '[Packetbeat][DNS] ' + verdict + ': ' + resource
+        direction = dig(data, 'network', 'direction')
+        if isinstance(direction, str):
+            line = line + ' - ' + direction
+        return line
+
+    if packet_type == 'browser.history':
+        line = '[Browserbeat][History] ' + verdict
+        url = dig(data, 'data', 'event', 'data', 'entry', 'url')
+        if isinstance(url, str):
+            line = line + ' : ' + trim_url(url, urls)
+        user = dig(data, 'data', 'event', 'data', 'client', 'user')
+        if isinstance(user, str):
+            line = line + ' - ' + user
+        short_hostname = dig(data, 'data', 'event', 'data', 'client', 'Hostname', 'short')
+        if isinstance(short_hostname, str):
+            line = line + ' - ' + short_hostname
+        return line
+
+    return None
 
 
 class NameLost(Exception):
@@ -87,13 +125,11 @@ class Consumer(object):
         self.processor = processor
         self.batch_size = batch_size
         self.block_seconds = block_seconds
-        # A batch is acknowledged only once indexed, so the processor must say
-        # when an event was not, rather than log and drop it as the RQ path does
+        # A batch is acknowledged only once indexed, so delivery failures must
+        # reach the consumer instead of being logged and dropped.
         processor.strict_delivery = True
-        # The Inlet logged every packet it saw, queued or dropped. This path
-        # replaces the Inlet, so it keeps that behaviour rather than silently
-        # removing the only per-event visibility there was. Turn it off with
-        # --quiet when the volume is not worth the log lines.
+        # Per-event visibility includes queued and dropped packets. Turn it off
+        # with --quiet when the volume is not worth the log lines.
         self.log_events = log_events
         # Replaceable so tests can see the rests without serving them
         self.sleep = sleep

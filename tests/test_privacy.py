@@ -31,12 +31,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 
-from libtb import inlet as I
 from libtb import opensearch
 from libtb import privacy as PV
 from libtb import processor as P
-from libtb.consumer import Consumer
-from libtb.inlet import Inlet, describe
+from libtb.consumer import Consumer, describe
 from libtb.processor import Processor
 
 SEARCH = 'https://alice:hunter2@www.google.com/search?q=symptoms+of+flu&hl=en#results'
@@ -485,18 +483,6 @@ class DnsWiringTest(Wiring, unittest.TestCase):
         self.assertEqual(doc['bite']['client'], '10.0.0.5')
 
 
-class QueuedBeforeUpgradeTest(Wiring, unittest.TestCase):
-    """A job the core queued before the upgrade carries a processor without these settings."""
-
-    def test_it_is_processed_with_the_defaults_rather_than_failed(self):
-        import pickle
-        processor = self.processor()
-        # The stubbed lookups cannot be pickled, and a real job carries none
-        del processor.resolve_contexts, processor.resolve_chain, processor._privacy
-        processor = pickle.loads(pickle.dumps(processor))
-        processor.resolve_contexts = lambda searches, **kwargs: ([], {})
-        processor.process_browser_history(browser_packet())
-        self.assertEqual(self.shipped[0]['bite']['url'], 'https://www.google.com/search')
 
 
 class ChokePointTest(Wiring, unittest.TestCase):
@@ -589,69 +575,27 @@ class LogLineTest(Wiring, unittest.TestCase):
         # The control for the test above
         self.assertIn(SEARCH, self.consume({'urls': 'full'}))
 
-
-class FakeQueue(object):
-    """Stands in for rq.Queue and keeps what was enqueued."""
-
-    def __init__(self, connection=None):
-        self.jobs = []
-        FakeQueue.last = self
-
-    def enqueue(self, func, *args, **kwargs):
-        self.jobs.append((func, args, kwargs))
-
-
-class FakeSubscription(object):
-
-    def __init__(self, payloads):
-        self.payloads = payloads
-
-    def subscribe(self, channel):
-        pass
-
-    def listen(self):
-        for payload in self.payloads:
-            yield {'type': 'message', 'data': payload}
-
-
-class InletTest(Wiring, unittest.TestCase):
-    """Under the rq pipeline an event waits in Valkey as a job, so it is trimmed first."""
-
-    def enqueue(self, packet, privacy=None):
-        processor = self.processor(privacy)
-        redis = mock.Mock()
-        redis.pubsub.return_value = FakeSubscription([json.dumps(packet).encode()])
-        filters = mock.Mock(should_process=mock.Mock(return_value=True))
-        with mock.patch.object(I, 'Redis', return_value=redis), \
-                mock.patch.object(I, 'Queue', FakeQueue), redirect_stdout(io.StringIO()):
-            Inlet({'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'x',
-                   'channel': 'turkeybite'}, filters, processor).open()
-        self.assertEqual(len(FakeQueue.last.jobs), 1)
-        return FakeQueue.last.jobs[0]
-
-    def test_the_queued_event_is_trimmed(self):
-        _, (queued,), _ = self.enqueue(browser_packet())
-        entry = queued['data']['event']['data']['entry']
+    def test_the_consumer_ships_a_trimmed_packet(self):
+        self.consume()
+        doc = self.shipped[0]
+        entry = doc['packet']['data']['event']['data']['entry']
         self.assertEqual(entry['url'], 'https://www.google.com/search')
         self.assertEqual(entry['url_data']['RawQuery'], '')
-        self.assertNotIn('hunter2', json.dumps(queued))
+        self.assertEqual(doc['bite']['requested'], ['www.google.com'])
+        self.assertNotIn('hunter2', json.dumps(doc))
 
-    def test_the_host_the_worker_reads_survives_it(self):
-        _, (queued,), _ = self.enqueue(browser_packet(), {'urls': 'host'})
-        processor = self.processor()
-        processor.process_browser_history(queued)
-        self.assertEqual(self.shipped[0]['bite']['requested'], ['www.google.com'])
+    def test_host_mode_preserves_the_host_used_for_enrichment(self):
+        self.consume({'urls': 'host'})
+        doc = self.shipped[0]
+        self.assertEqual(doc['bite']['requested'], ['www.google.com'])
+        self.assertEqual(doc['packet']['data']['event']['data']['entry']['url'],
+                         'https://www.google.com')
 
-    def test_with_full_urls_the_event_is_queued_as_it_came(self):
-        # The control for the trimming above
-        _, (queued,), _ = self.enqueue(browser_packet(), {'urls': 'full'})
-        self.assertEqual(queued, browser_packet())
+    def test_full_mode_ships_the_original_packet(self):
+        self.consume({'urls': 'full'})
+        self.assertEqual(self.shipped[0]['packet'], browser_packet())
 
-    def test_a_failed_job_is_not_kept_for_a_year(self):
-        # RQ keeps a failed job, event and all, for a year unless told otherwise
-        _, _, kwargs = self.enqueue(browser_packet())
-        self.assertEqual(kwargs['failure_ttl'], 24 * 60 * 60)
-        self.assertEqual(kwargs['result_ttl'], 600)
+
 
 
 if __name__ == '__main__':

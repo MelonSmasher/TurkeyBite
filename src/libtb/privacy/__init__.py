@@ -233,8 +233,8 @@ def _dns_packet(packet, mode):
 def redact_packet(packet, mode):
     """A beat event with every URL it can hold trimmed to `mode`.
 
-    The one decision about where to look, see the module docstring, shared by
-    the worker and by the inlet, which trims an event before it is queued.
+    The one decision about where to look, see the module docstring, used by
+    the processor before the event leaves for any output.
     """
     if mode == FULL or not isinstance(packet, dict):
         return packet

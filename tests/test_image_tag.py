@@ -11,7 +11,7 @@ SPEC = importlib.util.spec_from_file_location(
 )
 GUARD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GUARD)
-IMAGE = "ghcr.io/melonsmasher/turkeybite-core:v1.2.3"
+IMAGE = "ghcr.io/melonsmasher/turkeybite-worker:v1.2.3"
 
 
 class ImageTagTest(unittest.TestCase):
@@ -32,10 +32,10 @@ class ImageTagTest(unittest.TestCase):
                     GUARD.check_image_tag(IMAGE, "actor", "credential")
         create.assert_called_once_with("ghcr.io", timeout=20)
         self.assertEqual(connection.request.call_args_list[0].args[:2],
-                         ("GET", "/token?service=ghcr.io&scope=repository%3Amelonsmasher%2Fturkeybite-core%3Apull"))
+                         ("GET", "/token?service=ghcr.io&scope=repository%3Amelonsmasher%2Fturkeybite-worker%3Apull"))
         self.assertIn("Authorization", connection.request.call_args_list[0].kwargs["headers"])
         self.assertEqual(connection.request.call_args_list[1].args[:2],
-                         ("HEAD", "/v2/melonsmasher/turkeybite-core/manifests/v1.2.3"))
+                         ("HEAD", "/v2/melonsmasher/turkeybite-worker/manifests/v1.2.3"))
         connection.close.assert_called_once()
 
     def test_absent_tag_can_publish(self):

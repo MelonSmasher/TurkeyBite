@@ -45,7 +45,7 @@ class Rerun(unittest.TestCase):
         with mock.patch.object(SETUP.TurkeyBiteSetup, 'ensure_directories'):
             setup = SETUP.TurkeyBiteSetup()
         setup.base_dir = SETUP.Path(self.root)
-        setup.components = ['core', 'librarian', 'worker', 'valkey', 'opensearch']
+        setup.components = ['librarian', 'worker', 'valkey', 'opensearch']
         setup.node_type = 'dev'
         answers, yes_no = list(answers), list(yes_no)
         setup.prompt = lambda message, options=None: answers.pop(0)
@@ -265,9 +265,9 @@ class ComposeServicesTest(Rerun):
         services = yaml.safe_load(self.read('docker-compose.yml'))['services']
         self.assertIn('opensearch', services)
         self.assertNotIn('opensearch-dashboards', services)
-        self.assertEqual(set(services), {'opensearch', 'valkey', 'turkeybite-core',
+        self.assertEqual(set(services), {'opensearch', 'valkey',
                                          'turkeybite-worker', 'turkeybite-librarian'})
-        for role in ('core', 'worker', 'librarian'):
+        for role in ('worker', 'librarian'):
             service = services[f'turkeybite-{role}']
             self.assertIn(f'TURKEYBITE_{role.upper()}_IMAGE', service['image'])
             self.assertEqual(service['build']['dockerfile'], f'docker/{role}/Dockerfile')
@@ -278,12 +278,11 @@ class ComposeServicesTest(Rerun):
         setup = self.setup()
         setup.node_type = 'app'
         setup.is_distributed = True
-        setup.components = ['core', 'librarian', 'worker', 'valkey']
+        setup.components = ['librarian', 'worker', 'valkey']
         setup.setup_docker_compose()
         services = yaml.safe_load(self.read('docker-compose.yml'))['services']
         self.assertNotIn('opensearch', services)
         self.assertEqual(set(services['turkeybite-worker']['depends_on']), {'valkey'})
-        self.assertEqual(set(services['turkeybite-core']['depends_on']), {'valkey'})
 
     def test_search_node_has_only_opensearch_and_its_volume(self):
         setup = self.setup()
@@ -299,6 +298,79 @@ class ComposeServicesTest(Rerun):
                           '${OPENSEARCH_PERFORMANCE_PORT:-9600}:9600'])
         self.assertNotIn('OPENSEARCH_DASHBOARD_PORT', dict(
             (key, value) for key, value, _ in setup.env_settings()))
+
+    def test_development_selection_has_no_core(self):
+        setup = self.setup(yes_no=[False])
+        setup.setup_development()
+        self.assertEqual(setup.components, ['librarian', 'worker', 'valkey', 'opensearch'])
+
+    def test_small_scale_application_selection_has_no_core(self):
+        setup = self.setup(answers=['Application Node (Librarian + Worker + Valkey)',
+                                    'search.example'], yes_no=[False, True, False])
+        setup.setup_small_scale()
+        self.assertEqual(setup.components, ['librarian', 'worker', 'valkey'])
+
+    def test_small_scale_search_selection_is_search_only(self):
+        setup = self.setup(answers=['Search Node (OpenSearch)'])
+        setup.setup_small_scale()
+        self.assertEqual(setup.components, ['opensearch'])
+
+    def test_worker_fragment_has_no_legacy_switches(self):
+        setup = self.setup()
+        setup.setup_docker_compose()
+        worker = yaml.safe_load(self.read('docker-compose.yml'))['services']['turkeybite-worker']
+        self.assertIn('TURKEYBITE_CONSUMER_PREFIX', worker['environment'])
+        self.assertNotIn('TURKEYBITE_PIPELINE', worker['environment'])
+        self.assertNotIn('TURKEYBITE_WORKER_CLASS', worker['environment'])
+
+    def test_retired_switches_are_removed_without_losing_operator_settings(self):
+        self.write('.env', 'TURKEYBITE_PIPELINE=rq\nTURKEYBITE_WORKER_CLASS=rq.Worker\n'
+                          'TURKEYBITE_CORE_IMAGE=turkeybite-core:old\n'
+                          '# operator comment\nCUSTOM_SETTING=keep\n')
+        setup = self.setup()
+        setup.opensearch_admin_password = NEW
+        setup.setup_env()
+        self.assertNotIn('TURKEYBITE_PIPELINE', self.env())
+        self.assertNotIn('TURKEYBITE_WORKER_CLASS', self.env())
+        self.assertNotIn('TURKEYBITE_CORE_IMAGE', self.env())
+        self.assertEqual(self.env()['CUSTOM_SETTING'], 'keep')
+        self.assertIn('# operator comment\n', self.read('.env'))
+
+    def test_consumer_prefix_is_unique_and_preserved_on_rerun(self):
+        setup = self.setup()
+        setup.opensearch_admin_password = NEW
+        setup.setup_env()
+        prefix = self.env()['TURKEYBITE_CONSUMER_PREFIX']
+        another = self.setup()
+        self.assertNotEqual(prefix, another.consumer_prefix)
+        another.opensearch_admin_password = NEW
+        another.setup_env()
+        self.assertEqual(self.env()['TURKEYBITE_CONSUMER_PREFIX'], prefix)
+        self.write('.env', 'TURKEYBITE_CONSUMER_PREFIX=operator-host-1\n# keep\n')
+        another.setup_env()
+        self.assertEqual(self.env()['TURKEYBITE_CONSUMER_PREFIX'], 'operator-host-1')
+        self.assertIn('# keep\n', self.read('.env'))
+
+    def test_full_scale_component_choices(self):
+        cases = [
+            ('Librarian Node (Librarian)', 'librarian', ['librarian'],
+             ['valkey.example', 'search.example'], [True, False]),
+            ('Worker Node (Worker)', 'worker', ['worker'],
+             ['valkey.example', 'search.example'], [False, True, False]),
+            ('Data Node (Valkey)', 'data', ['valkey'], [], []),
+            ('Search Node (OpenSearch)', 'search', ['opensearch'], [], []),
+        ]
+        for choice, node, components, answers, yes_no in cases:
+            with self.subTest(node=node):
+                setup = self.setup(answers=[choice] + answers, yes_no=yes_no)
+                setup.setup_full_scale()
+                self.assertEqual(setup.node_type, node)
+                self.assertEqual(setup.components, components)
+                setup.setup_docker_compose()
+                services = yaml.safe_load(self.read('docker-compose.yml'))['services']
+                if node == 'worker':
+                    self.assertEqual(set(services), {'turkeybite-worker'})
+                    self.assertNotIn('depends_on', services['turkeybite-worker'])
 
 
 class RetentionPromptTest(Rerun):

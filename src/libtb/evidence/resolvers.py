@@ -47,9 +47,8 @@ A lookup never waits on the resolvers for more than `timeout_sec` in all,
 however many are asked. A resolver that keeps failing, as one behind a
 firewall that drops port 53 does, is left alone for `backoff_sec` after three
 failures in a row, doubling while it stays down, so a blocked path costs a few
-timeouts and then nothing. Both live in the process, so they last only as
-long as it does: under the forking rq.Worker that is one event, and every
-qualifying event can wait up to the budget. The consume pipeline keeps both.
+timeouts and then nothing. Both cache and back-off last for the consumer
+process, so later events reuse settled answers and wait out resolver outages.
 
 Only DNS lookups are checked, not browser history, and only the name asked
 for, not its CNAME targets. A resolver answers for the name as a whole, chain
@@ -265,9 +264,8 @@ class Checker(object):
 
     Every answer, failure and refusal to ask lands in a status string, which
     goes on the event, so a resolver that stops answering shows up in a query.
-    Only DNS and network errors are turned into a status: anything else is a
-    fault in this code, and so is RQ stopping a job that ran too long, and
-    both have to surface rather than be filed as a resolver error.
+    Only DNS and network errors are turned into a status: faults in this code
+    must surface rather than be filed as resolver errors.
 
     `ask` replaces the network, for tests. `rate` caps queries per second, for
     the audit, which asks about thousands of hosts in a row. Workers leave it
@@ -418,9 +416,7 @@ class Checker(object):
         return claims, verdict, statuses
 
 
-# One checker per process and per settings, so its cache and back-off last as
-# long as the process does. Under the forking rq.Worker that is one event, as
-# with the reverse DNS cache, and every qualifying event asks again.
+# One checker per process and settings, so cache and back-off survive events.
 _checkers = {}
 
 

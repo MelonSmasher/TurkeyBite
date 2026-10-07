@@ -140,10 +140,8 @@ class DomainIndex(object):
         self.sources = {source.name: source for source in self.source_list}
 
         # Attribute entries are decoded on demand rather than all at open time.
-        # RQ forks a child per job, so every event pays the open cost, and
-        # eagerly decoding 3,012 entries cost 2.5 ms per open. The offset table
-        # makes an entry directly addressable and the memo means the handful of
-        # combinations that cover 99% of domains are decoded once.
+        # The offset table makes an entry directly addressable and the memo
+        # decodes only the combinations used by this consumer's events.
         self._attr_offsets_at = pos
         self._attr_table_at = pos + 4 * (n_attrs + 1)
         self._attr_memo = {}

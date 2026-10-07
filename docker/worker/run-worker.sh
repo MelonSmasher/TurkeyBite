@@ -63,21 +63,9 @@ export VALKEY_HOST=${VALKEY_HOST:-valkey}
 export VALKEY_PORT=${VALKEY_PORT:-6379}
 export VALKEY_DB=${VALKEY_DB:-0}
 export TURKEYBITE_WORKER_PROCS=${TURKEYBITE_WORKER_PROCS:-2}
-# rq.SimpleWorker runs jobs in the worker process instead of forking one per
-# job, so a connection or an mmap opened once is actually reused. Job timeouts
-# still work: SimpleWorker uses the same UnixSignalDeathPenalty, and perform_job
-# still catches a raising job and fails it rather than taking the worker down.
-# Set to rq.Worker to go back to fork-per-job.
-export TURKEYBITE_WORKER_CLASS=${TURKEYBITE_WORKER_CLASS:-rq.Worker}
 
 export TURKEYBITE_INDEX_SYNC_INTERVAL_SEC=${TURKEYBITE_INDEX_SYNC_INTERVAL_SEC:-300}
 
-# Which ingestion path this worker runs.
-#   rq       pub/sub into the core, RQ into these workers. The original path.
-#   consume  claim from the durable Redis list, sieve, enrich, index, then
-#            acknowledge. One process per event instead of two Redis hops, and
-#            the acknowledgement after the flush is what makes batching safe.
-export TURKEYBITE_PIPELINE=${TURKEYBITE_PIPELINE:-rq}
 # Inside a container $(hostname) is the container id, which changes on every
 # recreate. A consumer only recovers its own in-flight work on restart, so an
 # unstable name strands whatever it had claimed in a processing list nobody will
@@ -85,28 +73,19 @@ export TURKEYBITE_PIPELINE=${TURKEYBITE_PIPELINE:-rq}
 # the thing still runs.
 export TURKEYBITE_CONSUMER_PREFIX=${TURKEYBITE_CONSUMER_PREFIX:-$(hostname)}
 
-if [ "${TURKEYBITE_PIPELINE}" = "consume" ]; then
-    # Check config.yaml before anything starts, and stop the container if it
-    # is wrong. Only here: a consumer runs on this container's config.yaml,
-    # whereas under the rq pipeline each job carries the processor the core
-    # built from its own, which the core checks when it starts. Checking this
-    # container's file there would stop a worker that works over a stale copy,
-    # and pass one whose real settings are wrong.
-    if ! python turkeybite check; then
-        echo "Refusing to start the worker: fix config.yaml as above, then restart the container." >&2
-        exit 1
-    fi
-
-    # No consumer in this container is running yet, so anything left in a
-    # processing list of a consumer named as tb-consume.template names them,
-    # <prefix>-NN, belongs to a previous incarnation. Only exactly that shape
-    # is swept, so a prefix that starts another host's is no risk to it.
-    python turkeybite queue-recover --prefix "${TURKEYBITE_CONSUMER_PREFIX}" || true
-
-    cat /etc/supervisor/conf.d/tb-consume.template | envsubst | tee /etc/supervisor/conf.d/tb-consume.conf
-else
-    cat /etc/supervisor/conf.d/tb-worker.template | envsubst | tee /etc/supervisor/conf.d/tb-worker.conf
+# Check this worker's config.yaml before any consumer starts.
+if ! python turkeybite check; then
+    echo "Refusing to start the worker: fix config.yaml as above, then restart the container." >&2
+    exit 1
 fi
+
+# No consumer in this container is running yet, so anything left in a
+# processing list of a consumer named as tb-consume.template names them,
+# <prefix>-NN, belongs to a previous incarnation. Only exactly that shape
+# is swept, so a prefix that starts another host's is no risk to it.
+python turkeybite queue-recover --prefix "${TURKEYBITE_CONSUMER_PREFIX}" || true
+
+cat /etc/supervisor/conf.d/tb-consume.template | envsubst | tee /etc/supervisor/conf.d/tb-consume.conf
 cat /etc/supervisor/conf.d/tb-index-sync.template | envsubst | tee /etc/supervisor/conf.d/tb-index-sync.conf
 cat /etc/supervisor/conf.d/tb-psl.template | envsubst | tee /etc/supervisor/conf.d/tb-psl.conf
 /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

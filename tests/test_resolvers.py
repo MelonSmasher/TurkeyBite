@@ -27,7 +27,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'src'))
 
 import dns.exception
-from rq.timeouts import JobTimeoutException
 
 from libtb.audit import audit, format_report
 from libtb.evidence import categorise, resolve
@@ -198,11 +197,6 @@ class StatusTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.status(R.QUAD9, quad9=RuntimeError('a bug'))
 
-    def test_rq_stopping_a_job_is_not_swallowed(self):
-        # JobTimeoutException is an Exception, so a catch-all would file it as
-        # a resolver error and let the job run past its limit
-        with self.assertRaises(JobTimeoutException):
-            self.status(R.QUAD9, quad9=JobTimeoutException('too long'))
 
 
 class CacheTest(unittest.TestCase):
@@ -654,12 +648,11 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual(bite['resolvers'], {'quad9': 'timeout', 'cloudflare-security': 'error'})
         self.assertEqual(bite['contexts'], [])
 
-    def test_rq_stopping_the_job_is_not_answered_from_valkey(self):
-        # The worker's guard for a broken index catches Exception; the vote has
-        # to run outside it, or a job timeout would become a Valkey fallback
-        with self.assertRaises(JobTimeoutException):
+    def test_a_resolver_fault_is_not_answered_from_valkey(self):
+        # The vote must run outside the broken-index fallback guard.
+        with self.assertRaises(RuntimeError):
             self.bite('bad.example.com', evidence=self.ON,
-                      fake=Fake(quad9=JobTimeoutException('too long')))
+                      fake=Fake(quad9=RuntimeError('resolver fault')))
 
     def test_no_candidate_no_question(self):
         bite, fake = self.bite('www.unlisted.example', evidence=self.ON)

@@ -59,9 +59,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - role: core
-            context: .
-            dockerfile: docker/core/Dockerfile
           - role: worker
             context: .
             dockerfile: docker/worker/Dockerfile
@@ -98,9 +95,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - role: core
-            context: .
-            dockerfile: docker/core/Dockerfile
           - role: worker
             context: .
             dockerfile: docker/worker/Dockerfile

@@ -107,9 +107,9 @@ class ConfigurationError(ValueError):
 
 
 # Where a configuration error found while shipping is recorded as reported.
-# A file rather than a set in memory, since under the forking rq.Worker every
-# event is a new process and a set would be empty in each. The start scripts
-# clear it, so a container that starts with the fault says so again.
+# A file rather than a set in memory shares the record across consumer
+# processes and their supervisor restarts. The start script clears it so a
+# container that starts with the fault says so again.
 REPORTED_DIR = os.path.join(tempfile.gettempdir(), 'turkeybite-config-errors')
 
 
@@ -199,8 +199,7 @@ def check_hosts(elastic, environ=None, log=_warn):
     if not isinstance(hosts, list):
         raise ValueError(f'processor.elastic.hosts must be a list, not {hosts!r}')
     if not hosts:
-        # Nowhere to ship, so every event would fail: dropped on the rq path,
-        # requeued without end on the consume path while the queue grows
+        # Nowhere to ship: every batch would be requeued while the queue grows.
         raise ValueError('processor.elastic.enable is true but processor.elastic.hosts '
                          'names no host; add one, or set enable to false')
     for i, host in enumerate(hosts):

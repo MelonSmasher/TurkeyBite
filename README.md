@@ -23,11 +23,12 @@ TurkeyBite relies on the following technologies
 *   OpenSearch
 *   Domain and host lists from many sources
 
-In practice the analysis pipeline looks like this:
+The ingestion path is:
 
-![flow-chart](docs/img/flow.png)
+`Packetbeat / Browserbeat → Valkey list → workers (sieve → enrich → index → acknowledge) → OpenSearch / syslog`
 
-When conceptualizing the diagram above replace redis, elasticsearch, and kibana with Valkey, OpenSearch, and the [TurkeyBite Console](console/README.md), respectively. OpenSearch still stores events; the console replaces only its Dashboards UI.
+The librarian refreshes classification lists and publishes the domain index to workers. The separately deployed Console reads OpenSearch; it does not connect to the ingestion workers or queue.
+
 
 ### What DNS servers does this work with
 
@@ -49,12 +50,14 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 **Read this before deploying a new version onto a running install.** Some changes affect a deployment that is already running, and one of them stops it until you act:
 
-* **The default OpenSearch password is refused.** If your OpenSearch admin password is still `Changeit12345!`, the password TurkeyBite used to ship with, the core and the workers refuse to start and the librarian refuses to set up OpenSearch. Change it first, as [Changing the OpenSearch admin password](#changing-the-opensearch-admin-password) describes.
+* **The default OpenSearch password is refused.** If your OpenSearch admin password is still `Changeit12345!`, the password TurkeyBite used to ship with, the workers refuse to start and the librarian refuses to set up OpenSearch. Change it first, as [Changing the OpenSearch admin password](#changing-the-opensearch-admin-password) describes.
 * **The librarian needs `OPENSEARCH_PASSWORD`.** It used to fall back to the default password when the variable was missing, which a `.env` written from `example.env` rather than by `setup.sh` relied on. Set `OPENSEARCH_PASSWORD` in `.env` to the admin password.
 * **TurkeyBite indices can now be deleted after a retention period, once you set one.** With `TURKEYBITE_RETENTION_DAYS` set and passed to the librarian, the librarian creates an OpenSearch retention policy at start, and every daily index created from then on is deleted that many days after it is created. Unset, which is what an existing `docker-compose.yml` gives the librarian, nothing is created and the librarian logs that retention is not configured. Indices from before the upgrade are kept until you decide otherwise, and a shorter period is never applied without your confirmation; see [Data retention](#data-retention).
-* **URLs are trimmed by default.** Events now drop the query string, the fragment and any `user:password@` from every URL they store, in `bite.url` and in the raw packet, and the per-event log lines and the jobs the core queues do the same. Set `processor.privacy.urls: full` in `config.yaml` to keep them whole as before. Indices already written are unchanged; see [URLs and the raw packet](#urls-and-the-raw-packet).
-* **The core, and workers on the `consume` pipeline, check `config.yaml` before they start.** They run `python turkeybite check` and exit, with the reason in `docker compose logs`, if anything is wrong: a CA file missing from that container, the default password, or a setting the workers would refuse. Under the `rq` pipeline a worker runs each job with the settings the core packed into it, so the core's check is the one that counts there, and the worker does not check its own copy.
+* **URLs are trimmed by default.** Events drop the query string, fragment and any `user:password@` from every stored URL, including the raw packet and per-event log lines. Set `processor.privacy.urls: full` in `config.yaml` to keep them whole as before. Historical indices are unchanged; see [URLs and the raw packet](#urls-and-the-raw-packet).
+* **Workers check `config.yaml` before starting.** They run `python turkeybite check` and exit with the reason in `docker compose logs` if a CA file is missing, the password is the shipped default, or a worker setting is invalid.
 * **Containers log a warning for OpenSearch hosts used without verifying their certificate.** Nothing else changes; see [Verifying OpenSearch's certificate](#verifying-opensearchs-certificate) to turn verification on.
+* **The core and pub/sub/RQ path are retired.** Workers read the Valkey list directly. Before cutting over a legacy installation, stop producers, let the old RQ jobs drain, then stop the old core and workers. Configure every producer (including Browserbeat) to append JSON events to the list; Packetbeat uses `datatype: list`, `key: turkeybite`, and database 0. Remove `turkeybite-core` from Compose and remove `TURKEYBITE_PIPELINE`, `TURKEYBITE_WORKER_CLASS` and `TURKEYBITE_CORE_IMAGE` from `.env`. Preserve a distinct, stable `TURKEYBITE_CONSUMER_PREFIX` per worker host. Start consumer workers before resuming producers. Old RQ jobs are not list events and are not migrated automatically.
+* **Index-mode workers require a v3 domain index.** Preserve the old index and list metadata for rollback. Reconcile `host_files.json` with the release's publisher/trust/matching metadata without discarding local corrections. Stop workers on all hosts before rebuilding and publishing with `python turkeybite index` on the librarian node; run `python turkeybite index-sync` on remote workers before starting them. Verify v3 format and matching generations/checksums, not just exit status: build/sync helpers can report failure without a nonzero exit. Keep Valkey running; list queues survive its restart only with persistence configured.
 
 `docker-compose.yml` is generated when you run `setup.sh`, so an existing one does not pass the new variables to the containers. Add each one you set to the `environment` list of the services that read it, as the files under `src/support/compose-fragments` do, or run `setup.sh` again. Rebuild the images after pulling, since the code is copied into them: `docker compose up -d --build --remove-orphans` (the last flag removes the old Dashboards container after the service is removed from the compose file). To deploy published images instead, see [Published images](#published-images).
 
@@ -142,7 +145,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
    You can review and modify these secrets if needed.
 
-   **Important for Distributed Setups:** In distributed deployments where Valkey runs on its own dedicated node, the `valkey_password.txt` file must be copied from the Valkey server to all Core and Worker nodes. The setup script will prompt you to enter this password when configuring nodes that don't run Valkey directly.
+   **Important for Distributed Setups:** When Valkey runs on a dedicated node, copy `valkey_password.txt` from that server to every worker and librarian node. Setup prompts for this password on nodes without local Valkey.
 
 5. **Configure Bind9 (if using as DNS server)**
 
@@ -174,21 +177,20 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ### Published images
 
-Every push to `master` runs the Python and console CI suites before publishing four separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-core`, `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, and `ghcr.io/melonsmasher/turkeybite-console`. Master commits get `sha-<full-master-commit-sha>` tags. Pushing a Git tag of the form `vMAJOR.MINOR.PATCH` for a commit on `master` reruns both suites and publishes that same version tag to all four images. The tagged commit must itself contain `.github/workflows/images.yml`; older commits cannot trigger this tag workflow. Invalid version tags and tags outside master history fail validation without publishing. No moving `latest`, `vMAJOR`, or `vMAJOR.MINOR` tags are published: pin all roles to one exact release version (or one successful master commit). CI builds for the default runner architecture (linux/amd64); other architectures require a different build. GHCR tags can be overwritten by users with package-write access; for byte-for-byte reproducibility, record each published image digest and deploy `ghcr.io/melonsmasher/turkeybite-<role>@sha256:<digest>` instead of relying on tag immutability.
+Every push to `master` runs the Python and console CI suites before publishing three separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, and `ghcr.io/melonsmasher/turkeybite-console`. Master commits get `sha-<full-master-commit-sha>` tags. Valid semantic release and release-candidate tags on master publish that same version on all three images. The tagged commit must contain `.github/workflows/images.yml`; invalid tags and tags outside master history fail validation without publishing. No moving `latest`, major or minor tags are published. Pin image digests for byte-exact deployments because registry tags are mutable.
 
 For a generated application-node compose file, add the appropriate image variables to `.env` (only the roles present on that node):
 
 ```dotenv
-TURKEYBITE_CORE_IMAGE=ghcr.io/melonsmasher/turkeybite-core:sha-<full-master-commit-sha>
 TURKEYBITE_WORKER_IMAGE=ghcr.io/melonsmasher/turkeybite-worker:sha-<full-master-commit-sha>
 TURKEYBITE_LIBRARIAN_IMAGE=ghcr.io/melonsmasher/turkeybite-librarian:sha-<full-master-commit-sha>
 ```
 
-Then use `docker compose pull turkeybite-core turkeybite-worker turkeybite-librarian` (omit roles absent from that node), followed by `docker compose up -d --no-build`. `--no-build` matters: the generated file retains local `build` entries for source deployments. Without these variables, `docker compose up -d --build` continues to build locally. GHCR packages may require `docker login ghcr.io` with a package-read token on hosts that cannot pull them anonymously. The [console](console/README.md#deploying) has its own compose file and image variable; it runs on its own server with Postgres and reads the existing OpenSearch cluster. OpenSearch, Valkey, Bind9, and Postgres remain upstream images, not TurkeyBite-native images.
+Use `docker compose pull turkeybite-worker turkeybite-librarian` (omit absent roles), followed by service-scoped `docker compose up -d --no-deps --no-build turkeybite-worker turkeybite-librarian` when upgrading an existing cluster. This avoids recreating upstream infrastructure. Generated files retain local `build` entries; without image overrides, `docker compose up -d --build` builds locally. GHCR may require a package-read login. The [console](console/README.md#deploying) runs separately with Postgres and reads the existing OpenSearch cluster. OpenSearch, Valkey, Bind9 and Postgres remain upstream images.
 
 To release, first merge the changes to `master` and choose the next version from the existing release tags. Tag a master commit containing the image workflow; tagging an older commit without it cannot start CI. Increment MAJOR for an incompatible change, MINOR for a backward-compatible feature, or PATCH for a backward-compatible fix. Never move or reuse a released tag. For example, after deciding that `v1.2.3` is the correct next version:
 
-Release candidates use `vMAJOR.MINOR.PATCH-rcN` (starting at `rc1`) and publish the same tag on all four images after the release CI passes. Create them as GitHub prereleases; do not present them as stable releases.
+Release candidates use `vMAJOR.MINOR.PATCH-rcN` (starting at `rc1`) and publish the same tag on all three images after release CI passes. Create them as GitHub prereleases, not stable releases.
 
 ```bash
 git switch master
@@ -197,7 +199,7 @@ git tag -a v1.2.3 -m 'TurkeyBite v1.2.3'
 git push origin v1.2.3
 ```
 
-Wait for the tag's **Publish images** workflow to succeed before pulling `ghcr.io/melonsmasher/turkeybite-{core,worker,librarian,console}:v1.2.3` (replace the braces with one role per image). To deploy a release instead of a master commit, set each `TURKEYBITE_*_IMAGE` value above to its `:v1.2.3` tag, including `TURKEYBITE_CONSOLE_IMAGE` on the console host. Tag pushes do not create commits; they identify an existing commit. This workflow never creates or pushes Git tags on its own.
+Wait for the tag's **Publish images** workflow to succeed before pulling `ghcr.io/melonsmasher/turkeybite-{worker,librarian,console}:v1.2.3` (replace the braces with one role per image). Set each image override to the same release, including `TURKEYBITE_CONSOLE_IMAGE` on the console host. Tag pushes identify an existing commit; this workflow never creates or pushes Git tags.
 
 On existing installations, regenerate the compose file with `setup.sh` (or remove the `opensearch-dashboards` service manually from your generated file) and run `docker compose up -d --remove-orphans`; Compose otherwise leaves the old Dashboards container running. This does not remove its image or any OpenSearch indices.
 
@@ -226,18 +228,13 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      datatype: "list"
    ```
 
-   `datatype` has to match the ingestion path you run, and they are not
-   interchangeable. `key` must match `redis.channel` in `config.yaml`, which is
-   `turkeybite` by default, whichever path you choose.
+   Workers accept only list events. `key` must match `redis.channel` in `config.yaml`, which is `turkeybite` by default.
 
    Note the spelling: libbeat reads `datatype`, with no underscore. A key
    spelled `data_type` is not recognised, so the output silently falls back to
    its default of `list` no matter what value you give it.
 
-   **`list`, with `TURKEYBITE_PIPELINE=consume`.** Packetbeat RPUSHes onto a
-   Valkey list. Workers claim a batch, sieve and enrich it, index it, and only
-   then acknowledge. The list persists, so a restart resumes instead of losing
-   what was in flight, `LLEN` gives you a real backlog metric, and a burst makes
+   Packetbeat RPUSHes onto a Valkey list. Workers claim a batch, sieve and enrich it, index it, and only then acknowledge. Enable Valkey persistence to retain the list across Valkey restarts; `LLEN` gives a backlog metric, and a burst makes
    the list grow visibly rather than disappearing. A batch OpenSearch does not
    take goes back on the list instead of being acknowledged, whether
    `processor.elastic.bulk` is on or off: when every host refuses it, and when
@@ -272,15 +269,6 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    `turkeybite queue-recover --consumer worker1`, or with `--all` when no
    consumer is running anywhere.
 
-   **`channel`, with `TURKEYBITE_PIPELINE=rq`.** Packetbeat PUBLISHes and the
-   core subscribes. This is the original path and it is lossy by construction:
-   pub/sub has no persistence and no acknowledgement, so every restart drops
-   whatever was in flight, and when the single subscriber falls behind a burst
-   Valkey disconnects it at the 32 MB output-buffer limit with no error and no
-   counter.
-
-   Get this wrong in either direction and you get a healthy-looking Packetbeat,
-   a Valkey key nothing reads, and no events analysed.
 
 2. **Browserbeat**
 
@@ -293,10 +281,10 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 
 ### Troubleshooting
 
-* Check the configuration a worker reads: `docker compose run --rm --no-deps --entrypoint python turkeybite-worker turkeybite check`. The core, and workers on the `consume` pipeline, run this at start and refuse to start if it fails.
+* Check worker configuration: `docker compose run --rm --no-deps --entrypoint python turkeybite-worker turkeybite check`. Every worker runs this before startup and refuses invalid settings.
 * Check container logs: `docker compose logs -f [service_name]`
 * Restart services: `docker compose restart [service_name]`
-* Verify connectivity between containers: `docker compose exec turkeybite-core ping valkey`
+* Verify connectivity between containers: `docker compose exec turkeybite-worker ping valkey`
 
 ## Security and privacy
 
@@ -379,16 +367,13 @@ A string counts as a URL when it starts, after any leading whitespace, with `htt
 
 OpenSearch and syslog are sent the same trimmed event, since the settings are applied where an event leaves the worker, and the per-event `Queued` and `Dropped` log lines trim URLs the same way. Unknown keys or values stop the worker at start.
 
-Before an event is indexed it waits in Valkey, and how long depends on the pipeline:
-
-* **`rq`.** The core trims each event's URLs as these settings say before it queues the event as a job, so Valkey never holds the full URL; the worker needs only the host. A job that fails is kept with its event for 24 hours, where RQ would keep it for a year, so it can still be looked at and requeued the next day.
-* **`consume`.** The beats push their events into Valkey as they are, so the full event waits there from when it arrives until a worker has indexed it and acknowledged it, normally under a second. It waits longer when OpenSearch is unreachable, since a batch that cannot be indexed is put back, and Valkey's periodic snapshot to disk can include whatever is waiting at that moment.
+Before indexing, beats push the full event into Valkey. It remains there until a worker indexes and acknowledges it, and longer during an OpenSearch outage because undelivered batches are requeued. Configured Valkey snapshots or AOF can therefore contain full waiting events; worker privacy settings do not redact the producer's queue payload.
 
 These settings apply from the next event. **Indices already written keep the full URLs and packets they hold** until they are deleted, by the retention policy or by hand.
 
 ### Changing the OpenSearch admin password
 
-`Changeit12345!` was the OpenSearch admin password in `setup.py`, `example.env` and `config.example.yaml`, so anyone who has read this repository knows it, and the admin account can read and delete every event. The core and the workers refuse to start when a host in `processor.elastic.hosts` uses it, and the librarian refuses to set up OpenSearch when `OPENSEARCH_PASSWORD` is it. `setup.sh` no longer offers it: it generates a password when you press Enter, and refuses the old one if you type it. When it sets a new password it writes it to `.env` and `config.yaml` together, and abandons the change if you decline to update either; it does not change the password inside a running OpenSearch, so it reminds you to do that as below.
+`Changeit12345!` was the OpenSearch admin password shipped in setup and example configuration; anyone can look it up, and admin can read or delete all events. Workers refuse it in `processor.elastic.hosts`, and the librarian refuses it in `OPENSEARCH_PASSWORD`. Setup generates a new password or accepts one meeting its rules, writes `.env` and `config.yaml` together only when both may be updated, and reminds you that it cannot change the password inside an existing OpenSearch cluster.
 
 OpenSearch reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` only when its data volume is new, so on a cluster that already holds data, changing `.env` is not enough: change the password in OpenSearch itself, then everywhere TurkeyBite reads it. These steps were checked against `opensearchproject/opensearch:3` (3.9.0) with its demo security configuration:
 
@@ -411,7 +396,7 @@ OpenSearch reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` only when its data volume i
 
 In a distributed deployment, do step 2 on the search node and steps 3 to 5 on every node.
 
-`TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes` lets the core, the workers and the librarian use the default anyway, with a warning. It is for a disposable test install that holds no real traffic, never for a deployment that does. Only the exact value `yes` counts.
+`TURKEYBITE_ALLOW_DEFAULT_PASSWORD=yes` lets workers and the librarian use the default with a warning, only for disposable installations without real traffic. Only the exact value `yes` counts.
 
 ### Verifying OpenSearch's certificate
 
@@ -446,13 +431,13 @@ To turn verification on with the bundled cluster (checked against `opensearchpro
              - node-0.example.com
    ```
 
-3. Mount the CA into the worker, the core and the librarian, under each service's `volumes`:
+3. Mount the CA into the worker and librarian, under each service's `volumes`:
 
    ```yaml
          - ./vols/secrets/opensearch-root-ca.pem:/turkey-bite/opensearch-root-ca.pem:ro
    ```
 
-   The core never talks to OpenSearch, but it checks the settings that travel with every job it queues, so it needs the file too. The core runs `python turkeybite check` before it starts, as does a worker on the `consume` pipeline, and stops with `CONFIGURATION ERROR` in its log if the file is not where `ca_certs` says. If a host still cannot be used when an event is shipped, because the core's `config.yaml` names a CA the worker's container lacks for instance, the worker logs that once rather than once per event, and no event reaches that host until it is fixed.
+   Workers run `python turkeybite check` before starting and stop with `CONFIGURATION ERROR` if the file is not where `ca_certs` says. A configuration fault discovered while shipping is logged once per container rather than once per event; no event reaches that host until it is fixed.
 
 4. In `config.yaml`:
 
@@ -522,7 +507,7 @@ Threat lists rarely agree with each other, so most real threats stop at `bite.co
 * **Adult content.** `resolvers.adult: true` also asks Cloudflare's family resolver (`1.1.1.3`) about `porn` candidates, counting its EDE 17 block as a `porn` vote. It is off by default: in testing about 1 in 20 of the porn votes it produced were wrong, because Cloudflare's family filter also covers torrent indexes, pirate streaming and gore.
 * **What it sends, and to whom.** Domain names, never client addresses, to Quad9 (a Swiss foundation) and Cloudflare (a US company), under their own privacy policies, including one extra question to the unfiltered resolver when there is a block to confirm. The query comes from the worker, so they see the worker's address.
 * **What it needs.** Outbound UDP and TCP port 53 from every worker to `9.9.9.9`, `9.9.9.10`, `1.1.1.1` and `1.1.1.2`, plus `1.1.1.3` with `adult`, or the addresses you configure.
-* **What a blocked or slow path costs.** A lookup waits at most `timeout_sec`, 0.5 s by default, in all, however many resolvers it asks. A resolver that fails three times in a row is not asked for `backoff_sec`, 60 s by default, doubling while it stays down up to 15 minutes, so a firewalled path costs a few timeouts and then nothing. Both last as long as the worker process: with the `consume` pipeline that is the life of the worker, but under the forking `rq.Worker` a process handles one event, so nothing is remembered and every qualifying lookup can wait the full `timeout_sec`.
+* **What a blocked or slow path costs.** A lookup waits at most `timeout_sec`, 0.5 s by default, in all, however many resolvers it asks. A resolver that fails three times in a row is not asked for `backoff_sec`, 60 s by default, doubling while it stays down up to 15 minutes. Cached outcomes and backoff last for the worker process's lifetime.
 * **How much it sends.** Little. Weighting the Tranco top 100,000 by popularity, about 0.9% of lookups are of a name that qualifies, which is about 12 resolver queries per 1,000 events before caching. Each worker process remembers settled answers for an hour, which in a simulation of that traffic saves about 40% of queries at 100,000 events an hour and about 75% at a million. In testing, `1.1.1.3` stopped answering this tester after about 3,000 queries in 20 minutes while `1.0.0.3` kept answering, so a busy deployment may want the secondary addresses (`1.0.0.2`, `1.0.0.3`, `149.112.112.112`).
 * **What events carry.** A vote appears in `bite.claims` as `malicious:quad9`, `malicious:cloudflare-security` or `porn:cloudflare-family`, and `bite.resolvers` says what each resolver asked answered: `blocked`, `clear`, `nxdomain`, `censored`, `security` (1.1.1.3 blocked it as a threat, not as adult content), a failure such as `timeout`, `servfail` or `error`, or `unavailable` (backed off) and `deadline` (the lookup's time was spent), which were not asked at all. A vote never appears in `bite.matched_on`, which names index entries only. Settled answers are remembered for an hour per worker process, failures never.
 

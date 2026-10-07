@@ -4,7 +4,6 @@ import time
 
 import click
 from libtb.util import read_config, pull_host_lists, process_ignorelist, build_domain_index, sync_domain_index, pull_psl
-from libtb.inlet import Inlet
 from libtb.sieve import Filters
 from libtb.processor import Processor
 
@@ -14,20 +13,6 @@ def cli():
     pass
 
 
-@cli.command('run')
-def run():
-    # Read in the configuration
-    config = read_config()
-    # Instantiate a filter
-    filters = Filters(config['sieve'])
-    # Instantiate a processor
-    processor = Processor(config['processor'], config['redis'])
-    # Instantiate a inlet
-    inlet = Inlet(config['redis'], filters, processor)
-    # Open the flood gates
-    inlet.open()
-
-
 @cli.command('check')
 def check():
     """Check config.yaml as a worker reads it, before anything starts.
@@ -35,11 +20,8 @@ def check():
     Loads it and validates everything a worker needs: the sieve, the evidence,
     resolver and privacy settings, and each OpenSearch host, including that a
     ca_certs file is there and that the password is not the shipped default.
-    The core container runs this before it starts anything, as does a worker
-    container on the consume pipeline, and each exits if it fails rather than
-    showing a mistake only as events failing to ship. Under the rq pipeline a
-    worker runs the processor each job carries, which the core built from its
-    own config.yaml, so the core's check is the one that covers it.
+    Every worker container runs this before it starts anything and exits if
+    it fails, rather than showing a mistake only as events failing to ship.
     """
     try:
         config = read_config()

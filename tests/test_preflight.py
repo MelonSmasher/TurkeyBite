@@ -1,11 +1,7 @@
-"""Tests for checking config.yaml before a worker or the core starts.
+"""Tests for checking config.yaml before a worker starts.
 
-Under the default rq pipeline a worker process never builds a processor of
-its own, so it never checks the settings: the core does, in its container, and
-a CA file present there but missing from a worker's container showed only as
-every event failing to ship. What must not happen is a container starting
-with settings it cannot use, or such a failure being reported once per event
-and burying the log, or not being reported at all.
+A container must refuse settings it cannot use. A ship-time configuration
+fault must be reported without burying the log in one copy per event.
 
 The checks are the real ones. The start scripts run against fake commands,
 and nothing touches the network.
@@ -106,6 +102,13 @@ class CheckCommandTest(Workdir):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertIn('config.yaml checked', result.stdout)
 
+    def test_the_legacy_run_command_is_not_available(self):
+        from click.testing import CliRunner
+        result = CliRunner().invoke(self.cli.cli, ['run'])
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("No such command 'run'", result.output)
+
+
     def test_a_ca_file_missing_from_this_container_is_refused(self):
         os.remove(self.ca)
         self.assert_refused('ca_certs', 'not a file')
@@ -136,9 +139,9 @@ class CheckCommandTest(Workdir):
 
 
 class StartScriptTest(unittest.TestCase):
-    """The core, and a consume worker, check before they start anything."""
+    """Every worker checks before recovery and consumer startup."""
 
-    def run_script(self, script, check_exit, pipeline=None):
+    def run_script(self, script, check_exit):
         root = tempfile.mkdtemp(prefix='tb-start-')
         self.addCleanup(shutil.rmtree, root, True)
         bin_dir = os.path.join(root, 'bin')
@@ -151,9 +154,8 @@ class StartScriptTest(unittest.TestCase):
             with open(path, 'w') as fh:
                 fh.write('#!/bin/sh\n' + body)
             os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
-        env = {'PATH': bin_dir + os.pathsep + '/usr/bin' + os.pathsep + '/bin', 'TMPDIR': root}
-        if pipeline:
-            env['TURKEYBITE_PIPELINE'] = pipeline
+        env = {'PATH': bin_dir + os.pathsep + '/usr/bin' + os.pathsep + '/bin',
+               'TMPDIR': root, 'TURKEYBITE_CONSUMER_PREFIX': 'worker1'}
         # The repository's own script, with stand-ins on PATH: nothing here
         # comes from outside the test
         result = subprocess.run([SH, os.path.join(ROOT, script)], cwd=root, env=env,  # nosec B603
@@ -161,29 +163,18 @@ class StartScriptTest(unittest.TestCase):
         calls = open(log).read().splitlines() if os.path.exists(log) else []
         return result, calls
 
-    def test_a_failed_check_stops_a_consume_worker_before_anything_starts(self):
-        result, calls = self.run_script('docker/worker/run-worker.sh', 1, 'consume')
+    def test_a_failed_check_stops_a_worker_before_anything_starts(self):
+        result, calls = self.run_script('docker/worker/run-worker.sh', 1)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(calls, ['python turkeybite check'])
         self.assertIn('Refusing to start the worker', result.stderr)
 
-    def test_an_rq_worker_leaves_the_check_to_the_core(self):
-        # Its jobs carry the core's settings, so its own copy decides nothing
-        _, calls = self.run_script('docker/worker/run-worker.sh', 1, 'rq')
-        self.assertNotIn('python turkeybite check', calls)
-
-    def test_a_failed_check_stops_the_core(self):
-        result, calls = self.run_script('docker/core/run-core.sh', 1)
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(calls, ['python turkeybite check'])
-
     def test_a_passing_check_lets_the_start_go_on(self):
-        # The control: the same scripts carry on past a passing check
-        _, calls = self.run_script('docker/worker/run-worker.sh', 0, 'consume')
-        self.assertEqual(calls[0], 'python turkeybite check')
-        self.assertIn('envsubst', calls)
-        _, calls = self.run_script('docker/core/run-core.sh', 0)
-        self.assertEqual(calls, ['python turkeybite check', 'python turkeybite run'])
+        # The control: validation precedes scoped recovery and supervisor setup.
+        _, calls = self.run_script('docker/worker/run-worker.sh', 0)
+        self.assertEqual(calls[:2], ['python turkeybite check',
+                                     'python turkeybite queue-recover --prefix worker1'])
+        self.assertEqual(calls[2:], ['envsubst', 'envsubst', 'envsubst'])
 
 
 class ShipTimeTest(Workdir):
@@ -208,11 +199,7 @@ class ShipTimeTest(Workdir):
                 '@timestamp': '2026-10-04T12:00:00Z'}
 
     def ship(self, processor, events):
-        """Ships `events`, as RQ would run that many jobs.
-
-        Returns stderr. The jobs that failed, rather than completed, are
-        counted in self.failed.
-        """
+        """Ships events and captures stderr, counting configuration failures."""
         err = io.StringIO()
         self.failed = 0
         with redirect_stderr(err):
@@ -229,14 +216,11 @@ class ShipTimeTest(Workdir):
         self.assertIn('ca_certs', logged)
         self.assertIn('turkeybite check', logged)
 
-    def test_every_job_fails_so_rq_keeps_it_rather_than_dropping_its_event(self):
-        # Under the rq pipeline a worker missing the CA file the core has would
-        # otherwise complete each job with its event lost
+    def test_a_configuration_fault_fails_each_event_rather_than_dropping_it(self):
         self.ship(self.processor(), 4)
         self.assertEqual(self.failed, 4)
 
-    def test_once_per_container_even_when_every_event_is_a_new_process(self):
-        # Under the forking rq.Worker each event is a process of its own
+    def test_once_per_container_even_when_worker_processes_restart(self):
         processor = self.processor()
         logged = ''
         for _ in range(3):
@@ -260,13 +244,13 @@ class ShipTimeTest(Workdir):
         self.config['processor']['elastic']['bulk'] = {'enable': True, 'size': 1,
                                                         'interval_sec': 0}
         processor = self.processor()
-        # A document from a job that completed before the fault, waiting to be sent
+        # An earlier event waiting in the bulk buffer when the fault appeared.
         earlier = {'_index': 'bites', '_source': {'resource': 'earlier.example.com'}}
         P._bulk_buffers[os.getpid()] = {'docs': [earlier], 'since': 0}
         with mock.patch.object(P, '_install_flush_hooks'):
             logged = self.ship(processor, 3)
-        # Each job failed, to be requeued with its document; the earlier one
-        # waits for the next flush, and nothing else piles up behind it
+        # Each event fails; the earlier one remains for the next flush and
+        # failed events do not accumulate behind it.
         self.assertEqual(self.failed, 3)
         self.assertEqual(P._bulk_buffers[os.getpid()]['docs'], [earlier])
         P._bulk_buffers.clear()

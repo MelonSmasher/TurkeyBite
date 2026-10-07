@@ -18,6 +18,7 @@ import getpass
 import shutil
 import secrets
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -131,6 +132,8 @@ class TurkeyBiteSetup:
         # Chosen or generated in setup_opensearch_password; there is no default
         self.opensearch_admin_password = None
         self.retention_days = DEFAULT_RETENTION_DAYS
+        # Persisted in .env; distinct deployments must not share recovery lists.
+        self.consumer_prefix = f"tb-worker-{uuid.uuid4().hex}"
         # Whether an existing config.yaml and .env may be updated, asked once
         # before either is written, see decide_updates
         self.update_config = True
@@ -394,8 +397,7 @@ class TurkeyBiteSetup:
         if self.use_syslog:
             settings += [("SYSLOG_HOST", self.syslog_host, True),
                          ("SYSLOG_PORT", str(self.syslog_port), True)]
-        # Core/librarian/worker need Valkey connection details, but search
-        # nodes do not
+        # Librarian/worker need Valkey connection details, but search nodes do not.
         if app:
             settings += [("VALKEY_HOST", self.valkey_host, True)]
         if "librarian" in self.components:
@@ -404,7 +406,8 @@ class TurkeyBiteSetup:
             if self.use_opensearch:
                 settings += [("TURKEYBITE_RETENTION_DAYS", str(self.retention_days), True)]
         if "worker" in self.components:
-            settings += [("TURKEYBITE_WORKER_PROCS", "2", False)]
+            settings += [("TURKEYBITE_WORKER_PROCS", "2", False),
+                         ("TURKEYBITE_CONSUMER_PREFIX", self.consumer_prefix, False)]
         if "valkey" in self.components:
             settings += [("VALKEY_PORT", "6379", False),
                          ("VALKEY_LOGLEVEL", "warning", False),
@@ -441,6 +444,10 @@ class TurkeyBiteSetup:
         else:
             lines = ["# TurkeyBite Environment Variables\n"]
 
+        # Retired core and ingestion settings have no meaning after cutover.
+        lines = [line for line in lines
+                 if line.split('=', 1)[0].strip() not in
+                 {'TURKEYBITE_PIPELINE', 'TURKEYBITE_WORKER_CLASS', 'TURKEYBITE_CORE_IMAGE'}]
         values = {key: (value, managed) for key, value, managed in settings}
         seen = set()
         for i, line in enumerate(lines):
@@ -635,7 +642,7 @@ class TurkeyBiteSetup:
                             
                             # For distributed deployment, update connection settings
                             if self.is_distributed:
-                                if component in ['core', 'worker', 'librarian']:
+                                if component in ['worker', 'librarian']:
                                     if 'environment' in new_compose['services'][service_name]:
                                         # Update environment vars for Redis connection
                                         env = new_compose['services'][service_name]['environment']
@@ -650,24 +657,15 @@ class TurkeyBiteSetup:
                 self.print_info(f"No fragment found for {component}. Using defaults.")
                 
                 # Add basic service definitions for components without fragments
-                if component == 'core':
-                    new_compose['services']['core'] = {
-                        'image': 'turkeybite/core:latest',
-                        'restart': 'unless-stopped',
-                        'networks': ['tb-net'],
-                        'environment': [
-                            f"REDIS_HOST={self.valkey_host}",
-                            "REDIS_PORT=6379"
-                        ]
-                    }
-                elif component == 'worker':
+                if component == 'worker':
                     new_compose['services']['worker'] = {
                         'image': 'turkeybite/worker:latest',
                         'restart': 'unless-stopped',
                         'networks': ['tb-net'],
                         'environment': [
                             f"REDIS_HOST={self.valkey_host}",
-                            "REDIS_PORT=6379"
+                            "REDIS_PORT=6379",
+                            "TURKEYBITE_CONSUMER_PREFIX=${TURKEYBITE_CONSUMER_PREFIX}"
                         ]
                     }
                 elif component == 'librarian':
@@ -767,7 +765,7 @@ class TurkeyBiteSetup:
 
     def runs_app(self) -> bool:
         """True when this node runs a TurkeyBite container, so has a config.yaml"""
-        return any(comp in self.components for comp in ['core', 'librarian', 'worker'])
+        return any(comp in self.components for comp in ['librarian', 'worker'])
 
     def existing_password(self) -> Optional[str]:
         """The OpenSearch admin password a previous run left, from .env or config.yaml"""
@@ -986,7 +984,7 @@ class TurkeyBiteSetup:
     def setup_development(self):
         """Setup for development mode (all components)"""
         self.deployment_type = "Development"
-        self.components = ["core", "librarian", "worker", "valkey", "opensearch"]
+        self.components = ["librarian", "worker", "valkey", "opensearch"]
         self.node_type = "dev"
         self.is_distributed = False
         self.use_opensearch = True
@@ -1001,13 +999,13 @@ class TurkeyBiteSetup:
         self.is_distributed = True
         
         node_type = self.prompt("Node Selection", [
-            "Application Node (Core + Librarian + Worker + Valkey)",
+            "Application Node (Librarian + Worker + Valkey)",
             "Search Node (OpenSearch)"
         ])
         
         if "Application Node" in node_type:
             self.node_type = "app"
-            self.components = ["core", "librarian", "worker", "valkey"]
+            self.components = ["librarian", "worker", "valkey"]
             
             # Configure DNS lookups
             self.prompt_for_client_lookups()
@@ -1035,18 +1033,18 @@ class TurkeyBiteSetup:
         self.use_syslog = False
         
         node_type = self.prompt("Node Type", [
-            "Core Node (Core + Librarian)",
+            "Librarian Node (Librarian)",
             "Worker Node (Worker)",
             "Data Node (Valkey)",
             "Search Node (OpenSearch)"
         ])
         
-        if "Core Node" in node_type:
-            self.node_type = "core"
-            self.components = ["core", "librarian"]
+        if "Librarian Node" in node_type:
+            self.node_type = "librarian"
+            self.components = ["librarian"]
             # Configure output options
             self.configure_output_options()
-            # DNS lookups don't apply directly to core node
+            # DNS lookups don't apply directly to the librarian.
             self.enable_dns_lookups = False
             
         elif "Worker Node" in node_type:
@@ -1075,7 +1073,7 @@ class TurkeyBiteSetup:
             # Valkey is external, prompt for connection info
             self.valkey_host = self.prompt("Enter Valkey host (IP or hostname)")
             
-        if self.node_type in ["core", "worker"] and "opensearch" not in self.components and self.use_opensearch:
+        if self.node_type in ["librarian", "worker"] and "opensearch" not in self.components and self.use_opensearch:
             self.opensearch_host = self.prompt("Enter OpenSearch host (IP or hostname)")
 
     def run(self):

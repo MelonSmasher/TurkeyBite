@@ -16,7 +16,7 @@ def check_image_tag(image: str, username: str, password: str) -> None:
     registry, namespace, name_tag = image.split("/", 2)
     name, tag = name_tag.rsplit(":", 1)
     if (registry, namespace) != ("ghcr.io", "melonsmasher") or name not in (
-        "turkeybite-core", "turkeybite-worker", "turkeybite-librarian", "turkeybite-console"
+        "turkeybite-worker", "turkeybite-librarian", "turkeybite-console"
     ):
         raise ValueError("Unexpected image name")
     if not tag or any(char in tag for char in "/?#"):

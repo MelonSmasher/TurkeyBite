@@ -149,25 +149,16 @@ processor:
     lookup_ips: true
     resolvers:
       - 172.172.0.100
-    # Reverse DNS answers are remembered per client address, which only helps
-    # when the process outlives a job: the consume path or rq.SimpleWorker, not
-    # the forking rq.Worker. Only settled answers are kept, so a resolver
-    # failure is retried on the next event rather than pinned for the TTL.
+    # Long-lived consumers remember settled reverse DNS answers per client.
+    # A resolver failure is retried on the next event, not pinned for the TTL.
     cache:
       ttl_sec: 900
       max_entries: 20000
   elastic:
     enable: true
     index_prefix: tb-index
-    # With TURKEYBITE_PIPELINE=consume, batching is safe and worth turning on:
-    # a batch is acknowledged only once OpenSearch has taken it, and requeued
-    # if not, on or off.
-    #
-    # With the rq pipeline it only helps when a worker handles more than one
-    # job, so it needs TURKEYBITE_WORKER_CLASS=rq.SimpleWorker, and it opens a
-    # loss window: RQ marks a job finished when the processor returns, so
-    # buffered documents are gone if a worker dies uncleanly. Flush hooks cover
-    # a clean stop and a SIGTERM, not a SIGKILL.
+    # Consumers acknowledge batches only after OpenSearch accepts them and
+    # requeue failed batches, whether bulk indexing is enabled or not.
     bulk:
       enable: false
       size: 500
