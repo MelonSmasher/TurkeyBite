@@ -376,10 +376,13 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      because DHCP may give it to another device. A lookup credited to nobody
      is better than one credited to the wrong person.
      - A stop counts even when it names nobody, or gives no address.
-     - A device reported with a new address leaves its old one.
-   - **Before a session was reported with the address.** A session's hold on
-     its address before it was first reported with it is only inferred from
-     its start. Another session reported with the address at that time wins.
+     - A device reported with a new address leaves its old one, unless it
+       is reported with the old one again.
+   - **Reported, or only inferred.** Between its first and last reports with
+     the address, a session's hold on it is reported. Before, from its start,
+     and after, through `grace_sec`, it is only inferred. A session reported
+     with the address at the time wins over one whose hold is only
+     inferred.
    - **Roaming.** A phone that roams to another access point stops one session
      and starts another, often before the new one reports an address. A
      session that starts without one, within two minutes of its device last

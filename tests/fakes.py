@@ -168,20 +168,23 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where, reported):
+                slack, device_sec, where, reported, moved, timed):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
+        stopped = float(stopped) if stopped not in ('', b'') else None
         value = self._merged(keys[0], field, {
-            'u': user, 'm': device, 's': float(start), 'l': float(seen),
-            'e': float(stopped) if stopped not in ('', b'') else None,
+            'u': user, 'm': device, 's': float(start), 'l': float(seen), 'e': stopped,
+            'x': stopped is not None and str(moved) == '1',
             'a': str(signed) == '1', 'b': str(bridged) == '1',
             'r': float(reported) if reported not in ('', b'') else None,
-            'f': None if str(bridged) == '1' else float(seen)}, float(slack))
+            'f': None if str(bridged) == '1' else float(seen)}, float(slack), str(timed) == '1')
         if value is None or value['u'] == '':
             return 0
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
         for name in ('m', 'e', 'f'):
             if value[name] not in (None, ''):
                 stored[name] = value[name]
+        if value['x']:
+            stored['x'] = 1
         if value['a']:
             stored['a'] = 1
         if value['b']:
@@ -190,12 +193,12 @@ class FakeRedis(object):
                 stored['r'] = value['r']
         self.hset(keys[0], field, json.dumps(stored))
         self.expire(keys[0], int(keep_sec))
-        self._trim(keys[0], int(keep))
+        self._trim(keys[0], int(keep), float(seen) - int(keep_sec))
         if len(keys) > 1:
             self._remember_device(keys[1], where, float(seen), int(device_sec), value['b'])
         return 1
 
-    def _merged(self, key, field, value, slack):
+    def _merged(self, key, field, value, slack, timed):
         """A report merged into what the hash holds for its session, or None to ignore it."""
         try:
             old = json.loads(self._hash(key).get(_bytes(field)) or 'null')
@@ -205,12 +208,12 @@ class FakeRedis(object):
             return value
         if value['l'] < old['s'] - slack:
             return None
-        if value['s'] > old['l'] + slack:
+        if timed and value['s'] > old['l'] + slack:
             return value
+        reported_at = value['l']
         value['s'] = old['s']
         value['l'] = max(value['l'], old['l'])
-        if _number(old.get('e')) and (value['e'] is None or old['e'] > value['e']):
-            value['e'] = old['e']
+        self._merge_stop(value, old, reported_at)
         if value['u'] == '':
             if isinstance(old.get('u'), str):
                 value['u'] = old['u']
@@ -227,9 +230,26 @@ class FakeRedis(object):
             value['f'] = old['f']
         return value
 
-    def _trim(self, key, keep):
-        """Keeps a hash's `keep` most recently reported sessions."""
-        if self.hlen(key) <= keep:
+    @staticmethod
+    def _merge_stop(value, old, reported_at):
+        """A real stop stays; one inferred from a move gives way to a later report of the session."""
+        if not _number(old.get('e')):
+            return
+        old_moved = old.get('x') == 1
+        if value['e'] is None:
+            if not (old_moved and reported_at > old['e']):
+                value['e'], value['x'] = old['e'], old_moved
+        elif value['x']:
+            if not old_moved:
+                value['e'], value['x'] = old['e'], False
+            elif old['e'] < value['e']:
+                value['e'] = old['e']
+        elif not old_moved and old['e'] > value['e']:
+            value['e'] = old['e']
+
+    def _trim(self, key, keep, cutoff):
+        """Drops sessions last reported before `cutoff`, then keeps the `keep` most recent."""
+        if self.hlen(key) <= 1:
             return
         rows = []
         for name, raw in self.hgetall(key).items():
@@ -237,9 +257,13 @@ class FakeRedis(object):
                 held = json.loads(raw)
             except ValueError:
                 held = None
-            rows.append((held['l'] if isinstance(held, dict) and _number(held.get('l')) else -1, name))
+            last = held['l'] if isinstance(held, dict) and _number(held.get('l')) else -1
+            if last < cutoff:
+                self.hdel(key, name)
+            else:
+                rows.append((last, name))
         rows.sort(key=lambda row: row[0])
-        for _, name in rows[:len(rows) - keep]:
+        for _, name in rows[:max(0, len(rows) - keep)]:
             self.hdel(key, name)
 
     def _remember_device(self, key, where, seen, seconds, roamed):

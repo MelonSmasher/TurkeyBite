@@ -501,6 +501,22 @@ class SessionsTest(unittest.TestCase):
         record(radius.Session('10.0.0.5', 'ap|3', 'bkim', None, 1500, 1700, None, None))
         self.assertEqual(self.holder(1690, '10.0.0.5'), 'bkim')
 
+    def test_a_session_past_its_last_report_loses_to_the_new_holder(self):
+        # Alice's last report is at 18:19:34 and her stop was lost; Bob's
+        # first report, at 18:34:34, says his session started at 18:24:34
+        self.take(nps_line(user='alice@example.edu', klass=None))
+        self.take(nps_line(user='bob@example.edu', mac='BA-F7-F8-00-00-02', session_id='B1', klass=None,
+                           logged='10/07/2026 18:34:34.212', session_time='600'))
+        self.assertEqual(self.holder(LOGGED + 6 * 60), 'bob')
+        self.assertEqual(self.holder(LOGGED + 10 * 60), 'bob')
+        self.assertEqual(self.holder(LOGGED), 'alice')
+
+    def test_old_sessions_are_dropped_as_new_ones_are_recorded(self):
+        record = self.sessions.record
+        record(radius.Session('10.0.0.5', 'ap|old', 'old', None, 1000, 1000, None, None))
+        record(radius.Session('10.0.0.5', 'ap|new', 'new', None, 100000, 100000, None, None))
+        self.assertEqual(list(self.redis.hgetall('turkeybite:radius:ip:10.0.0.5')), [b'ap|new'])
+
     def test_a_hold_only_inferred_from_its_start_loses_to_one_reported(self):
         # Bob was reported with the address at 1600; Alice's session started
         # at 1500 but was first reported with it at 1700
@@ -582,6 +598,22 @@ class DefaultNamesTest(unittest.TestCase):
         self.sessions.take(nps_line(address='10.212.16.220', logged='10/07/2026 18:24:34.212', session_time='900'))
         self.assertEqual(self.holder(LOGGED + 300, '10.212.16.220'), 'jsmith')
         self.assertEqual(self.holder(LOGGED + 299), 'jsmith')
+        self.assertIsNone(self.holder(LOGGED + 301))
+
+    def test_a_device_moved_and_back_holds_its_first_address_again(self):
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.sessions.take(nps_line(address='10.212.16.220', logged='10/07/2026 18:24:34.212', session_time='900'))
+        self.sessions.take(nps_line(logged='10/07/2026 18:29:34.212', session_time='1200'))
+        self.assertEqual(self.holder(LOGGED + 720), 'jsmith')
+        self.assertIsNone(self.holder(LOGGED + 720, '10.212.16.220'))
+
+    def test_a_stop_without_its_session_time_still_ends_the_session(self):
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.redis.delete('turkeybite:radius:class:311 1 10.0.0.10 09/10/2026 07:32:43 9428172')
+        self.sessions.take(nps_line(status='2', user='anonymous@example.edu', session_time=None,
+                                    logged='10/07/2026 18:24:34.212'))
         self.assertIsNone(self.holder(LOGGED + 301))
 
     def test_a_late_report_from_an_earlier_session_with_the_id_is_ignored(self):
@@ -830,6 +862,13 @@ class RealValkeyTest(unittest.TestCase):
         strict.take(nps_line(klass='F1', address='10.212.16.250', mac='BA-F7-F8-00-00-06', session_id='F1'))
         strict.take(nps_line(klass='F1', address='10.212.16.251', mac='BA-F7-F8-00-00-06', session_id='F1',
                              logged='10/07/2026 18:24:34.212', session_time='900'))
+        moved = {(k.decode() if isinstance(k, bytes) else k): json.loads(v)
+                 for k, v in redis.hgetall('turkeybite:radius:ip:10.212.16.250').items()}
+        strict.take(nps_line(klass='F1', address='10.212.16.250', mac='BA-F7-F8-00-00-06', session_id='F1',
+                             logged='10/07/2026 18:29:34.212', session_time='1200'))
+        strict.take(nps_line(klass=None, status='2', address='10.212.16.250', mac='BA-F7-F8-00-00-06',
+                             session_id='F1', user='anonymous', session_time=None,
+                             logged='10/07/2026 18:31:34.212'))
 
         def text(value):
             return value.decode() if isinstance(value, bytes) else value
@@ -841,7 +880,7 @@ class RealValkeyTest(unittest.TestCase):
                 sorted(text(k) for k in redis.hgetall('turkeybite:radius:ip:10.0.0.5')),
                 sessions.holder('10.212.16.219', LOGGED),
                 dump('turkeybite:radius:ip:10.212.16.240'), dump('turkeybite:radius:ip:10.212.16.241'),
-                dump('turkeybite:radius:ip:10.212.16.250'), dump('turkeybite:radius:ip:10.212.16.251'),
+                moved, dump('turkeybite:radius:ip:10.212.16.250'), dump('turkeybite:radius:ip:10.212.16.251'),
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:06')))
 
     def test_the_lua_does_what_the_fake_does(self):
@@ -858,9 +897,11 @@ class RealValkeyTest(unittest.TestCase):
         erin = real[6]['ap-hall-11|E1']
         self.assertEqual((erin['u'], erin['e'], erin['m'], erin['a']), ('erin', LOGGED + 180, 'ba:f7:f8:00:00:05', 1))
         self.assertEqual(real[7], {})
-        self.assertEqual(real[8]['ap-hall-11|F1']['e'], LOGGED + 300)
-        self.assertNotIn('e', real[9]['ap-hall-11|F1'])
-        self.assertEqual(real[10]['a'], '10.212.16.251')
+        self.assertEqual((real[8]['ap-hall-11|F1']['e'], real[8]['ap-hall-11|F1']['x']), (LOGGED + 300, 1))
+        self.assertEqual((real[9]['ap-hall-11|F1']['e'], real[9]['ap-hall-11|F1']['u']), (LOGGED + 720, 'finn'))
+        self.assertNotIn('x', real[9]['ap-hall-11|F1'])
+        self.assertEqual(real[10]['ap-hall-11|F1']['x'], 1)
+        self.assertEqual(real[11]['a'], '10.212.16.250')
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

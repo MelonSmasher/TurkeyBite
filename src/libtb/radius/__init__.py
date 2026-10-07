@@ -89,9 +89,11 @@ KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'ca
 # `stopped` None while the session lasts. `signed` says the user is the
 # account NPS authenticated, `bridged` that the address is the one the device
 # had before it roamed, and `reported` when the device was last reported with
-# it.
-Session = namedtuple('Session', 'address key user mac start seen stopped klass signed bridged reported',
-                     defaults=(False, False, None))
+# it. `timed` says the start is known, from a start or Acct-Session-Time, and
+# `moved` that the stop is only inferred, from the device being reported with
+# another address.
+Session = namedtuple('Session', 'address key user mac start seen stopped klass signed bridged reported timed moved',
+                     defaults=(False, False, None, True, False))
 
 ACCESS_ACCEPT, ACCOUNTING_REQUEST = '2', '4'
 START, STOP, INTERIM = '1', '2', '3'
@@ -128,12 +130,13 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 # Merges one report into an address's sessions, atomically, since workers
 # take reports in parallel and a replayed batch hands them over out of order.
 #   - A report from before the session recorded under its id started is from
-#     an earlier session that used the id, and is ignored. One that starts
-#     after the recorded session was last reported is a new session reusing
-#     the id, and replaces it.
+#     an earlier session that used the id, and is ignored. One whose known
+#     start is after the recorded session was last reported is a new session
+#     reusing the id, and replaces it.
 #   - Otherwise the start is the first reported, the last report the latest,
-#     the first report with the address the earliest, and a stop, once seen,
-#     stays.
+#     and the first report with the address the earliest. A stop, once seen,
+#     stays; one only inferred from the device moving to another address
+#     gives way to a later report of the session at this one.
 #   - A report that names nobody (user "") only updates a session already
 #     recorded, keeping its name. A name NPS authenticated is not replaced by
 #     one a device gave.
@@ -148,10 +151,15 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #   ARGV    session key, user or "", MAC or "", start, seen, stopped or "",
 #           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
 #           clock slack, seconds to keep the device's address, the address,
-#           for a roam when the device last reported the address or ""
+#           for a roam when the device last reported the address or "",
+#           stop inferred from a move 1/0, start known 1/0
+# Sessions last reported over the seconds to keep before this report are
+# dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
 local start, seen = tonumber(ARGV[4]), tonumber(ARGV[5])
+local reported_at = seen
 local stopped = tonumber(ARGV[6])
+local moved = stopped ~= nil and ARGV[15] == '1'
 local user, device = ARGV[2], ARGV[3]
 local signed, bridged = ARGV[9] == '1', ARGV[10] == '1'
 local slack, reported = tonumber(ARGV[11]), tonumber(ARGV[14])
@@ -164,11 +172,24 @@ if held then
   if ok and type(v) == 'table' and type(v.s) == 'number' and type(v.l) == 'number' then old = v end
 end
 if old and seen < old.s - slack then return 0 end
-if old and start > old.l + slack then old = nil end
+if old and ARGV[16] == '1' and start > old.l + slack then old = nil end
 if old then
   start = old.s
   if old.l > seen then seen = old.l end
-  if type(old.e) == 'number' and (stopped == nil or old.e > stopped) then stopped = old.e end
+  if type(old.e) == 'number' then
+    local old_moved = old.x == 1
+    if stopped == nil then
+      if not (old_moved and reported_at > old.e) then stopped, moved = old.e, old_moved end
+    elseif moved then
+      if not old_moved then
+        stopped, moved = old.e, false
+      elseif old.e < stopped then
+        stopped = old.e
+      end
+    elseif not old_moved and old.e > stopped then
+      stopped = old.e
+    end
+  end
   if user == '' then
     if type(old.u) == 'string' then user = old.u end
     signed = old.a == 1
@@ -184,6 +205,7 @@ if user == '' then return 0 end
 local value = {u = user, s = start, l = seen}
 if device ~= '' then value.m = device end
 if stopped then value.e = stopped end
+if moved then value.x = 1 end
 if signed then value.a = 1 end
 if first then value.f = first end
 if bridged then
@@ -192,15 +214,19 @@ if bridged then
 end
 redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(value))
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[7]))
-local keep = tonumber(ARGV[8])
-if redis.call('HLEN', KEYS[1]) > keep then
+local keep, cutoff = tonumber(ARGV[8]), reported_at - tonumber(ARGV[7])
+if redis.call('HLEN', KEYS[1]) > 1 then
   local all = redis.call('HGETALL', KEYS[1])
   local rows = {}
   for i = 1, #all, 2 do
     local ok, v = pcall(cjson.decode, all[i + 1])
     local last = -1
     if ok and type(v) == 'table' and type(v.l) == 'number' then last = v.l end
-    rows[#rows + 1] = {all[i], last}
+    if last < cutoff then
+      redis.call('HDEL', KEYS[1], all[i])
+    else
+      rows[#rows + 1] = {all[i], last}
+    end
   end
   table.sort(rows, function(a, b) return a[2] < b[2] end)
   for i = 1, #rows - keep do redis.call('HDEL', KEYS[1], rows[i][1]) end
@@ -465,7 +491,8 @@ def session(fields, zone, received=None, realms=()):
     start = when - length if length is not None else when
     nas = fields.get('NAS-Identifier') or fields.get('NAS-IP-Address') or ''
     return Session(where, printable(f'{nas}|{sid}', 200), username(fields.get('User-Name'), realms), device,
-                   start, when, when if status == STOP else None, printable(fields.get('Class')) or None)
+                   start, when, when if status == STOP else None, printable(fields.get('Class')) or None,
+                   timed=length is not None or status == START)
 
 
 def _decode(held):
@@ -491,7 +518,7 @@ class Sessions:
 
     In the queue's database, since the librarian sweeps the host lists':
 
-        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, a, b, r, f}
+        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, a, b, r, f}
         <prefix>:radius:mac:<mac>      the address a device last reported, {a, l, t}
         <prefix>:radius:class:<class>  the account an Access-Accept named
 
@@ -610,15 +637,20 @@ class Sessions:
         return found._replace(address=where, bridged=True, reported=last['l'])
 
     def _left(self, found):
-        """Ends the device's sessions at the address it had, when this report gives it a new one."""
+        """Ends the device's sessions at the address it had, when this report gives it a new one.
+
+        The stop is only inferred: a later report of such a session at that
+        address undoes it.
+        """
         last = self._device(found.mac)
         before = address(last.get('a')) if last else None
         if before is None or before == found.address or last['l'] > found.seen:
             return
         for key, held in _decode(self.redis.hgetall(self.key('ip', before))).items():
             if held.get('m') == found.mac and not _number(held.get('e')):
-                self.record(Session(before, key, None, found.mac, held['s'], found.seen, found.seen, None,
-                                    bridged=bool(held.get('b')), reported=held.get('r')), device=False)
+                self.record(Session(before, key, None, found.mac, held['s'], held['l'], found.seen, None,
+                                    bridged=bool(held.get('b')), reported=held.get('r'), timed=False,
+                                    moved=True), device=False)
 
     def record(self, found, device=True):
         """Merges one report into its address's sessions. Returns whether it was recorded.
@@ -633,7 +665,8 @@ class Sessions:
             RECORD_SCRIPT, len(keys), *keys, found.key, found.user or '', found.mac or '', found.start,
             found.seen, '' if found.stopped is None else found.stopped, self.conf.keep_sec, MAX_SESSIONS,
             int(bool(found.signed)), int(bool(found.bridged)), CLOCK_SLACK, self.conf.grace_sec,
-            found.address, '' if found.reported is None else found.reported)
+            found.address, '' if found.reported is None else found.reported, int(bool(found.moved)),
+            int(bool(found.timed)))
         self._nobody.pop(found.address, None)
         return bool(recorded)
 
@@ -655,10 +688,10 @@ class Sessions:
 
         A session that took the address on roaming loses it to another
         device reported with the address after its own device last was. Of
-        the rest, one reported with the address by then, or whose device was
-        before it roamed, beats one whose hold is only inferred from its
-        start; then the later start wins, and ties go the same way in every
-        worker.
+        the rest, one reported with the address at the time, between its
+        first and last reports, beats one whose hold is only inferred, from
+        its start before or from `grace_sec` after; then the later start
+        wins, and ties go the same way in every worker.
         """
         where = address(where)
         if where is None:
@@ -674,17 +707,17 @@ class Sessions:
                                          for other in reported)
 
         def confirmed(held):
-            # Reported with the address by then: itself, or its device before a roam
+            # Reported with the address at the time: between its first report
+            # with it, or its device's before a roam, and its last report
             since = held.get('r') if held.get('b') else held.get('f')
-            return _number(since) and when >= since - CLOCK_SLACK
+            return _number(since) and since - CLOCK_SLACK <= when <= held['l'] + CLOCK_SLACK
         return max((held for held in covering if not overruled(held)),
                    key=lambda held: (confirmed(held), held['s'], held['l'], held['u']), default=None)
 
     def _end(self, held):
+        last = held['l'] + self.conf.grace_sec
         stopped = held.get('e')
-        if _number(stopped):
-            return stopped
-        return held['l'] + self.conf.grace_sec
+        return min(stopped, last) if _number(stopped) else last
 
 
 def _whole_hours_out(fields, logged):
