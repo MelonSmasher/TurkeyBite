@@ -259,6 +259,18 @@ def verify(secret: str, body: bytes, header: str) -> bool:
     return hmac.compare_digest(mac.hexdigest(), parts["v1"])
 ```
 
+### Looking a device up elsewhere
+
+An admin can link a device's address to another system that looks devices
+up, such as an inventory or a security console: **Authentication → Console →
+Device lookup link**, a URL with `{value}` where the address goes, for example
+`https://sac.example.edu/respond/device/?q={value}`. A machine's or person's
+profile then shows the latest addresses it was seen at, in the last 30 days,
+and every event shows its addresses; each opens that lookup in a new tab. The
+other system does the lookup with its own sign-in and its own records of who
+looked; the console sends it nothing but the link. Empty, which is the
+default, shows no links.
+
 ## Security, in short
 
 - Sessions are opaque tokens in HttpOnly, Secure, SameSite cookies, stored only as

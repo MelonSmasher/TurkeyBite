@@ -415,3 +415,45 @@ async def test_a_tab_left_from_another_persons_session_cannot_save_its_preferenc
     bob = (await client.get('/api/v1/auth/me')).json()['user']['id']
     mine = await client.put('/api/v1/account/preferences', headers=headers, json={'privacy_mode': True, 'user_id': bob})
     assert mine.status_code == 200 and 'user_id' not in mine.json()  # nosec B101
+
+
+async def test_a_device_lookup_link_is_a_url_with_a_place_for_the_address(client):
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    general = (await client.get('/api/v1/settings/general')).json()
+    assert general['device_lookup_url'] == ''  # nosec B101
+    for bad in ('sac.example.edu/respond/device/?q={value}', 'https://sac.example.edu/respond/device/',
+                'javascript:alert({value})', 'https://sac.example.edu/?q={value} x'):
+        response = await client.put('/api/v1/settings/general', headers=headers,
+                                    json={**general, 'device_lookup_url': bad})
+        assert response.status_code == 422, bad  # nosec B101
+    link = 'https://sac.example.edu/respond/device/?q={value}'
+    saved = await client.put('/api/v1/settings/general', headers=headers, json={**general, 'device_lookup_url': link})
+    assert saved.status_code == 200  # nosec B101
+    assert (await client.get('/api/v1/auth/me')).json()['device_lookup_url'] == link  # nosec B101
+
+
+async def test_a_profile_gives_the_address_a_machine_was_last_seen_at(client, search):
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+
+    def answer(body, index=None):
+        if body.get('size') == 1 and body.get('_source') == ['@timestamp', 'bite.client', 'bite.client_ips']:
+            # A browser's event: the machine's own addresses, IPv6 among them
+            return {'hits': {'total': {'value': 1}, 'hits': [{'_source': {
+                '@timestamp': '2026-10-07T12:00:00Z', 'bite': {'client_ips': ['fe80::1', '10.20.30.40']}}}]}}
+        return {'hits': {'total': {'value': 0}, 'hits': []}, 'aggregations': {}}
+    search.answer = answer
+    machine = (await client.get('/api/v1/entities/profile', params={'field': 'host', 'value': 'lab-12'})).json()
+    assert machine['latest_address'] == {'addresses': ['10.20.30.40', 'fe80::1'],  # nosec B101
+                                         'at': '2026-10-07T12:00:00Z'}
+    latest = next(b for b in search.bodies
+                  if b.get('size') == 1 and b.get('_source') == ['@timestamp', 'bite.client', 'bite.client_ips'])
+    assert {'term': {'bite.client_hostname_short': 'lab-12'}} in latest['query']['bool']['filter']  # nosec B101
+    # An address is its own latest address
+    address = (await client.get('/api/v1/entities/profile', params={'field': 'client', 'value': '10.0.0.5'})).json()
+    assert address['latest_address'] == {'addresses': ['10.0.0.5'], 'at': None}  # nosec B101
+    # Not seen lately: none
+    search.answer = lambda body, index=None: {'hits': {'total': {'value': 0}, 'hits': []}, 'aggregations': {}}
+    quiet = (await client.get('/api/v1/entities/profile', params={'field': 'user', 'value': 'ava'})).json()
+    assert quiet['latest_address'] is None  # nosec B101

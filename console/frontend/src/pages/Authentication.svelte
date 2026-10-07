@@ -14,7 +14,7 @@
     attr_email: string; attr_groups: string; group_base_dn: string; group_filter: string;
     role_mappings: { group: string; role: string }[]; default_role: string | null; timeout_sec: number;
   }
-  interface General { org_name: string; login_banner: string; default_range: string; require_mfa_for_local_admins: boolean; privacy_mode_default: boolean }
+  interface General { org_name: string; login_banner: string; default_range: string; require_mfa_for_local_admins: boolean; privacy_mode_default: boolean; device_lookup_url: string }
 
   const ldapQ = new Query((signal) => api.get<Ldap>('/settings/ldap', { signal }));
   const generalQ = new Query((signal) => api.get<General>('/settings/general', { signal }));
@@ -172,6 +172,9 @@
             {#each PRESETS as p (p.id)}<option value={p.from}>{p.label}</option>{/each}
           </select>
           <span class="field-hint">Until someone picks another time range.</span></label>
+        <label class="field"><span class="field-label">Device lookup link</span>
+          <input class="input mono" bind:value={general.device_lookup_url} placeholder="https://sac.example.edu/respond/device/?q=&#123;value&#125;" />
+          <span class="field-hint">A machine's latest address, and the address on every event, link here, with &#123;value&#125; where the address goes: to an inventory or a security console that looks the device up. Empty for no link.</span></label>
         <label class="row top"><Switch bind:checked={general.privacy_mode_default} label="Privacy mode by default" />
           <span>Start everyone in privacy mode <span class="muted small">People are shown as aliases until someone chooses to see names.</span></span></label>
         <button class="btn btn-primary" onclick={saveGeneral}><Save size={15} /> Save</button>

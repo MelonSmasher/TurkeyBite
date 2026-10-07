@@ -20,6 +20,10 @@ GENERAL_DEFAULTS = {
     'require_mfa_for_local_admins': False,
     # Mask people's identities everywhere until someone chooses to reveal them
     'privacy_mode_default': False,
+    # Where a device's address links to, for a lookup in another system, such
+    # as an inventory or a security console: a URL with {value} in it. Empty
+    # shows no link
+    'device_lookup_url': '',
 }
 
 

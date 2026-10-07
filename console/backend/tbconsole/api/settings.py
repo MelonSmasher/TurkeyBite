@@ -1,9 +1,10 @@
 """Settings admins change at runtime: the LDAP directory and general options."""
 
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, settings_store
@@ -60,6 +61,21 @@ class GeneralBody(BaseModel):
     default_range: Literal[settings_store.DEFAULT_RANGES] = 'now-24h'
     require_mfa_for_local_admins: bool = False
     privacy_mode_default: bool = False
+    device_lookup_url: str = Field('', max_length=500)
+
+    @field_validator('device_lookup_url')
+    @classmethod
+    def _lookup_url(cls, value: str) -> str:
+        """An http(s) URL with {value} where the device's address goes, or nothing."""
+        value = value.strip()
+        if not value:
+            return ''
+        parts = urlsplit(value.replace('{value}', 'x'))
+        if parts.scheme not in ('http', 'https') or not parts.hostname or '{value}' not in value \
+                or any(c.isspace() for c in value):
+            raise ValueError('the device lookup link is an http:// or https:// URL with {value} where the '
+                             'address goes, such as https://sac.example.edu/respond/device/?q={value}')
+        return value
 
 
 def _public(cfg: dict) -> dict:

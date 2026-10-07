@@ -168,12 +168,13 @@ async def profile(field: str, value: str, request: Request, *,  # pylint: disabl
                           'aggs': {'notable': {'filter': NOTABLE}}}}
     query = {'bool': {'filter': [tr.filter(), selector]}}
     recent_query = {'bool': {'filter': [tr.filter(), selector, NOTABLE]}}
-    result, recent, heat = await asyncio.gather(
+    result, recent, heat, latest = await asyncio.gather(
         search.search({'size': 0, 'track_total_hits': True, 'query': query, 'aggs': aggs}),
         search.search({'size': 15, 'query': recent_query, '_source': {'excludes': ['packet']},
                        'sort': [{'@timestamp': {'order': 'desc'}}]}),
         search.search({'size': 0, 'query': {'bool': {'filter': [heat_tr.filter(), selector]}},
-                       'aggs': heat_aggs}))
+                       'aggs': heat_aggs}),
+        _latest_address(search, field, value, selector))
     a = result.get('aggregations') or {}
     heat_buckets = ((heat.get('aggregations') or {}).get('heat') or {}).get('buckets', [])
     findings: list = []
@@ -219,7 +220,40 @@ async def profile(field: str, value: str, request: Request, *,  # pylint: disabl
                            for h in recent.get('hits', {}).get('hits', [])],
         'findings': [finding_out(f) for f in findings],
         'risk': score,
+        'latest_address': latest,
     }
+
+
+# How far back a device's latest address is looked for
+LATEST_ADDRESS_DAYS = 30
+
+
+async def _latest_address(search: SearchClient, field: str, value: str, selector: dict) -> dict | None:
+    """The addresses a person or machine was last seen at, whatever the page's range, and when.
+
+    A browser reports the machine's own addresses, and a lookup the address
+    it came from; whichever the latest event has, IPv4 first, at most three.
+    An address is its own latest address. None when none was seen in the last
+    LATEST_ADDRESS_DAYS days.
+    """
+    if F.BY_NAME[field].type == 'ip':
+        return {'addresses': [value], 'at': None}
+    result = await search.search({
+        'size': 1, '_source': ['@timestamp', 'bite.client', 'bite.client_ips'],
+        'query': {'bool': {'filter': [
+            {'range': {'@timestamp': {'gte': f'now-{LATEST_ADDRESS_DAYS}d'}}}, selector,
+            {'bool': {'should': [{'exists': {'field': 'bite.client'}}, {'exists': {'field': 'bite.client_ips'}}],
+                      'minimum_should_match': 1}}]}},
+        'sort': [{'@timestamp': {'order': 'desc'}}]})
+    hits = result.get('hits', {}).get('hits', [])
+    if not hits:
+        return None
+    source = hits[0].get('_source') or {}
+    bite = source.get('bite') or {}
+    found = bite.get('client_ips') or bite.get('client') or []
+    found = [found] if isinstance(found, str) else [str(a) for a in found if a]
+    addresses = sorted(dict.fromkeys(found), key=lambda a: ':' in a)[:3]
+    return {'addresses': addresses, 'at': source.get('@timestamp')} if addresses else None
 
 
 @router.get('/domains/{domain}')

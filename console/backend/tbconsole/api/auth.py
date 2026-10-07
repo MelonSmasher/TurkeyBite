@@ -326,6 +326,7 @@ async def me(principal: Principal = Depends(current_principal),
         'preferences': user.preferences or {},
         'org_name': general['org_name'],
         'privacy_mode_default': general['privacy_mode_default'],
+        'device_lookup_url': general.get('device_lookup_url') or '',
         'default_range': general['default_range'] if general['default_range'] in settings_store.DEFAULT_RANGES
         else 'now-24h',
         'mfa_required': bool(general['require_mfa_for_local_admins'] and user.source == 'local'
