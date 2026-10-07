@@ -1,13 +1,5 @@
 [
     {
-        "url": "https://raw.githubusercontent.com/laylavish/uBlockOrigin-HUGE-AI-Blocklist/main/noai_hosts.txt",
-        "categories": ["ai"],
-        "file": "lists/ai/laylavish-noai-hosts",
-        "name": "laylavish-noai-hosts",
-        "publisher": "laylavish",
-        "trust": "low"
-    },
-    {
         "url": "https://raw.githubusercontent.com/StevenBlack/hosts/refs/heads/master/alternates/porn-only/hosts",
         "categories": ["porn"],
         "file": "lists/porn/StevenBlack-porn-only",
@@ -408,7 +400,7 @@
         "file": "lists/url-shorteners/hagezi-urlshortener",
         "name": "hagezi-urlshortener",
         "publisher": "hagezi",
-        "trust": "high"
+        "trust": "medium"
     },
 
     {
@@ -605,7 +597,7 @@
         "file": "lists/tracking/firstparty-trackers",
         "name": "tracking-firstparty-trackers",
         "publisher": "frogeye",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt",
@@ -613,7 +605,7 @@
         "file": "lists/tracking/WindowsSpyBlocker",
         "name": "tracking-WindowsSpyBlocker",
         "publisher": "crazy-max",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://v.firebog.net/hosts/Easyprivacy.txt",
@@ -621,7 +613,7 @@
         "file": "lists/tracking/Easyprivacy",
         "name": "tracking-Easyprivacy",
         "publisher": "easylist",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://v.firebog.net/hosts/Prigent-Ads.txt",
@@ -655,7 +647,7 @@
         "file": "lists/advertising/AdguardDNS",
         "name": "advertising-AdguardDNS",
         "publisher": "adguard",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://v.firebog.net/hosts/Admiral.txt",
@@ -663,7 +655,7 @@
         "file": "lists/advertising/Admiral",
         "name": "advertising-Admiral",
         "publisher": "LanikSJ",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt",
@@ -687,7 +679,7 @@
         "file": "lists/advertising/pgl-yoyo",
         "name": "advertising-pgl-yoyo",
         "publisher": "pgl.yoyo.org",
-        "trust": "high"
+        "trust": "medium"
     },
     {
         "url": "https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts",

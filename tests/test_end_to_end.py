@@ -52,6 +52,7 @@ LISTS = {
     'gambling/hagezi-gambling': ['*.casino-example.co.uk', 'bet-example.com'],
     'gambling/PheeLeep-barikada': ['*.casino-example.co.uk'],
     'tracking/Easyprivacy': ['*.collect.tracker-example.net'],
+    'tracking/notrack-blocklist': ['casino-example.collect.tracker-example.net'],
 }
 
 
@@ -104,7 +105,7 @@ class EndToEndTest(unittest.TestCase):
         shutil.copy(os.path.join(HERE, 'fixture_public_suffix_list.dat'),
                     os.path.join('lists', 'tld', 'public_suffix_list.dat'))
         entries, files, skipped = collect_entries('lists')
-        self.assertEqual((files, skipped), (3, 0))
+        self.assertEqual((files, skipped), (len(LISTS), 0))
         os.makedirs(os.path.join('lists', 'index'))
         build(entries, path='lists/index/domains.tbidx', built_at=1791100000,
               sources=source_table(load_sources('lists')))
@@ -154,15 +155,17 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(bite['client'], '10.100.45.140')
         self.assertEqual((bite['ptr_status'], bite['client_hosts']), ('skipped', []))
         # Two independent medium lists agree on gambling for the name itself,
-        # and a high trust list names the tracker its CNAME points at
+        # and two more on the tracker its CNAME points at
         self.assertEqual(bite['contexts'], ['gambling', 'tracking'])
         self.assertEqual(bite['match_source'], ['question', 'cname'])
         self.assertEqual(bite['claims'], ['gambling:PheeLeep-barikada', 'gambling:hagezi-gambling'])
         self.assertEqual(bite['matched_on'], ['*.casino-example.co.uk'])
         self.assertEqual(bite['cname_chain'], ['casino-example.collect.tracker-example.net'])
         self.assertEqual(bite['cname_contexts'], ['tracking'])
-        self.assertEqual(bite['cname_matched_on'], ['*.collect.tracker-example.net'])
-        self.assertEqual(bite['sources'], ['Easyprivacy', 'PheeLeep-barikada', 'hagezi-gambling'])
+        self.assertEqual(bite['cname_matched_on'], ['casino-example.collect.tracker-example.net',
+                                                    '*.collect.tracker-example.net'])
+        self.assertEqual(bite['sources'], ['Easyprivacy', 'PheeLeep-barikada', 'hagezi-gambling',
+                                           'notrack-blocklist'])
         self.assertEqual(bite['index_built_at'], 1791100000)
         # The facets, from the taxonomy
         self.assertEqual(bite['purpose'], ['adult.gambling'])
