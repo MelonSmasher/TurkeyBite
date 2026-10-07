@@ -505,6 +505,30 @@ async def test_a_device_lookup_asks_the_other_side_and_shows_only_what_is_safe(c
     assert failed.status_code == 502 and 'Invalid TurkeyBite signature' in failed.json()['detail']  # nosec B101
 
 
+async def test_deleting_the_webhook_device_lookup_signs_with_turns_lookups_off(client):
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    hook_id = await _sac_hook()
+    await client.put('/api/v1/settings/general', headers=headers,
+                     json={'device_lookup_url': 'https://sac.example.edu/device-lookup/',
+                           'device_lookup_webhook_id': hook_id})
+    assert (await client.delete(f'/api/v1/webhooks/{hook_id}', headers=headers)).status_code == 200  # nosec B101
+    assert (await client.get('/api/v1/auth/me')).json()['device_lookup'] is False  # nosec B101
+    # And other settings still save
+    saved = await client.put('/api/v1/settings/general', headers=headers, json={'org_name': 'Elsewhere'})
+    assert saved.status_code == 200  # nosec B101
+
+
+def test_an_answer_of_the_wrong_shape_is_read_as_nothing():
+    from tbconsole.api.devices import _clean
+    odd = {'inventories': {'a': 1}, 'alerts': [], 'link': 5}
+    assert _clean(odd, 'https://sac.example.edu/x') == {  # nosec B101
+        'inventories': [], 'alerts': {'count': 0, 'open': 0}, 'link': ''}
+    cards = _clean({'inventories': [{'name': 'N', 'records': 'x'}, {'name': 'M', 'records': [{'facts': 'y'}]}]},
+                   'https://sac.example.edu/x')['inventories']
+    assert cards[0]['records'] == [] and cards[1]['records'][0]['facts'] == []  # nosec B101
+
+
 async def test_a_viewer_cannot_look_devices_up(client):
     await make_user('val', role='viewer')
     headers = await login(client, 'val')

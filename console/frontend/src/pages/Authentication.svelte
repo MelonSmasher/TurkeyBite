@@ -70,7 +70,7 @@
     try {
       await api.put('/settings/general', general);
       // What the app was told at sign-in, device lookup included, as now saved
-      await session.load();
+      await session.refresh();
       toasts.success('Settings saved');
     } catch (e) {
       toasts.error('Could not save', errorText(e));

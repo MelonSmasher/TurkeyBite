@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import audit
+from .. import audit, settings_store
 from ..analysis.ruletypes import SEVERITIES
 from ..db import get_session
 from ..deps import Principal, require
@@ -179,6 +179,11 @@ async def delete_webhook(webhook_id: str, request: Request,
     hook = await _get(db, webhook_id)
     audit.record(db, 'webhook.delete', principal=principal, request=request,
                  target_type='webhook', target_id=hook.id, target_label=hook.name)
+    general = await settings_store.general(db)
+    if general.get('device_lookup_webhook_id') == str(hook.id):
+        # Device lookup signed with it: off, rather than on and failing
+        await settings_store.put(db, 'general', {**general, 'device_lookup_url': '',
+                                                 'device_lookup_webhook_id': ''}, principal.user.id)
     await db.delete(hook)
     await db.commit()
     return {'ok': True}

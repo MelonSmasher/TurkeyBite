@@ -44,6 +44,10 @@ class LookupBody(BaseModel):
     address: str = Field(min_length=1, max_length=64)
 
 
+def _list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
 def _text(value, limit: int = 300) -> str:
     return '' if value is None else str(value)[:limit]
 
@@ -63,7 +67,7 @@ def _count(value) -> int:
 
 
 def _record(record: dict) -> dict:
-    facts = [[_text(f[0], 80), _text(f[1])] for f in (record.get('facts') or [])[:MAX_FACTS]
+    facts = [[_text(f[0], 80), _text(f[1])] for f in _list(record.get('facts'))[:MAX_FACTS]
              if isinstance(f, (list, tuple)) and len(f) == 2]
     return {'title': _text(record.get('title'), 200), 'subtitle': _text(record.get('subtitle'), 200),
             'facts': facts, 'link': _link(record.get('link'))}
@@ -75,10 +79,10 @@ def _clean(answer: dict, asked: str) -> dict:
     It comes from another system, so nothing in it is taken as it is.
     """
     inventories = []
-    for card in (answer.get('inventories') or [])[:MAX_INVENTORIES]:
+    for card in _list(answer.get('inventories'))[:MAX_INVENTORIES]:
         if not isinstance(card, dict):
             continue
-        records = [_record(r) for r in (card.get('records') or [])[:MAX_RECORDS] if isinstance(r, dict)]
+        records = [_record(r) for r in _list(card.get('records'))[:MAX_RECORDS] if isinstance(r, dict)]
         inventories.append({
             'name': _text(card.get('name'), 80), 'configured': bool(card.get('configured', True)),
             'asks': bool(card.get('asks', True)), 'found': bool(card.get('found')) or bool(records),

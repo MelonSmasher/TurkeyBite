@@ -241,7 +241,11 @@ async def ask(hook: Webhook, url: str, event: str, payload: dict,  # pylint: dis
     side knows the console as it does from its deliveries. Raises AskFailed.
     """
     body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
-    headers = _signed_headers(hook, event, str(payload.get('id') or ''), body)
+    try:
+        headers = _signed_headers(hook, event, str(payload.get('id') or ''), body)
+    except SecretUnreadable as e:
+        raise AskFailed(f"the secret of the webhook {hook.name} cannot be read; rotate it on the "
+                        f"webhook's page") from e
     outcome: dict = {'status_code': None, 'raw': b''}
     own = http is None
     try:

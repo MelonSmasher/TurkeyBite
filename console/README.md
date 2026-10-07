@@ -341,7 +341,9 @@ screenshots in `docs/screenshots/` from the running app.
 
 - The sign-in brake per address and username is kept in each process's
   memory; the per-account lockout, which matters more, is in the database and
-  holds across replicas.
+  holds across replicas. The limit of 20 device lookups a minute for one
+  person is kept the same way, so with several replicas it is per replica;
+  the other side keeps its own limit as well.
 - Rules catch up on at most six hours of missed or failed windows; anything
   older is noted on the rule's run, not evaluated. They read events up to a
   minute behind now (`TBCONSOLE_RULE_INGEST_DELAY_SEC`), for those still on

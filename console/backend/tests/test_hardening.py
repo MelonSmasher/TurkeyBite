@@ -1738,6 +1738,11 @@ async def test_a_question_to_another_system_is_signed_and_its_answer_read(monkey
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r, resp=response: resp)) as http:
             with pytest.raises(dispatcher.AskFailed, match=words):
                 await dispatcher.ask(hook, 'https://sac.example.test/device-lookup/', 'device.lookup', {}, http)
+    # A secret that can no longer be read, after the console's key changed
+    unreadable = await _hook('https://sac.example.test/ingest/webhook/turkeybite/')
+    unreadable.secret_enc = 'not-a-fernet-token'  # nosec B105
+    with pytest.raises(dispatcher.AskFailed, match='cannot be read'):
+        await dispatcher.ask(unreadable, 'https://sac.example.test/device-lookup/', 'device.lookup', {})
     # Somewhere webhooks may not go, it may not ask either
     monkeypatch.setattr(safety, 'asyncio', _Asyncio('169.254.169.254'))
     with pytest.raises(dispatcher.AskFailed, match='may not reach'):

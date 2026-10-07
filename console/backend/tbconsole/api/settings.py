@@ -211,7 +211,8 @@ async def put_general(body: GeneralBody, request: Request,
     if bool(url) != bool(hook_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             'Device lookup needs both its URL and the webhook that signs its questions.')
-    if hook_id:
+    # Checked when it is being chosen, so a save of something else is never refused for it
+    if hook_id and 'device_lookup_webhook_id' in changes:
         try:
             hook = await db.get(Webhook, uuid.UUID(hook_id))
         except ValueError:
