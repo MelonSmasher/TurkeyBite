@@ -165,7 +165,12 @@ processor:
   #               above the access points' interim interval
   #   keep_hours  how long an address's sessions are kept after the last
   #               report; older lines are not recorded
-  #   cache_sec   how long a worker reuses what it read for an address
+  #   cache_sec   how long a worker remembers that nobody held an address;
+  #               who did is asked every time
+  #   trust_given_names
+  #               a session whose Access-Accept was not seen is not named,
+  #               since the name a device gives can be anyone's. true names it
+  #               by that name.
   radius:
     enable: false
     # timezone: America/New_York
@@ -173,6 +178,7 @@ processor:
     grace_sec: 1200
     keep_hours: 24
     cache_sec: 30
+    trust_given_names: false
   dns:
     lookup_ips: true
     resolvers:

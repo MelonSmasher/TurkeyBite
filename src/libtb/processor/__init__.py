@@ -829,16 +829,17 @@ class Processor(object):
     def address_holder(self, client, timestamp):
         """bite.client_user and bite.client_mac for whoever held an address at a time, or {}.
 
-        Never costs the event: Valkey not answering requeues the batch, as for
-        anything else the worker asks it, and any other refusal leaves the
-        event without a user.
+        An event whose time cannot be read gets no user: the address may have
+        changed hands since. Never costs the event: Valkey not answering
+        requeues the batch, as for anything else the worker asks it, and any
+        other refusal leaves the event without a user.
         """
         sessions = self.radius_sessions()
-        if sessions is None or not isinstance(client, str):
-            return {}
         when = radius.iso_seconds(timestamp)
+        if sessions is None or not isinstance(client, str) or when is None:
+            return {}
         try:
-            held = sessions.holder(client, time.time() if when is None else when)
+            held = sessions.holder(client, when)
         except (RedisConnectionError, RedisTimeoutError):
             raise
         except RedisError as e:

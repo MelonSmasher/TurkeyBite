@@ -171,15 +171,17 @@ class FakeRedis(object):
                 slack, device_sec, where, reported):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         value = self._merged(keys[0], field, {
-            'u': user, 's': float(start), 'l': float(seen),
+            'u': user, 'm': device, 's': float(start), 'l': float(seen),
             'e': float(stopped) if stopped not in ('', b'') else None,
             'a': str(signed) == '1', 'b': str(bridged) == '1',
-            'r': float(reported) if reported not in ('', b'') else None}, float(slack))
+            'r': float(reported) if reported not in ('', b'') else None,
+            'f': None if str(bridged) == '1' else float(seen)}, float(slack))
+        if value is None or value['u'] == '':
+            return 0
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
-        if device:
-            stored['m'] = device
-        if value['e'] is not None:
-            stored['e'] = value['e']
+        for name in ('m', 'e', 'f'):
+            if value[name] not in (None, ''):
+                stored[name] = value[name]
         if value['a']:
             stored['a'] = 1
         if value['b']:
@@ -190,29 +192,39 @@ class FakeRedis(object):
         self.expire(keys[0], int(keep_sec))
         self._trim(keys[0], int(keep))
         if len(keys) > 1:
-            self._remember_device(keys[1], where, float(seen), int(device_sec), str(bridged) == '1')
+            self._remember_device(keys[1], where, float(seen), int(device_sec), value['b'])
         return 1
 
     def _merged(self, key, field, value, slack):
-        """A report merged into what the hash holds for its session, as RECORD_SCRIPT merges it."""
+        """A report merged into what the hash holds for its session, or None to ignore it."""
         try:
             old = json.loads(self._hash(key).get(_bytes(field)) or 'null')
         except ValueError:
             old = None
-        if not isinstance(old, dict) or (_number(old.get('e')) and value['s'] > old['e'] + slack):
+        if not (isinstance(old, dict) and _number(old.get('s')) and _number(old.get('l'))):
             return value
-        if _number(old.get('s')):
-            value['s'] = old['s']
-        if _number(old.get('l')) and old['l'] > value['l']:
-            value['l'] = old['l']
+        if value['l'] < old['s'] - slack:
+            return None
+        if value['s'] > old['l'] + slack:
+            return value
+        value['s'] = old['s']
+        value['l'] = max(value['l'], old['l'])
         if _number(old.get('e')) and (value['e'] is None or old['e'] > value['e']):
             value['e'] = old['e']
-        if old.get('a') == 1 and not value['a'] and isinstance(old.get('u'), str):
+        if value['u'] == '':
+            if isinstance(old.get('u'), str):
+                value['u'] = old['u']
+            value['a'] = old.get('a') == 1
+        elif old.get('a') == 1 and not value['a'] and isinstance(old.get('u'), str):
             value['u'], value['a'] = old['u'], True
+        if value['m'] == '' and isinstance(old.get('m'), str):
+            value['m'] = old['m']
         if old.get('b') is None:
             value['b'] = False
         if value['r'] is None and _number(old.get('r')):
             value['r'] = old['r']
+        if _number(old.get('f')) and (value['f'] is None or old['f'] < value['f']):
+            value['f'] = old['f']
         return value
 
     def _trim(self, key, keep):

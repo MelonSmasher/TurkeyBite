@@ -52,7 +52,7 @@ from redis.exceptions import TimeoutError as ValkeyTimeoutError
 
 from libtb.privacy import TRIMMED, trim_url
 from libtb.opensearch import report_once
-from libtb.radius import ACCESS_ACCEPT, address, attributes, misrouted, printable
+from libtb.radius import ACCESS_ACCEPT, address, attributes, misrouted
 from libtb.util import dig
 from libtb.processor import DeliveryError
 from libtb.queue import NotOwner
@@ -120,8 +120,9 @@ def describe(data, verdict, urls=TRIMMED):
 def describe_accounting(data, verdict):
     """Builds the log line for a line of NPS's log, taken from the accounting list.
 
-    Only what libtb.radius would accept as an address, and the name without
-    control characters, so a line cannot forge another in the log.
+    Only what libtb.radius would accept as an address, so a line cannot
+    forge another in the log, and no names: every sign-in on the network
+    would otherwise be in the container's log.
     """
     fields = attributes(dig(data, 'message'))
     kind = 'Accept' if fields.get('Packet-Type') == ACCESS_ACCEPT else 'Accounting'
@@ -129,9 +130,6 @@ def describe_accounting(data, verdict):
     where = address(fields.get('Framed-IP-Address'))
     if where:
         line = line + ': ' + where
-    who = printable(fields.get('User-Name') or fields.get('SAM-Account-Name'), 100)
-    if who:
-        line = line + ' - ' + who
     return line
 
 

@@ -86,8 +86,13 @@ def sessions_for(redis, radius_conf, **hooks):
 
 
 def conf(**kwargs):
+    """Settings as most of these suites want them, with sessions named by the name given.
+
+    So a test of when an address was held need not sign each session in
+    first. DefaultNamesTest has the default.
+    """
     return radius.settings({'enable': True, 'timezone': NEW_YORK, 'realms': ['example.edu', 'example'],
-                            **kwargs})
+                            'trust_given_names': True, **kwargs})
 
 
 class AttributesTest(unittest.TestCase):
@@ -256,9 +261,10 @@ class SettingsTest(unittest.TestCase):
 
     def test_what_is_set(self):
         got = radius.settings({'enable': True, 'timezone': NEW_YORK, 'realms': ['Example.EDU', 'EXAMPLE'],
-                               'grace_sec': 900, 'keep_hours': 48, 'cache_sec': 0})
+                               'grace_sec': 900, 'keep_hours': 48, 'cache_sec': 0, 'trust_given_names': True})
         self.assertEqual(got._replace(zone=None), radius.Settings(True, None, ('example.edu', 'example'), 900,
-                                                                  48 * 3600, 0))
+                                                                  48 * 3600, 0, True))
+        self.assertFalse(radius.settings({'enable': True, 'timezone': NEW_YORK}).trust_names)
         self.assertIsNotNone(got.zone)
 
     def test_mistakes_stop_the_worker(self):
@@ -266,7 +272,7 @@ class SettingsTest(unittest.TestCase):
                     {'enable': True, 'timezone': 'Mars/Olympus'}, {'timezone': ''},
                     {'realms': 'example.edu'}, {'realms': ['']}, {'grace_sec': 10}, {'grace_sec': True},
                     {'keep_hours': 0}, {'keep_hours': '24'}, {'cache_sec': -1},
-                    {'grace_sec': 7200, 'keep_hours': 1}):
+                    {'grace_sec': 7200, 'keep_hours': 1}, {'trust_given_names': 'yes'}):
             with self.assertRaises(ValueError, msg=bad):
                 radius.settings(bad)
 
@@ -285,11 +291,11 @@ class SessionsTest(unittest.TestCase):
         self.sessions = sessions_for(self.redis, conf(), monotonic=lambda: self.now, warn=self.warned.append)
 
     def take(self, line, received=None):
-        self.sessions._cache.clear()
+        self.sessions._nobody.clear()
         return self.sessions.take(line, received)
 
     def holder(self, when, where='10.212.16.219'):
-        self.sessions._cache.clear()
+        self.sessions._nobody.clear()
         held = self.sessions.holder(where, when)
         return held and held['u']
 
@@ -307,7 +313,7 @@ class SessionsTest(unittest.TestCase):
         # lookups are nobody's, not Alice's.
         self.take(nps_line(user='alice@example.edu', status='2', session_time='300', klass=None))
         self.assertEqual(self.holder(LOGGED), 'alice')
-        self.assertEqual(self.holder(LOGGED + CLOCK_SLACK), 'alice')
+        self.assertIsNone(self.holder(LOGGED + 1))
         self.assertIsNone(self.holder(LOGGED + 8 * 60))
 
     def test_a_roaming_phone_keeps_its_address_and_its_person(self):
@@ -335,9 +341,9 @@ class SessionsTest(unittest.TestCase):
         record(radius.Session('10.0.0.5', 'ap|2', 'alice', 'a', 1500, 1500, None, None, bridged=True,
                               reported=1400))
         self.assertEqual(self.holder(1550, '10.0.0.5'), 'bob')
-        # Until the roamed session reports the address itself
+        # Until the roamed session reports the address itself: from then, the later start wins
         record(radius.Session('10.0.0.5', 'ap|2', 'alice', 'a', 1500, 1700, None, None))
-        self.assertEqual(self.holder(1550, '10.0.0.5'), 'alice')
+        self.assertEqual(self.holder(1690, '10.0.0.5'), 'alice')
 
     def test_but_a_stale_session_from_before_does_not(self):
         # Bob's last report on the address is at 18:19 and he never stops;
@@ -412,12 +418,16 @@ class SessionsTest(unittest.TestCase):
     def test_lines_without_a_class_are_said_to_be_named_by_the_device(self):
         self.take(nps_line(klass=None))
         self.assertIn('carry no Class', self.warned[0])
+        self.assertEqual(self.holder(LOGGED), 'jsmith')
 
     def test_a_line_dated_after_it_was_read_says_the_timezone_is_wrong(self):
         # NPS in Berlin, read as New York's: six hours in the future
+        said = []
+        self.sessions.warn = lambda message: None if message in said else said.append(message)
         for minute in range(3):
             self.assertIsNone(self.take(nps_line(logged=f'10/08/2026 00:1{minute}:34.212'), received=LOGGED + 1))
-        self.assertEqual(set(self.warned), {self.warned[0]})
+        self.warned = said
+        self.assertEqual(len(said), 1)
         self.assertIn('processor.radius.timezone', self.warned[0])
         self.assertEqual(self.redis.data, {})
 
@@ -486,10 +496,21 @@ class SessionsTest(unittest.TestCase):
         record = self.sessions.record
         record(radius.Session('10.0.0.5', 'ap|1', 'jsmith', None, 1000, 1600, None, None))
         record(radius.Session('10.0.0.5', 'ap|2', 'adoe', None, 1500, 1700, None, None))
-        self.assertEqual(self.holder(1550, '10.0.0.5'), 'adoe')
+        self.assertEqual(self.holder(1690, '10.0.0.5'), 'adoe')
         self.assertEqual(self.holder(1200, '10.0.0.5'), 'jsmith')
         record(radius.Session('10.0.0.5', 'ap|3', 'bkim', None, 1500, 1700, None, None))
-        self.assertEqual(self.holder(1550, '10.0.0.5'), 'bkim')
+        self.assertEqual(self.holder(1690, '10.0.0.5'), 'bkim')
+
+    def test_a_hold_only_inferred_from_its_start_loses_to_one_reported(self):
+        # Bob was reported with the address at 1600; Alice's session started
+        # at 1500 but was first reported with it at 1700
+        record = self.sessions.record
+        record(radius.Session('10.0.0.5', 'ap|1', 'bob', 'b', 1000, 1600, None, None))
+        record(radius.Session('10.0.0.5', 'ap|2', 'alice', 'a', 1500, 1700, None, None))
+        self.assertEqual(self.holder(1550, '10.0.0.5'), 'bob')
+        # Alone, an inferred hold still counts, for a backlog of DNS events
+        record(radius.Session('10.0.0.6', 'ap|3', 'carol', 'c', 1500, 1700, None, None))
+        self.assertEqual(self.holder(1550, '10.0.0.6'), 'carol')
 
     def test_what_valkey_holds_that_cannot_be_read_is_left_out(self):
         self.redis.hset('turkeybite:radius:ip:10.212.16.219', 'ap|bad', 'not json')
@@ -497,20 +518,89 @@ class SessionsTest(unittest.TestCase):
         self.take(nps_line())
         self.assertEqual(self.holder(LOGGED), 'jsmith')
 
-    def test_a_worker_reuses_what_it_read_for_cache_sec(self):
-        self.take(nps_line())
+    def test_a_worker_remembers_only_that_nobody_held_an_address(self):
+        key = ('hgetall', 'turkeybite:radius:ip:10.212.16.219')
         self.sessions.holder('10.212.16.219', LOGGED)
         self.sessions.holder('::ffff:10.212.16.219', LOGGED)
-        key = ('hgetall', 'turkeybite:radius:ip:10.212.16.219')
         self.assertEqual(self.redis.calls.count(key), 1)
         self.now += 31
         self.sessions.holder('10.212.16.219', LOGGED)
         self.assertEqual(self.redis.calls.count(key), 2)
+        # Who did hold it is asked every time, so another worker's stop counts at once
+        self.take(nps_line())
+        other = sessions_for(self.redis, conf())
+        self.assertEqual(other.holder('10.212.16.219', LOGGED)['u'], 'jsmith')
+        self.take(nps_line(status='2', logged='10/07/2026 18:20:34.212', session_time='660'))
+        self.assertIsNone(other.holder('10.212.16.219', LOGGED + 120))
 
     def test_its_own_report_is_seen_at_once(self):
         self.assertIsNone(self.sessions.holder('10.212.16.219', LOGGED))
         self.sessions.take(nps_line())
         self.assertEqual(self.sessions.holder('10.212.16.219', LOGGED)['u'], 'jsmith')
+
+
+class DefaultNamesTest(unittest.TestCase):
+    """As configured by default: only the account NPS signed in names a session."""
+
+    def setUp(self):
+        self.redis = FakeRedis()
+        self.sessions = sessions_for(self.redis, conf(trust_given_names=False), warn=lambda message: None)
+
+    def holder(self, when, where='10.212.16.219'):
+        held = self.sessions.holder(where, when)
+        return held and held['u']
+
+    def test_a_session_is_named_only_by_its_sign_in(self):
+        # The name the device gives could be anyone's
+        self.assertIsNone(self.sessions.take(nps_line(user='dean@example.edu')))
+        self.assertIsNone(self.holder(LOGGED))
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line(user='dean@example.edu', logged='10/07/2026 18:29:34.212', session_time='1200'))
+        self.assertEqual(self.holder(LOGGED), 'jsmith')
+
+    def test_a_stop_naming_nobody_still_ends_the_session(self):
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        # The sign-in is forgotten, and the stop's outer identity is anonymous
+        self.redis.delete('turkeybite:radius:class:311 1 10.0.0.10 09/10/2026 07:32:43 9428172')
+        self.sessions.take(nps_line(status='2', user='anonymous@example.edu', logged='10/07/2026 18:21:34.212',
+                                    session_time='720'))
+        self.assertEqual(self.holder(LOGGED + 60), 'jsmith')
+        self.assertIsNone(self.holder(LOGGED + 121))
+
+    def test_and_one_with_no_address_finds_where_the_session_is(self):
+        # A session hours old, whose stop gives no address
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line(session_time='7200'))
+        self.sessions.take(nps_line(status='2', address=None, logged='10/07/2026 18:29:34.212',
+                                    session_time='7800'))
+        self.assertIsNone(self.holder(LOGGED + 601))
+
+    def test_a_device_given_a_new_address_leaves_its_old_one(self):
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.sessions.take(nps_line(address='10.212.16.220', logged='10/07/2026 18:24:34.212', session_time='900'))
+        self.assertEqual(self.holder(LOGGED + 300, '10.212.16.220'), 'jsmith')
+        self.assertEqual(self.holder(LOGGED + 299), 'jsmith')
+        self.assertIsNone(self.holder(LOGGED + 301))
+
+    def test_a_late_report_from_an_earlier_session_with_the_id_is_ignored(self):
+        self.sessions.take(accept_line(account='EXAMPLE\\carol', klass='C2'))
+        self.sessions.take(nps_line(klass='C2', logged='10/07/2026 18:19:34.212', session_time='60'))
+        # Bob's stop, from when the id was his, arrives after
+        self.sessions.take(accept_line(account='EXAMPLE\\bob', klass='C1'))
+        self.sessions.take(nps_line(klass='C1', status='2', logged='10/07/2026 17:00:00.000', session_time='600'))
+        held = self.sessions.holder('10.212.16.219', LOGGED)
+        self.assertEqual(held['u'], 'carol')
+        self.assertNotIn('e', held)
+
+    def test_a_session_id_reused_after_a_lost_stop_is_a_new_session(self):
+        self.sessions.take(accept_line(account='EXAMPLE\\bob', klass='C1'))
+        self.sessions.take(nps_line(klass='C1', logged='10/07/2026 17:00:00.000', session_time='600'))
+        self.sessions.take(accept_line(account='EXAMPLE\\carol', klass='C2'))
+        self.sessions.take(nps_line(klass='C2', session_time='60'))
+        held = self.sessions.holder('10.212.16.219', LOGGED)
+        self.assertEqual((held['u'], held['s']), ('carol', LOGGED - 60))
 
 
 class ProcessorTest(unittest.TestCase):
@@ -527,10 +617,11 @@ class ProcessorTest(unittest.TestCase):
     def setUp(self):
         self.shipped = []
         self.redis = FakeRedis()
-        self.on = self.processor({'enable': True, 'timezone': NEW_YORK, 'realms': ['example.edu']})
+        self.on = self.processor({'enable': True, 'timezone': NEW_YORK, 'realms': ['example.edu', 'example']})
         self.on.sessions = sessions_for(self.redis, self.on._radius)
 
     def test_a_dns_event_names_who_held_its_address(self):
+        self.assertTrue(self.on.process_nps({'message': accept_line()}))
         self.assertTrue(self.on.process_nps(nps_event()))
         self.on.process_packet(dns_event())
         bite = self.shipped[0]['bite']
@@ -547,16 +638,18 @@ class ProcessorTest(unittest.TestCase):
             self.assertNotIn('client_mac', shipped['bite'])
 
     def test_a_session_without_a_mac_names_only_the_person(self):
+        self.on.process_nps({'message': accept_line()})
         self.on.process_nps(nps_event(mac=None))
         self.on.process_packet(dns_event())
         self.assertEqual(self.shipped[0]['bite']['client_user'], 'jsmith')
         self.assertNotIn('client_mac', self.shipped[0]['bite'])
 
-    def test_an_event_whose_time_cannot_be_read_is_matched_against_now(self):
+    def test_an_event_whose_time_cannot_be_read_gets_nobody(self):
+        # The address may have changed hands since
         self.on.sessions.record(radius.Session('10.212.16.219', 'ap|1', 'jsmith', None, LOGGED, 4102444800.0,
                                                None, None))
         self.on.process_packet(dns_event(when='yesterday'))
-        self.assertEqual(self.shipped[0]['bite']['client_user'], 'jsmith')
+        self.assertNotIn('client_user', self.shipped[0]['bite'])
 
     def test_valkey_refusing_costs_the_user_not_the_event(self):
         self.on.sessions.holder = mock.Mock(side_effect=ResponseError('NOPERM'))
@@ -618,13 +711,16 @@ class ConsumerTest(unittest.TestCase):
         return out.getvalue()
 
     def test_lines_are_recorded_before_the_dns_events_they_name(self):
-        self.redis.rpush('turkeybite:nps', json.dumps(nps_event()), 'not json')
+        self.redis.rpush('turkeybite:nps', json.dumps({'message': accept_line()}), json.dumps(nps_event()),
+                         'not json')
         self.queue.push(json.dumps(dns_event()))
-        consumer = self.consumer({'enable': True, 'timezone': NEW_YORK, 'realms': ['example.edu']})
+        consumer = self.consumer({'enable': True, 'timezone': NEW_YORK, 'realms': ['example.edu', 'example']})
         log = self.run_once(consumer)
         self.assertEqual(self.shipped[0]['bite']['client_user'], 'jsmith')
-        self.assertEqual((consumer.stats['accounting'], consumer.stats['unreadable']), (2, 1))
-        self.assertIn('[NPS][Accounting] Recorded: 10.212.16.219 - jsmith@example.edu', log)
+        self.assertEqual((consumer.stats['accounting'], consumer.stats['unreadable']), (3, 1))
+        self.assertIn('[NPS][Accept] Recorded\n', log)
+        self.assertIn('[NPS][Accounting] Recorded: 10.212.16.219\n', log)
+        self.assertNotIn('jsmith', log)
         self.assertNotIn('turkeybite:nps', self.redis.data)
 
     def test_off_the_list_is_left_to_workers_with_it_on_and_kept_short(self):
@@ -655,15 +751,15 @@ class ConsumerTest(unittest.TestCase):
         self.assertIn('turkeybite:nps', said.call_args[0][0])
         self.assertEqual(consumer.stats['dropped'], 1)
 
-    def test_the_log_line_cannot_be_forged(self):
-        event = {'message': nps_line(user='jsmith&#10;[NPS][Accounting] Recorded: 10.0.0.1 - dean',
+    def test_the_log_line_names_nobody_and_cannot_be_forged(self):
+        event = {'message': nps_line(user='jsmith&#10;[NPS][Accounting] Recorded: 10.0.0.1',
                                      address='not an address')}
-        self.assertEqual(describe_accounting(event, 'Dropped'),
-                         '[NPS][Accounting] Dropped - jsmith[NPS][Accounting] Recorded: 10.0.0.1 - dean')
-        self.assertEqual(describe_accounting({'message': accept_line()}, 'Recorded'),
-                         '[NPS][Accept] Recorded - anonymous@example.edu')
+        self.assertEqual(describe_accounting(event, 'Dropped'), '[NPS][Accounting] Dropped')
+        self.assertEqual(describe_accounting({'message': accept_line()}, 'Recorded'), '[NPS][Accept] Recorded')
+        self.assertEqual(describe_accounting({'message': nps_line()}, 'Recorded'),
+                         '[NPS][Accounting] Recorded: 10.212.16.219')
         # An Access-Accept remembered is recorded, not dropped
-        processor = self.consumer({'enable': True, 'timezone': NEW_YORK}).processor
+        processor = self.consumer({'enable': True, 'timezone': NEW_YORK, 'realms': ['example']}).processor
         self.assertTrue(processor.process_nps({'message': accept_line()}))
         self.assertEqual(describe_accounting([], 'Dropped'), '[NPS][Accounting] Dropped')
 
@@ -719,6 +815,21 @@ class RealValkeyTest(unittest.TestCase):
         for n in range(MAX_SESSIONS + 2):
             sessions.record(radius.Session('10.0.0.5', f'ap|{n}', f'user{n}', None, n * 100, n * 100 + 50,
                                            None, None))
+        # Naming nobody: an update to a session recorded, and nothing for one not
+        strict = sessions_for(redis, conf(trust_given_names=False), warn=lambda message: None)
+        strict.take(accept_line(account='EXAMPLE\\erin', klass='E1'))
+        strict.take(nps_line(klass='E1', address='10.212.16.240', mac='BA-F7-F8-00-00-05', session_id='E1'))
+        strict.take(nps_line(klass=None, status='2', address='10.212.16.240', mac='', session_id='E1',
+                             logged='10/07/2026 18:22:34.212', session_time='780'))
+        strict.take(nps_line(klass=None, address='10.212.16.241', session_id='NOBODY'))
+        # A late report from an earlier session with the id
+        strict.take(nps_line(klass='E1', address='10.212.16.240', session_id='E1', status='2',
+                             logged='10/07/2026 17:00:00.000', session_time='60'))
+        # Moving to a new address ends the old
+        strict.take(accept_line(account='EXAMPLE\\finn', klass='F1'))
+        strict.take(nps_line(klass='F1', address='10.212.16.250', mac='BA-F7-F8-00-00-06', session_id='F1'))
+        strict.take(nps_line(klass='F1', address='10.212.16.251', mac='BA-F7-F8-00-00-06', session_id='F1',
+                             logged='10/07/2026 18:24:34.212', session_time='900'))
 
         def text(value):
             return value.decode() if isinstance(value, bytes) else value
@@ -728,7 +839,10 @@ class RealValkeyTest(unittest.TestCase):
         return (dump('turkeybite:radius:ip:10.212.16.219'), dump('turkeybite:radius:ip:10.212.16.230'), bridged,
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:04')),
                 sorted(text(k) for k in redis.hgetall('turkeybite:radius:ip:10.0.0.5')),
-                sessions.holder('10.212.16.219', LOGGED))
+                sessions.holder('10.212.16.219', LOGGED),
+                dump('turkeybite:radius:ip:10.212.16.240'), dump('turkeybite:radius:ip:10.212.16.241'),
+                dump('turkeybite:radius:ip:10.212.16.250'), dump('turkeybite:radius:ip:10.212.16.251'),
+                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:06')))
 
     def test_the_lua_does_what_the_fake_does(self):
         real = self.story(self.redis)
@@ -741,6 +855,12 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual((real[2].get('b'), real[2].get('r'), real[2]['ttl']), (1, LOGGED, 1200))
         self.assertNotIn('b', real[1]['ap-hall-11|D2'])
         self.assertEqual(real[3]['a'], '10.212.16.230')
+        erin = real[6]['ap-hall-11|E1']
+        self.assertEqual((erin['u'], erin['e'], erin['m'], erin['a']), ('erin', LOGGED + 180, 'ba:f7:f8:00:00:05', 1))
+        self.assertEqual(real[7], {})
+        self.assertEqual(real[8]['ap-hall-11|F1']['e'], LOGGED + 300)
+        self.assertNotIn('e', real[9]['ap-hall-11|F1'])
+        self.assertEqual(real[10]['a'], '10.212.16.251')
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 
