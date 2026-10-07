@@ -28,12 +28,9 @@
   let kind = $state<'all' | 'user' | 'host' | 'ip'>('all');
 
   const list = new Query((signal) => api.get<{ items: EntityRow[]; total_events: number }>(
-    `/entities${qs({ start: timeRange.from, end: timeRange.to, query, sort, size: 120 })}`, { signal }));
+    `/entities${qs({ start: timeRange.from, end: timeRange.to, query, sort, kind, size: 120 })}`, { signal }));
 
-  const rows = $derived((list.data?.items ?? []).filter((r) => kind === 'all'
-    || (kind === 'user' && r.field === 'bite.client_user')
-    || (kind === 'host' && (r.field === 'bite.client_hostname_short' || r.field === 'bite.client_hosts_short'))
-    || (kind === 'ip' && r.field === 'bite.client')));
+  const rows = $derived(list.data?.items ?? []);
   const maxEvents = $derived(Math.max(1, ...rows.map((r) => r.events)));
 </script>
 

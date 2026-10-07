@@ -8,6 +8,7 @@ and over what range.
 import asyncio
 import re
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import cast, or_, select, String
@@ -52,6 +53,7 @@ async def list_entities(request: Request, *,  # pylint: disable=too-many-argumen
                         start: str | None = None, end: str | None = None,
                         query: str = '',
                         sort: str = 'notable', size: int = 50,
+                        kind: Literal['all', 'user', 'host', 'ip'] = 'all',
                         principal: Principal = Depends(require(rbac.EVENTS_READ)),
                         search: SearchClient = Depends(search_client),
                         db: AsyncSession = Depends(get_session)) -> dict:
@@ -61,11 +63,17 @@ async def list_entities(request: Request, *,  # pylint: disable=too-many-argumen
     # while for the same list, which the page asks for again as it is used
     narrowed = bool(query.strip())
     if audit.look(db, 'entities.list', principal=principal, request=request,
-                  key=f'{query}|{start}|{end}|{sort}', window=60 if narrowed else audit.LIST_LOOK_WINDOW,
-                  details={'query': query[:2000], 'sort': sort, **tr.public()}):
+                  key=f'{query}|{start}|{end}|{sort}|{kind}', window=60 if narrowed else audit.LIST_LOOK_WINDOW,
+                  details={'query': query[:2000], 'sort': sort, 'kind': kind, **tr.public()}):
         await db.commit()
     size = max(1, min(size, 200))
     groups = list(F.ENTITY_FIELDS)
+    selected = {
+        'all': groups,
+        'user': ['bite.client_user'],
+        'host': ['bite.client_hostname_short', 'bite.client_hosts_short'],
+        'ip': ['bite.client'],
+    }[kind]
     sub = {
         'notable': {'filter': NOTABLE},
         'threats': {'filter': {'prefix': {'bite.risk': 'threat.'}}},
@@ -77,11 +85,17 @@ async def list_entities(request: Request, *,  # pylint: disable=too-many-argumen
         'types': {'terms': {'field': 'bite.type', 'size': 2}},
     }
     aggs = Q.group_aggs(groups, size if sort != 'notable' else min(size * 3, 500), sub)
+    # Keep the full identity precedence: a browser user must not become an
+    # address merely because the Addresses tab is selected.
+    aggs = {key: agg for i, (key, agg) in enumerate(aggs.items()) if groups[i] in selected}
+    extra = ([{'bool': {'should': [Q.group_filter(groups, groups.index(field))
+                                  for field in selected], 'minimum_should_match': 1}}]
+             if kind != 'all' else None)
     if sort == 'notable':
         for part in aggs.values():
             part['aggs']['t']['terms']['order'] = {'notable': 'desc'}
     result = await search.search({'size': 0, 'track_total_hits': True,
-                                  'query': Q.bool_query(tr, query), 'aggs': aggs})
+                                  'query': Q.bool_query(tr, query, extra=extra), 'aggs': aggs})
     buckets = Q.group_buckets(result.get('aggregations') or {}, groups)
     if sort == 'notable':
         buckets.sort(key=lambda b: ((b.get('notable') or {}).get('doc_count', 0), b['doc_count']),

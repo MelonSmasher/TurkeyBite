@@ -211,6 +211,49 @@ async def test_a_private_dashboard_is_invisible_to_others(app, client):
     await other.aclose()
 
 
+async def test_entity_kind_is_selected_before_limit(client, search):
+    from collections import Counter
+
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    events = ([{'bite.client_hosts_short': 'busy-machine', 'bite.client': '10.0.0.1'}] * 20
+              + [{'bite.client_user': 'quiet-person', 'bite.client_hostname_short': 'laptop',
+                  'bite.client': '10.0.0.2'}]
+              + [{'bite.client': '10.0.0.3'}] * 2)
+
+    def matches(doc, condition):
+        if 'exists' in condition:
+            return condition['exists']['field'] in doc
+        if 'range' in condition:
+            return True  # All fixture events are in the requested time range.
+        clauses = condition['bool']
+        return (all(matches(doc, c) for c in clauses.get('filter', []))
+                and not any(matches(doc, c) for c in clauses.get('must_not', []))
+                and (not clauses.get('should')
+                     or any(matches(doc, c) for c in clauses['should'])))
+
+    def aggregate(body, index=None):
+        docs = [doc for doc in events if matches(doc, body['query'])]
+        aggs = {}
+        for name, agg in body['aggs'].items():
+            terms = agg['aggs']['t']['terms']
+            counts = Counter(doc[terms['field']] for doc in docs if matches(doc, agg['filter']))
+            aggs[name] = {'t': {'buckets': [
+                {'key': key, 'doc_count': count, 'notable': {'doc_count': count}}
+                for key, count in counts.most_common(terms['size'])]}}
+        return {'hits': {'total': {'value': len(docs)}}, 'aggregations': aggs}
+
+    search.answer = aggregate
+    for kind, expected, count in [('all', 'busy-machine', 23), ('user', 'quiet-person', 1),
+                                  ('host', 'busy-machine', 20), ('ip', '10.0.0.3', 2)]:
+        response = await client.get('/api/v1/entities', params={'kind': kind, 'size': 1})
+        assert response.status_code == 200  # nosec B101
+        result = response.json()
+        assert [item['key'] for item in result['items']] == [expected]  # nosec B101
+        assert result['total_events'] == count  # nosec B101
+    assert (await client.get('/api/v1/entities', params={'kind': 'unknown'})).status_code == 422  # nosec B101
+
+
 async def test_viewing_a_profile_is_audited(client, search):
     await make_user('ana', role='analyst')
     await login(client, 'ana')

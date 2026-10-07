@@ -24,6 +24,11 @@ log, and daily counts for long-term trends. Nothing in Postgres is a copy of an
 event: a finding keeps the query that reproduces its evidence, and the daily
 counts are per day and category, never per person.
 
+The Entities kind selector (People, Machines, Addresses) is applied by the API
+before ranking and limiting results. A busy DNS machine cannot hide browser
+users from the People view. `/api/v1/entities` accepts `kind=all|user|host|ip`;
+omitting it keeps the mixed view and its user → hostname → PTR host → IP precedence.
+
 ## What it does
 
 | | |
