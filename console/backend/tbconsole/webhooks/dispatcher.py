@@ -36,6 +36,12 @@ BATCH = 20
 
 
 def _headers(hook: Webhook, delivery: WebhookDelivery, body: bytes) -> dict:
+    """A delivery's headers: the hook's own, and the event, its id and the signature."""
+    return _signed_headers(hook, delivery.event, str(delivery.id), body)
+
+
+def _signed_headers(hook: Webhook, event: str, request_id: str, body: bytes) -> dict:
+    """The hook's custom headers, then the event, an id and the body's signature under its secret."""
     headers = {}
     if hook.headers_enc:
         try:
@@ -46,8 +52,8 @@ def _headers(hook: Webhook, delivery: WebhookDelivery, body: bytes) -> dict:
     headers.update({
         'Content-Type': 'application/json',
         'User-Agent': 'TurkeyBite-Console-Webhooks/1',
-        'X-TurkeyBite-Event': delivery.event,
-        'X-TurkeyBite-Delivery': str(delivery.id),
+        'X-TurkeyBite-Event': event,
+        'X-TurkeyBite-Delivery': request_id,
         signing.HEADER: signing.sign(decrypt(hook.secret_enc), body),
     })
     return headers
@@ -109,15 +115,23 @@ def _words(e: httpx.TransportError) -> tuple[str, bool]:
     return f'the connection failed ({type(e).__name__})', True
 
 
-async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, headers: dict,  # pylint: disable=too-many-locals  # each address in turn
-                outcome: dict) -> None:
+# pylint: disable-next=too-many-arguments,too-many-locals  # each address in turn
+async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, headers: dict,
+                outcome: dict, *, keep: int = SNIPPET_BYTES, wait: float | None = None) -> None:
+    """Sends `body` to the target, an address at a time, and notes the answer in `outcome`.
+
+    Up to `keep` bytes of the answer are kept, in outcome['raw'], and the
+    start of it as a snippet; `wait` is how long to wait for it, the webhook
+    timeout unless said.
+    """
     settings = get_settings()
+    wait = wait or settings.webhook_timeout_sec
     # Through a proxy the name goes as it is, and the proxy connects; otherwise
     # each checked address in turn, with the name as Host and TLS server name
     attempts = [None] if settings.webhook_proxy else target.addresses[:MAX_ADDRESSES]
     # An address that does not answer leaves time for the next
     connect = max(MIN_CONNECT, settings.webhook_timeout_sec / len(attempts))
-    timeout = httpx.Timeout(settings.webhook_timeout_sec, connect=min(connect, settings.webhook_timeout_sec))
+    timeout = httpx.Timeout(wait, connect=min(connect, settings.webhook_timeout_sec))
     for i, address in enumerate(attempts):
         url, extensions, sent = target.url, {}, dict(headers)
         # A compressed answer is not unpacked: a few bytes of it can be gigabytes
@@ -142,9 +156,11 @@ async def _post(http: httpx.AsyncClient, target: safety.Target, body: bytes, hea
                 async for chunk in response.aiter_bytes():
                     chunks.append(chunk)
                     size += len(chunk)
-                    if size >= SNIPPET_BYTES:
+                    if size > keep:
                         break
-                outcome['snippet'] = b''.join(chunks)[:SNIPPET_BYTES].decode('utf-8', 'replace')[:300]
+                raw = b''.join(chunks)
+                outcome['raw'], outcome['cut_short'] = raw[:keep], len(raw) > keep
+                outcome['snippet'] = raw[:SNIPPET_BYTES].decode('utf-8', 'replace')[:300]
             return
         except (httpx.ConnectError, httpx.ConnectTimeout):
             if i == len(attempts) - 1:
@@ -204,6 +220,63 @@ async def send(hook: Webhook, delivery: WebhookDelivery, http: httpx.AsyncClient
             await http.aclose()
     outcome['duration_ms'] = int((time.monotonic() - started) * 1000)
     return outcome
+
+
+# A question asked of another system with a webhook's secret and headers:
+# how long its answer may take, and how big it may be
+ASK_WAIT = 30.0
+ASK_MAX_BYTES = 512 * 1024
+
+
+class AskFailed(Exception):
+    """A question that got no usable answer, in words for the person who asked."""
+
+
+async def ask(hook: Webhook, url: str, event: str, payload: dict,  # pylint: disable=too-many-arguments
+              http: httpx.AsyncClient | None = None) -> dict:
+    """Asks another system something, signed as the hook signs its deliveries, and returns its JSON answer.
+
+    The URL is checked as a webhook's is, and connected to at the addresses
+    checked; the hook's custom headers and secret go with it, so the other
+    side knows the console as it does from its deliveries. Raises AskFailed.
+    """
+    body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+    headers = _signed_headers(hook, event, str(payload.get('id') or ''), body)
+    outcome: dict = {'status_code': None, 'raw': b''}
+    own = http is None
+    try:
+        http = http or client()
+
+        async def attempt() -> None:
+            target = await safety.resolve(url)
+            await _post(http, target, body, headers, outcome, keep=ASK_MAX_BYTES, wait=ASK_WAIT)
+        await asyncio.wait_for(attempt(), timeout=ASK_WAIT + DEADLINE_SLACK)
+    except safety.UnsafeUrl as e:
+        raise AskFailed(str(e)) from e
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        raise AskFailed('it took too long to answer') from e
+    except httpx.TransportError as e:
+        raise AskFailed(_words(e)[0]) from e
+    finally:
+        if own and http is not None:
+            await http.aclose()
+    code = outcome['status_code']
+    if code is None or not 200 <= code < 300:
+        detail = ''
+        try:
+            detail = str(json.loads(outcome['raw']).get('error') or '')[:200]
+        except (ValueError, AttributeError):
+            pass
+        raise AskFailed(f'it answered HTTP {code}' + (f': {detail}' if detail else ''))
+    if outcome.get('cut_short'):
+        raise AskFailed('its answer was too large')
+    try:
+        answer = json.loads(outcome['raw'])
+    except ValueError as e:
+        raise AskFailed('its answer was not JSON') from e
+    if not isinstance(answer, dict):
+        raise AskFailed('its answer was not a JSON object')
+    return answer
 
 
 class _Permanent(Exception):

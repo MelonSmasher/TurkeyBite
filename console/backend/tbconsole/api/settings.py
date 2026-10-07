@@ -1,5 +1,6 @@
 """Settings admins change at runtime: the LDAP directory and general options."""
 
+import uuid
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import audit, settings_store
 from ..db import get_session
 from ..deps import Principal, require
+from ..models import Webhook
 from ..security import crypto, ldap, rbac
 
 router = APIRouter(prefix='/settings', tags=['settings'])
@@ -62,19 +64,27 @@ class GeneralBody(BaseModel):
     require_mfa_for_local_admins: bool = False
     privacy_mode_default: bool = False
     device_lookup_url: str = Field('', max_length=500)
+    device_lookup_webhook_id: str = Field('', max_length=64)
 
     @field_validator('device_lookup_url')
     @classmethod
     def _lookup_url(cls, value: str) -> str:
-        """An http(s) URL with {value} where the device's address goes, or nothing."""
+        """An http(s) URL with no credentials in it, or nothing."""
         value = value.strip()
         if not value:
             return ''
-        parts = urlsplit(value.replace('{value}', 'x'))
-        if parts.scheme not in ('http', 'https') or not parts.hostname or '{value}' not in value \
-                or any(c.isspace() for c in value):
-            raise ValueError('the device lookup link is an http:// or https:// URL with {value} where the '
-                             'address goes, such as https://sac.example.edu/respond/device/?q={value}')
+        parts = urlsplit(value)
+        try:
+            port_ok = parts.port is None or 0 < parts.port < 65536
+        except ValueError:
+            port_ok = False
+        # Credentials in it would be shown to whoever reads the settings
+        credentials = bool(parts.username or parts.password)
+        well_formed = parts.scheme in ('http', 'https') and bool(parts.hostname) and port_ok
+        if not well_formed or credentials or any(c.isspace() for c in value):
+            raise ValueError('the device lookup URL is an http:// or https:// address with no user name or '
+                             'password in it, such as https://sac.example.edu/ingest/webhook/turkeybite/'
+                             'device-lookup/')
         return value
 
 
@@ -191,9 +201,24 @@ async def get_general(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
 async def put_general(body: GeneralBody, request: Request,
                       principal: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
                       db: AsyncSession = Depends(get_session)) -> dict:
-    """Saves the general settings, and returns them."""
-    await settings_store.put(db, 'general', body.model_dump(), principal.user.id)
-    audit.record(db, 'settings.general', principal=principal, request=request,
-                 details=body.model_dump())
+    """Saves the general settings, and returns them.
+
+    Only what was sent changes; a setting a client leaves out keeps its value.
+    """
+    changes = body.model_dump(exclude_unset=True)
+    saved = {**await settings_store.general(db), **changes}
+    url, hook_id = saved.get('device_lookup_url') or '', saved.get('device_lookup_webhook_id') or ''
+    if bool(url) != bool(hook_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            'Device lookup needs both its URL and the webhook that signs its questions.')
+    if hook_id:
+        try:
+            hook = await db.get(Webhook, uuid.UUID(hook_id))
+        except ValueError:
+            hook = None
+        if hook is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, 'That webhook does not exist.')
+    await settings_store.put(db, 'general', saved, principal.user.id)
+    audit.record(db, 'settings.general', principal=principal, request=request, details=changes)
     await db.commit()
     return await settings_store.general(db)

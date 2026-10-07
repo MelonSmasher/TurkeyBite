@@ -82,7 +82,7 @@
             <!-- The addresses it was last seen at, which look the device up where an admin linked -->
             <span class="latest">Latest {p.latest_address.addresses.length === 1 ? 'address' : 'addresses'}
               {#each p.latest_address.addresses as address (address)}
-                {#if session.me?.device_lookup_url}<DeviceLookup value={address} />
+                {#if session.me?.device_lookup && session.can('findings:write')}<DeviceLookup value={address} />
                 {:else}<EntityLink field="bite.client" value={address} size="sm" />{/if}
               {/each}
               {ago(p.latest_address.at)}</span>

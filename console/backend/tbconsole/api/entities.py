@@ -237,7 +237,8 @@ async def _latest_address(search: SearchClient, field: str, value: str, selector
     LATEST_ADDRESS_DAYS days.
     """
     if F.BY_NAME[field].type == 'ip':
-        return {'addresses': [value], 'at': None}
+        # A network is not a device's address
+        return None if '/' in value else {'addresses': [value], 'at': None}
     result = await search.search({
         'size': 1, '_source': ['@timestamp', 'bite.client', 'bite.client_ips'],
         'query': {'bool': {'filter': [

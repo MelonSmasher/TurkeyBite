@@ -20,10 +20,11 @@ GENERAL_DEFAULTS = {
     'require_mfa_for_local_admins': False,
     # Mask people's identities everywhere until someone chooses to reveal them
     'privacy_mode_default': False,
-    # Where a device's address links to, for a lookup in another system, such
-    # as an inventory or a security console: a URL with {value} in it. Empty
-    # shows no link
+    # Device lookup: where the console asks another system, such as a
+    # security console, what its inventories know about an address, and the
+    # webhook whose secret and headers sign the question. Both empty, off
     'device_lookup_url': '',
+    'device_lookup_webhook_id': '',
 }
 
 

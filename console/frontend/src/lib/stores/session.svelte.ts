@@ -88,6 +88,9 @@ class Session {
     try {
       const now = await api.get<Me>('/auth/me');
       if (now.user.id !== this.me?.user.id) this.#elsewhere();
+      // The same person: what the console tells them may have changed since,
+      // their role or what an admin set up. Their display choices stay as they are here
+      else this.me = now;
     } catch {
       // Signed out: the next request finds out and sends this tab to sign in
     }

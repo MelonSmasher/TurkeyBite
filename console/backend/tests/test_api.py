@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from tbconsole import db
-from tbconsole.models import AuditEvent, Finding, Rule
+from tbconsole.models import AuditEvent, Finding, Rule, Webhook
 
 from .conftest import login, make_user
 
@@ -417,20 +417,99 @@ async def test_a_tab_left_from_another_persons_session_cannot_save_its_preferenc
     assert mine.status_code == 200 and 'user_id' not in mine.json()  # nosec B101
 
 
-async def test_a_device_lookup_link_is_a_url_with_a_place_for_the_address(client):
+async def _sac_hook():
+    from tbconsole.security import crypto
+    from tbconsole.webhooks.service import set_url
+    async with db.sessionmaker()() as session:
+        hook = Webhook(name='SAC', secret_enc=crypto.encrypt('whsec_test'), events=['finding.created'],
+                       all_findings=False, min_severity='info',
+                       headers_enc=crypto.encrypt('{"X-Webhook-Token": "tok-123"}'))
+        set_url(hook, 'https://sac.example.edu/ingest/webhook/turkeybite/')
+        session.add(hook)
+        await session.commit()
+        return str(hook.id)
+
+
+async def test_device_lookup_is_a_url_without_credentials_and_a_webhook_to_sign_with(client):
     await make_user('root', role='admin')
     headers = await login(client, 'root')
     general = (await client.get('/api/v1/settings/general')).json()
-    assert general['device_lookup_url'] == ''  # nosec B101
-    for bad in ('sac.example.edu/respond/device/?q={value}', 'https://sac.example.edu/respond/device/',
-                'javascript:alert({value})', 'https://sac.example.edu/?q={value} x'):
-        response = await client.put('/api/v1/settings/general', headers=headers,
-                                    json={**general, 'device_lookup_url': bad})
+    assert general['device_lookup_url'] == '' and general['device_lookup_webhook_id'] == ''  # nosec B101
+    url = 'https://sac.example.edu/ingest/webhook/turkeybite/device-lookup/'
+    for bad in ('sac.example.edu/device-lookup/', 'javascript:alert(1)', 'https://user:pw@sac.example.edu/x',
+                'https://sac.example.edu:99999/x', 'https://sac.example.edu:port/x', 'https://sac.example.edu/x y'):
+        response = await client.put('/api/v1/settings/general', headers=headers, json={'device_lookup_url': bad})
         assert response.status_code == 422, bad  # nosec B101
-    link = 'https://sac.example.edu/respond/device/?q={value}'
-    saved = await client.put('/api/v1/settings/general', headers=headers, json={**general, 'device_lookup_url': link})
-    assert saved.status_code == 200  # nosec B101
-    assert (await client.get('/api/v1/auth/me')).json()['device_lookup_url'] == link  # nosec B101
+    # The URL and the webhook go together, and the webhook has to exist
+    alone = await client.put('/api/v1/settings/general', headers=headers, json={'device_lookup_url': url})
+    assert alone.status_code == 400  # nosec B101
+    missing = await client.put('/api/v1/settings/general', headers=headers,
+                               json={'device_lookup_url': url, 'device_lookup_webhook_id': str(uuid.uuid4())})
+    assert missing.status_code == 400  # nosec B101
+    hook_id = await _sac_hook()
+    saved = await client.put('/api/v1/settings/general', headers=headers,
+                             json={'device_lookup_url': url, 'device_lookup_webhook_id': hook_id})
+    assert saved.status_code == 200 and saved.json()['org_name'] == general['org_name']  # nosec B101
+    # Everyone hears only that lookups are on, not where they go
+    me = (await client.get('/api/v1/auth/me')).json()
+    assert me['device_lookup'] is True and 'sac.example.edu' not in str(me)  # nosec B101
+    # A setting left out keeps its value
+    await client.put('/api/v1/settings/general', headers=headers, json={'org_name': 'Elsewhere'})
+    assert (await client.get('/api/v1/settings/general')).json()['device_lookup_url'] == url  # nosec B101
+
+
+async def test_a_device_lookup_asks_the_other_side_and_shows_only_what_is_safe(client, monkeypatch):
+    from tbconsole.webhooks import dispatcher
+    await make_user('root', role='admin')
+    headers = await login(client, 'root')
+    asked = []
+
+    async def ask(hook, url, event, payload, http=None):
+        asked.append((hook.name, url, event, payload))
+        return {'query': {'value': payload['address']}, 'link': '/respond/device/?q=10.20.30.40',
+                'alerts': {'count': 3, 'open': 'x'},
+                'inventories': [
+                    {'name': 'Netdisco', 'configured': True, 'asks': True, 'found': True, 'records': [
+                        {'title': 'core-sw1 ge-0/0/12', 'subtitle': 'VLAN 120', 'link': 'javascript:alert(1)',
+                         'facts': [['Switch', 'core-sw1'], ['VLAN', 120], ['bad']]}]},
+                    {'name': 'Lansweeper', 'configured': True, 'problem': 'could not be reached'},
+                    'not a card']}
+    monkeypatch.setattr(dispatcher, 'ask', ask)
+    off = await client.post('/api/v1/devices/lookup', headers=headers, json={'address': '10.20.30.40'})
+    assert off.status_code == 409  # nosec B101
+    hook_id = await _sac_hook()
+    url = 'https://sac.example.edu/ingest/webhook/turkeybite/device-lookup/'
+    await client.put('/api/v1/settings/general', headers=headers,
+                     json={'device_lookup_url': url, 'device_lookup_webhook_id': hook_id})
+    assert (await client.post('/api/v1/devices/lookup', headers=headers,  # nosec B101
+                              json={'address': 'lab-12'})).status_code == 400
+    response = await client.post('/api/v1/devices/lookup', headers=headers, json={'address': '10.20.30.40'})
+    assert response.status_code == 200, response.text  # nosec B101
+    data = response.json()
+    assert asked[0][1:3] == (url, 'device.lookup')  # nosec B101
+    assert asked[0][3]['address'] == '10.20.30.40' and asked[0][3]['requested_by'] == 'root'  # nosec B101
+    netdisco, lansweeper = data['inventories']
+    assert netdisco['records'][0]['facts'] == [['Switch', 'core-sw1'], ['VLAN', '120']]  # nosec B101
+    assert netdisco['records'][0]['link'] == ''  # nosec B101
+    assert lansweeper['problem'] == 'could not be reached' and not lansweeper['found']  # nosec B101
+    assert data['alerts'] == {'count': 3, 'open': 0}  # nosec B101
+    assert data['link'] == 'https://sac.example.edu/respond/device/?q=10.20.30.40'  # nosec B101
+    async with db.sessionmaker()() as session:
+        row = (await session.execute(select(AuditEvent).where(AuditEvent.action == 'device.lookup'))).scalar_one()
+        assert row.target_id == '10.20.30.40' and row.actor_name == 'root'  # nosec B101
+
+    async def fails(hook, url, event, payload, http=None):
+        raise dispatcher.AskFailed('it answered HTTP 403: Invalid TurkeyBite signature')
+    monkeypatch.setattr(dispatcher, 'ask', fails)
+    failed = await client.post('/api/v1/devices/lookup', headers=headers, json={'address': '10.20.30.40'})
+    assert failed.status_code == 502 and 'Invalid TurkeyBite signature' in failed.json()['detail']  # nosec B101
+
+
+async def test_a_viewer_cannot_look_devices_up(client):
+    await make_user('val', role='viewer')
+    headers = await login(client, 'val')
+    response = await client.post('/api/v1/devices/lookup', headers=headers, json={'address': '10.20.30.40'})
+    assert response.status_code == 403  # nosec B101
 
 
 async def test_a_profile_gives_the_address_a_machine_was_last_seen_at(client, search):
