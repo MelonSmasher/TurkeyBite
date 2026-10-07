@@ -188,6 +188,8 @@ Then use `docker compose pull turkeybite-core turkeybite-worker turkeybite-libra
 
 To release, first merge the changes to `master` and choose the next version from the existing release tags. Tag a master commit containing the image workflow; tagging an older commit without it cannot start CI. Increment MAJOR for an incompatible change, MINOR for a backward-compatible feature, or PATCH for a backward-compatible fix. Never move or reuse a released tag. For example, after deciding that `v1.2.3` is the correct next version:
 
+Release candidates use `vMAJOR.MINOR.PATCH-rcN` (starting at `rc1`) and publish the same tag on all four images after the release CI passes. Create them as GitHub prereleases; do not present them as stable releases.
+
 ```bash
 git switch master
 git pull --ff-only origin master
