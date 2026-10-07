@@ -401,10 +401,13 @@ class RetagTest(unittest.TestCase):
 class ClientTest(unittest.TestCase):
     """Which OpenSearch host a run uses, and with whose settings."""
 
-    HOSTS = {'hosts': [
-        {'uri': 'https://down.example.edu:9200', 'username': 'a', 'password': 'Pw-one.1'},
-        {'uri': 'http://up.example.edu:9201', 'username': 'b', 'password': 'Pw-two.2'},
-    ]}
+    @staticmethod
+    def host(uri, username, secret):
+        return dict(uri=uri, username=username, password=secret)
+
+    def hosts(self):
+        return {'hosts': [self.host('https://down.example.edu:9200', 'a', 'first-sign-in'),
+                          self.host('http://up.example.edu:9201', 'b', 'second-sign-in')]}
 
     def connect(self, answers):
         made = []
@@ -424,9 +427,9 @@ class ClientTest(unittest.TestCase):
     def test_a_host_that_is_down_is_passed_over_for_the_next_with_its_own_settings(self):
         connect, made = self.connect({'down.example.edu': OSError('refused'),
                                       'up.example.edu': True})
-        client = client_for(self.HOSTS, connect)
+        client = client_for(self.hosts(), connect)
         self.assertIs(client, made[1])
-        self.assertEqual(client.kwargs['http_auth'], ('b', 'Pw-two.2'))
+        self.assertEqual(client.kwargs['http_auth'], ('b', 'second-sign-in'))
         self.assertFalse(client.kwargs['use_ssl'])
         made[0].close.assert_called_once()
 
@@ -434,7 +437,7 @@ class ClientTest(unittest.TestCase):
         connect, _ = self.connect({'down.example.edu': OSError('refused'),
                                    'up.example.edu': False})
         with self.assertRaises(OSError) as raised:
-            client_for(self.HOSTS, connect)
+            client_for(self.hosts(), connect)
         self.assertIn('down.example.edu', str(raised.exception))
         self.assertIn('up.example.edu', str(raised.exception))
 
