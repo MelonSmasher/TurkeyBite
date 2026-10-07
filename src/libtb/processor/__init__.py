@@ -20,6 +20,7 @@ from libtb.evidence.resolvers import settings as resolver_settings
 from libtb.opensearch import ConfigurationError, check_hosts, client_kwargs, report_once
 from libtb.privacy import redact
 from libtb.privacy import settings as privacy_settings
+from libtb import radius
 from datetime import datetime, timezone
 from dateutil import *
 from dateutil.parser import parse
@@ -497,12 +498,15 @@ class Processor(object):
         # verifying its certificate is reported.
         check_hosts(config.get('elastic'))
         self._privacy = privacy_settings(config.get('privacy'))
+        self._radius = radius.settings(config.get('radius'))
 
     def process_packet(self, data):
         if data['type'] == 'dns':
             self.process_dns_packet(data)
-        if data['type'] == 'browser.history':
+        elif data['type'] == 'browser.history':
             self.process_browser_history(data)
+        elif data['type'] == 'nps':
+            self.process_nps(data)
         else:
             return False
 
@@ -780,6 +784,54 @@ class Processor(object):
         extra.update(taxonomy_fields(contexts))
         return contexts, extra
 
+    def radius_sessions(self):
+        """Who held which address, see libtb.radius, or None when processor.radius is off.
+
+        One Valkey connection per process, made when first needed, since a
+        socket must not be shared across a fork. Tests set `self.sessions`.
+        """
+        if hasattr(self, 'sessions'):
+            return self.sessions
+        if not self._radius.enable:
+            return None
+        held = getattr(self, '_radius_sessions', None)
+        if held is None or held[0] != os.getpid():
+            r = Redis(
+                host=self.redis_conf['host'],
+                port=self.redis_conf['port'],
+                password=self.redis_conf['password'],
+                db=self.redis_conf.get('db', 0)
+            )
+            held = (os.getpid(), radius.Sessions(r, self.redis_conf['channel'], self._radius))
+            self._radius_sessions = held
+        return held[1]
+
+    def process_nps(self, data):
+        """Records the session an NPS accounting line reports. Nothing is indexed."""
+        sessions = self.radius_sessions()
+        if sessions is None:
+            return False
+        found = radius.session(radius.attributes(data.get('message')),
+                               radius.iso_seconds(data.get('@timestamp')), self._radius.realms)
+        if found is None:
+            return False
+        sessions.record(found)
+        return True
+
+    def address_holder(self, client, timestamp):
+        """bite.client_user and bite.client_mac for whoever held an address at a time, or {}."""
+        sessions = self.radius_sessions()
+        if sessions is None or not isinstance(client, str):
+            return {}
+        when = radius.iso_seconds(timestamp)
+        held = sessions.holder(client, time.time() if when is None else when)
+        if held is None:
+            return {}
+        who = {'client_user': held['u']}
+        if isinstance(held.get('m'), str):
+            who['client_mac'] = held['m']
+        return who
+
     def process_dns_packet(self, data):
         # Related context from lists
         contexts = []
@@ -880,6 +932,8 @@ class Processor(object):
             'bite': {
                 'processed': datetime.now(timezone.utc).isoformat(),
                 'client': client,
+                # The person who held the address then, from RADIUS accounting
+                **self.address_holder(client, data.get('@timestamp')),
                 'client_hosts': reversed_dns,
                 'client_hosts_short': short_hostnames(reversed_dns),
                 'ptr': rev_name,

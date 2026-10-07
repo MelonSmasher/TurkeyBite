@@ -145,6 +145,26 @@ processor:
   privacy:
     urls: trimmed
     packet: keep
+  # Who held an address, from Windows NPS's RADIUS accounting log, so a DNS
+  # lookup from a phone names the person signed in on it rather than "iphone".
+  # Filebeat on each NPS server sends the log's lines to the queue as `nps`
+  # events; see "RADIUS accounting" in the README. Workers keep each address's
+  # sessions in Valkey and write bite.client_user and bite.client_mac on DNS
+  # events, which costs each worker process a Valkey read per address every
+  # cache_sec. Unknown keys or bad values stop the worker at start.
+  #   realms      your own realms and NetBIOS domain, taken off a user name so
+  #               it matches the name Browserbeat reports: jsmith@example.edu
+  #               and EXAMPLE\jsmith become jsmith. Other realms are kept.
+  #   grace_sec   how long after an access point last reported a session its
+  #               address is still that person's: above the interim interval
+  #   keep_hours  how long an address's sessions are kept after the last report
+  #   cache_sec   how long a worker reuses what it read for an address
+  radius:
+    enable: false
+    realms: []
+    grace_sec: 1200
+    keep_hours: 24
+    cache_sec: 30
   dns:
     lookup_ips: true
     resolvers:

@@ -50,6 +50,7 @@ from redis.exceptions import ConnectionError as ValkeyConnectionError
 from redis.exceptions import TimeoutError as ValkeyTimeoutError
 
 from libtb.privacy import TRIMMED, trim_url
+from libtb.radius import attributes
 from libtb.util import dig
 from libtb.processor import DeliveryError
 from libtb.queue import NotOwner
@@ -104,6 +105,15 @@ def describe(data, verdict, urls=TRIMMED):
         short_hostname = dig(data, 'data', 'event', 'data', 'client', 'Hostname', 'short')
         if isinstance(short_hostname, str):
             line = line + ' - ' + short_hostname
+        return line
+
+    if packet_type == 'nps':
+        fields = attributes(data.get('message'))
+        line = '[NPS][Accounting] ' + verdict
+        if fields.get('Framed-IP-Address'):
+            line = line + ': ' + fields['Framed-IP-Address']
+        if fields.get('User-Name'):
+            line = line + ' - ' + fields['User-Name']
         return line
 
     return None

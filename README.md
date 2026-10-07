@@ -274,6 +274,75 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 
    Follow the installation instructions for [Browserbeat](https://github.com/MelonSmasher/browserbeat) to collect browser history data.
 
+3. **RADIUS accounting from Windows NPS**
+
+   A DNS lookup carries only the address that asked. A phone's reverse DNS
+   name is whatever the phone called itself, so every iPhone is `iphone`, and
+   findings pile hundreds of people onto that one name. On 802.1X Wi-Fi, NPS
+   knows who signed in on each device and which address it was given. Send
+   NPS's accounting log to TurkeyBite, and each DNS lookup records the person
+   who held its address at the time as `bite.client_user`, and the device as
+   `bite.client_mac`. Findings and profiles then name the person.
+
+   On every NPS server, open the NPS console, go to **Accounting → Change Log
+   File Properties**, and:
+   - on **Settings**, tick *Accounting requests* and *Periodic accounting
+     status*;
+   - on **Log File**, choose **DTS Compliant**.
+
+   The access points must send accounting with interim updates. Check that
+   the log's lines carry `Framed-IP-Address`. Then install
+   [Filebeat](https://www.elastic.co/beats/filebeat) on each server. It needs
+   to reach Valkey, as Packetbeat does:
+
+   ```yaml
+   # filebeat.yml on each NPS server
+   filebeat.inputs:
+     - type: filestream
+       id: nps-accounting
+       paths:
+         # NPS's default; use the directory set on the Log File tab
+         - 'C:\Windows\System32\LogFiles\IN*.log'
+       # Accounting requests only: NPS also logs sign-ins when told to
+       include_lines: ['<Packet-Type data_type="0">4</Packet-Type>']
+       fields:
+         type: nps
+       fields_under_root: true
+
+   output.redis:
+     hosts: ["valkey.domain.com:6379"]
+     password: "your_valkey_password"
+     db: 0
+     key: "turkeybite"
+     datatype: "list"
+   ```
+
+   Then turn it on in `config.yaml`. List your own realm and NetBIOS domain,
+   so that `jsmith@example.edu` and `EXAMPLE\jsmith` are recorded as `jsmith`,
+   as Browserbeat names people:
+
+   ```yaml
+   processor:
+     radius:
+       enable: true
+       realms: [example.edu, example]
+   ```
+
+   Workers keep each address's sessions in Valkey, in the queue's database,
+   for a day after the last report. The accounting lines themselves are not
+   indexed, and with `radius` off they are dropped.
+
+   - **How long an address counts as a person's.** A session holds its address
+     from its start until `grace_sec` (20 minutes) after an access point last
+     reported it. Keep that above the access points' interim interval.
+   - **Roaming.** After a stop, the address stays the person's for the same
+     20 minutes, so a phone that roams to another access point keeps its user.
+   - **Two sessions at once.** When two sessions cover a lookup, the one that
+     started later wins.
+   - **A device's first minutes.** Lookups a device makes before an access
+     point first reports its address have no user. For many access points,
+     the first report with an address is the first interim update.
+
 ### Maintenance
 
 * **Logs**: Container logs are available in the `vols/logs/` directory

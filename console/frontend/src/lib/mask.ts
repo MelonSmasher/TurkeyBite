@@ -5,11 +5,11 @@ import { alias } from './alias';
 import { quoteValue, tokenize } from './components/tbql';
 
 export const IDENTITY_FIELDS = new Set(['bite.client', 'bite.client_ips', 'bite.client_user', 'bite.client_hostname',
-  'bite.client_hostname_short', 'bite.client_hosts', 'bite.client_hosts_short', 'bite.ptr', 'entity']);
+  'bite.client_hostname_short', 'bite.client_hosts', 'bite.client_hosts_short', 'bite.ptr', 'bite.client_mac', 'entity']);
 
 // What a query may call them, as well as their full names
 export const IDENTITY_NAMES = new Set([...IDENTITY_FIELDS, 'client', 'ip', 'src', 'user', 'username', 'hostname',
-  'host', 'ptrs', 'ptr']);
+  'host', 'ptrs', 'ptr', 'mac']);
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

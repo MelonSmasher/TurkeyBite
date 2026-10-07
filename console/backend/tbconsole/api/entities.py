@@ -33,7 +33,7 @@ _DOMAIN = re.compile(r'[a-z0-9_*-]+(\.[a-z0-9_*-]+)*\.?', re.ASCII)
 
 IDENTITY_FIELDS = ('bite.client_user', 'bite.client_hostname_short', 'bite.client_hostname',
                    'bite.client', 'bite.client_ips', 'bite.client_hosts_short',
-                   'bite.client_platform', 'bite.client_browser')
+                   'bite.client_platform', 'bite.client_browser', 'bite.client_mac')
 
 
 def _identity_field(name: str) -> str:

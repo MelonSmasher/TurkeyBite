@@ -229,6 +229,41 @@ class FakeRedis(object):
     def pipeline(self, transaction=True):
         return FakePipeline(self)
 
+    # -- hashes -----------------------------------------------------------
+
+    def _hash(self, key):
+        value = self.data.get(_key(key))
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise TypeError('WRONGTYPE Operation against a key holding the wrong kind of value')
+        return value
+
+    def hset(self, key, field, value):
+        self._did('hset', key)
+        held = self._hash(key)
+        added = int(_bytes(field) not in held)
+        held[_bytes(field)] = _bytes(value)
+        self.data[_key(key)] = held
+        return added
+
+    def hgetall(self, key):
+        self._did('hgetall', key)
+        return dict(self._hash(key))
+
+    def hdel(self, key, *fields):
+        """Removes fields; a hash left empty stops existing."""
+        self._did('hdel', key)
+        held = self._hash(key)
+        removed = sum(1 for field in fields if held.pop(_bytes(field), None) is not None)
+        if not held:
+            self.data.pop(_key(key), None)
+        return removed
+
+    def hlen(self, key):
+        self._did('hlen', key)
+        return len(self._hash(key))
+
     # -- keys -------------------------------------------------------------
 
     def scan_iter(self, match=None, count=None):
@@ -256,19 +291,39 @@ class FakeRedis(object):
 
 
 class FakePipeline(object):
-    """Queues UNLINKs and runs them on execute, recording how many each time."""
+    """Queues commands and runs them on execute, recording how many each time.
+
+    UNLINKs are not recorded in `calls`, so a sweep's can be told from those
+    made one at a time; the rest run as the fake runs them.
+    """
 
     def __init__(self, redis):
         self.redis = redis
         self.queued = []
 
     def unlink(self, *keys):
-        self.queued.extend(_key(key) for key in keys)
+        self.queued.extend(('unlink', (_key(key),)) for key in keys)
+        return self
+
+    def hset(self, key, field, value):
+        self.queued.append(('hset', (key, field, value)))
+        return self
+
+    def expire(self, key, seconds):
+        self.queued.append(('expire', (key, seconds)))
+        return self
+
+    def hlen(self, key):
+        self.queued.append(('hlen', (key,)))
         return self
 
     def execute(self):
-        results = [1 if self.redis.data.pop(key, None) is not None else 0
-                   for key in self.queued]
+        results = []
+        for command, args in self.queued:
+            if command == 'unlink':
+                results.append(1 if self.redis.data.pop(args[0], None) is not None else 0)
+            else:
+                results.append(getattr(self.redis, command)(*args))
         self.redis.executions.append(len(self.queued))
         self.queued = []
         return results

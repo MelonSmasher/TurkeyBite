@@ -13,13 +13,16 @@ describe('privacy masking', () => {
     expect(maskQueryValues('(risk:threat) AND user:noah.kim')).toBe(`(risk:threat) AND user:${alias('noah.kim')}`);
     expect(maskQueryValues('host:"lab 12" OR domain:noah.kim')).toBe(`host:"${alias('lab 12')}" OR domain:noah.kim`);
     expect(maskQueryValues('bite.client:10.0.0.5')).toBe(`bite.client:${alias('10.0.0.5')}`);
+    expect(maskQueryValues('mac:"ba:f7:f8:00:00:01"')).toBe(`mac:"${alias('ba:f7:f8:00:00:01')}"`);
   });
 
   it('aliases identities in a document and withholds the rest', () => {
-    const doc = { '@timestamp': 't', bite: { client_user: 'ava', client_ips: ['10.0.0.5'], requested: ['x.example'] },
+    const doc = { '@timestamp': 't', bite: { client_user: 'ava', client_ips: ['10.0.0.5'], client_mac: 'ba:f7:f8:00:00:01',
+                                           requested: ['x.example'] },
                   packet: { src: '10.0.0.5' } };
     const masked = maskDocument(doc);
     expect(masked.bite.client_user).toBe(alias('ava'));
+    expect(masked.bite.client_mac).toBe(alias('ba:f7:f8:00:00:01'));
     expect(masked.bite.client_ips).toEqual([alias('10.0.0.5')]);
     expect(masked.bite.requested).toEqual(['x.example']);
     expect(masked.packet).toBe('[hidden in privacy mode]');

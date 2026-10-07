@@ -105,6 +105,7 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "client_hostname": { "type": "keyword" },
                             "client_hostname_short": { "type": "keyword" },
                             "client_user": { "type": "keyword" },
+                            "client_mac": { "type": "keyword" },
                             "client_platform": { "type": "keyword" },
                             "client_browser": { "type": "keyword" },
                             "client_ips": { "type": "ip" },
