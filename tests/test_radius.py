@@ -608,6 +608,22 @@ class DefaultNamesTest(unittest.TestCase):
         self.assertEqual(self.holder(LOGGED + 720), 'jsmith')
         self.assertIsNone(self.holder(LOGGED + 720, '10.212.16.220'))
 
+    def test_a_late_stop_at_the_old_address_does_not_lengthen_the_hold(self):
+        # Moved to .220 at 18:24; the old access point's stop for .219 lands at 18:34
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.sessions.take(nps_line(address='10.212.16.220', logged='10/07/2026 18:24:34.212', session_time='900'))
+        self.sessions.take(nps_line(status='2', logged='10/07/2026 18:34:34.212', session_time='1500'))
+        held = self.sessions.holder('10.212.16.219', LOGGED)
+        self.assertEqual((held['e'], held['l']), (LOGGED + 300, LOGGED))
+        self.assertIsNone(self.holder(LOGGED + 11 * 60))
+
+    def test_a_start_handled_after_an_interim_without_session_time_is_kept(self):
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line(session_time=None, logged='10/07/2026 18:29:34.212'))
+        self.sessions.take(nps_line(status='1', session_time=None))
+        self.assertEqual(self.sessions.holder('10.212.16.219', LOGGED + 600)['s'], LOGGED)
+
     def test_a_stop_without_its_session_time_still_ends_the_session(self):
         self.sessions.take(accept_line())
         self.sessions.take(nps_line())
@@ -869,6 +885,17 @@ class RealValkeyTest(unittest.TestCase):
         strict.take(nps_line(klass=None, status='2', address='10.212.16.250', mac='BA-F7-F8-00-00-06',
                              session_id='F1', user='anonymous', session_time=None,
                              logged='10/07/2026 18:31:34.212'))
+        # A late real stop at the old address, and a start after an untimed interim
+        strict.take(accept_line(account='EXAMPLE\\gail', klass='G1'))
+        strict.take(nps_line(klass='G1', address='10.212.16.252', mac='BA-F7-F8-00-00-07', session_id='G1'))
+        strict.take(nps_line(klass='G1', address='10.212.16.253', mac='BA-F7-F8-00-00-07', session_id='G1',
+                             logged='10/07/2026 18:24:34.212', session_time='900'))
+        strict.take(nps_line(klass='G1', status='2', address='10.212.16.252', mac='BA-F7-F8-00-00-07',
+                             session_id='G1', logged='10/07/2026 18:34:34.212', session_time='1500'))
+        strict.take(nps_line(klass='G1', address='10.212.16.254', mac='BA-F7-F8-00-00-08', session_id='H1',
+                             session_time=None, logged='10/07/2026 18:29:34.212'))
+        strict.take(nps_line(klass='G1', status='1', address='10.212.16.254', mac='BA-F7-F8-00-00-08',
+                             session_id='H1', session_time=None))
 
         def text(value):
             return value.decode() if isinstance(value, bytes) else value
@@ -881,7 +908,8 @@ class RealValkeyTest(unittest.TestCase):
                 sessions.holder('10.212.16.219', LOGGED),
                 dump('turkeybite:radius:ip:10.212.16.240'), dump('turkeybite:radius:ip:10.212.16.241'),
                 moved, dump('turkeybite:radius:ip:10.212.16.250'), dump('turkeybite:radius:ip:10.212.16.251'),
-                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:06')))
+                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:06')),
+                dump('turkeybite:radius:ip:10.212.16.252'), dump('turkeybite:radius:ip:10.212.16.254'))
 
     def test_the_lua_does_what_the_fake_does(self):
         real = self.story(self.redis)
@@ -902,6 +930,10 @@ class RealValkeyTest(unittest.TestCase):
         self.assertNotIn('x', real[9]['ap-hall-11|F1'])
         self.assertEqual(real[10]['ap-hall-11|F1']['x'], 1)
         self.assertEqual(real[11]['a'], '10.212.16.250')
+        gail = real[12]['ap-hall-11|G1']
+        self.assertEqual((gail['e'], gail['l']), (LOGGED + 300, LOGGED))
+        self.assertNotIn('x', gail)
+        self.assertEqual((real[13]['ap-hall-11|H1']['s'], real[13]['ap-hall-11|H1']['k']), (LOGGED, 1))
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

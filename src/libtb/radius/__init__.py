@@ -129,14 +129,16 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 # Merges one report into an address's sessions, atomically, since workers
 # take reports in parallel and a replayed batch hands them over out of order.
-#   - A report from before the session recorded under its id started is from
-#     an earlier session that used the id, and is ignored. One whose known
-#     start is after the recorded session was last reported is a new session
-#     reusing the id, and replaces it.
-#   - Otherwise the start is the first reported, the last report the latest,
-#     and the first report with the address the earliest. A stop, once seen,
-#     stays; one only inferred from the device moving to another address
-#     gives way to a later report of the session at this one.
+#   - A report from before the known start of the session recorded under its
+#     id is from an earlier session that used the id, and is ignored. One
+#     whose known start is after the recorded session was last reported is a
+#     new session reusing the id, and replaces it.
+#   - Otherwise the start is the first known one reported, or the first
+#     reported, the last report the latest, and the first report with the
+#     address the earliest. A stop, once seen, stays; one only inferred from
+#     the device moving to another address gives way to a later report of
+#     the session at this one, and a real stop after it does not move it
+#     later.
 #   - A report that names nobody (user "") only updates a session already
 #     recorded, keeping its name. A name NPS authenticated is not replaced by
 #     one a device gave.
@@ -163,6 +165,7 @@ local moved = stopped ~= nil and ARGV[15] == '1'
 local user, device = ARGV[2], ARGV[3]
 local signed, bridged = ARGV[9] == '1', ARGV[10] == '1'
 local slack, reported = tonumber(ARGV[11]), tonumber(ARGV[14])
+local timed = ARGV[16] == '1'
 local first = nil
 if not bridged then first = seen end
 local old = nil
@@ -171,10 +174,11 @@ if held then
   local ok, v = pcall(cjson.decode, held)
   if ok and type(v) == 'table' and type(v.s) == 'number' and type(v.l) == 'number' then old = v end
 end
-if old and seen < old.s - slack then return 0 end
-if old and ARGV[16] == '1' and start > old.l + slack then old = nil end
+if old and old.k == 1 and seen < old.s - slack then return 0 end
+if old and timed and start > old.l + slack then old = nil end
 if old then
-  start = old.s
+  if not (timed and old.k ~= 1 and start < old.s) then start = old.s end
+  timed = timed or old.k == 1
   if old.l > seen then seen = old.l end
   if type(old.e) == 'number' then
     local old_moved = old.x == 1
@@ -186,7 +190,12 @@ if old then
       elseif old.e < stopped then
         stopped = old.e
       end
-    elseif not old_moved and old.e > stopped then
+    elseif old_moved then
+      -- A real stop after one inferred from a move: it was not reported here
+      -- since, or it would have been reopened, so it ended when it moved
+      if stopped > old.e then stopped, seen = old.e, old.l end
+      moved = false
+    elseif old.e > stopped then
       stopped = old.e
     end
   end
@@ -206,6 +215,7 @@ local value = {u = user, s = start, l = seen}
 if device ~= '' then value.m = device end
 if stopped then value.e = stopped end
 if moved then value.x = 1 end
+if timed then value.k = 1 end
 if signed then value.a = 1 end
 if first then value.f = first end
 if bridged then
@@ -518,7 +528,7 @@ class Sessions:
 
     In the queue's database, since the librarian sweeps the host lists':
 
-        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, a, b, r, f}
+        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, k, a, b, r, f}
         <prefix>:radius:mac:<mac>      the address a device last reported, {a, l, t}
         <prefix>:radius:class:<class>  the account an Access-Accept named
 

@@ -173,7 +173,7 @@ class FakeRedis(object):
         stopped = float(stopped) if stopped not in ('', b'') else None
         value = self._merged(keys[0], field, {
             'u': user, 'm': device, 's': float(start), 'l': float(seen), 'e': stopped,
-            'x': stopped is not None and str(moved) == '1',
+            'x': stopped is not None and str(moved) == '1', 'k': str(timed) == '1',
             'a': str(signed) == '1', 'b': str(bridged) == '1',
             'r': float(reported) if reported not in ('', b'') else None,
             'f': None if str(bridged) == '1' else float(seen)}, float(slack), str(timed) == '1')
@@ -185,6 +185,8 @@ class FakeRedis(object):
                 stored[name] = value[name]
         if value['x']:
             stored['x'] = 1
+        if value['k']:
+            stored['k'] = 1
         if value['a']:
             stored['a'] = 1
         if value['b']:
@@ -206,12 +208,14 @@ class FakeRedis(object):
             old = None
         if not (isinstance(old, dict) and _number(old.get('s')) and _number(old.get('l'))):
             return value
-        if value['l'] < old['s'] - slack:
+        if old.get('k') == 1 and value['l'] < old['s'] - slack:
             return None
         if timed and value['s'] > old['l'] + slack:
             return value
         reported_at = value['l']
-        value['s'] = old['s']
+        if not (timed and old.get('k') != 1 and value['s'] < old['s']):
+            value['s'] = old['s']
+        value['k'] = timed or old.get('k') == 1
         value['l'] = max(value['l'], old['l'])
         self._merge_stop(value, old, reported_at)
         if value['u'] == '':
@@ -244,7 +248,11 @@ class FakeRedis(object):
                 value['e'], value['x'] = old['e'], False
             elif old['e'] < value['e']:
                 value['e'] = old['e']
-        elif not old_moved and old['e'] > value['e']:
+        elif old_moved:
+            if value['e'] > old['e']:
+                value['e'], value['l'] = old['e'], old['l']
+            value['x'] = False
+        elif old['e'] > value['e']:
             value['e'] = old['e']
 
     def _trim(self, key, keep, cutoff):
