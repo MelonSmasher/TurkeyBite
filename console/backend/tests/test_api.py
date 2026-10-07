@@ -526,6 +526,15 @@ async def test_deleting_the_webhook_device_lookup_signs_with_turns_lookups_off(c
                                                       'device_lookup_webhook_id': hook_id}, None)
         await session.commit()
     assert (await client.get('/api/v1/auth/me')).json()['device_lookup'] is False  # nosec B101
+    # A new URL with no webhook chosen to replace the deleted one is refused, not dropped
+    async with db.sessionmaker()() as session:
+        general = await settings_store.general(session)
+        await settings_store.put(session, 'general', {**general, 'device_lookup_url': 'https://sac.example.edu/x',
+                                                      'device_lookup_webhook_id': hook_id}, None)
+        await session.commit()
+    refused = await client.put('/api/v1/settings/general', headers=headers,
+                               json={'device_lookup_url': 'https://sac.example.edu/y'})
+    assert refused.status_code == 400 and 'choose another' in refused.json()['detail']  # nosec B101
     cleared = await client.put('/api/v1/settings/general', headers=headers, json={'org_name': 'Again'})
     assert cleared.status_code == 200 and cleared.json()['device_lookup_webhook_id'] == ''  # nosec B101
 

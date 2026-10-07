@@ -222,6 +222,9 @@ async def put_general(body: GeneralBody, request: Request,
     if hook_id and await _missing_webhook(db, hook_id):
         if 'device_lookup_webhook_id' in changes:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'That webhook does not exist.')
+        if changes.get('device_lookup_url'):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                'The webhook device lookup signed with no longer exists: choose another.')
         # Deleted since, perhaps while this was being saved: device lookup is
         # off, rather than refuse a save of something else for it
         saved['device_lookup_url'] = saved['device_lookup_webhook_id'] = ''
