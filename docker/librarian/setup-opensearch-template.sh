@@ -172,7 +172,7 @@ mapped=$(opensearch_curl -sS -o /dev/null -w "%{http_code}" -XPUT \
 if [ "$mapped" -ge 200 ] 2>/dev/null && [ "$mapped" -lt 300 ]; then
     echo "✅ Existing indices map the newer fields"
 else
-    echo "Note: an existing index did not take the newer fields' mapping (HTTP $mapped); it keeps its own until the next daily index"
+    echo "Note: the existing indices did not take the newer fields' mapping (HTTP $mapped). One that already maps bite.client_mac as text fails the request for all of them, and makes profiles that span it fail until retention deletes it."
 fi
 
 # The retention policy, see libtb/retention. Python rather than curl so the

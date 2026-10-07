@@ -24,8 +24,9 @@ XML, of which this reads, from accounting requests (Packet-Type 4):
 and from the Access-Accepts NPS sends (Packet-Type 2), the account NPS
 authenticated, SAM-Account-Name, under the same Class. User-Name is only what
 the device said, which for many profiles is "anonymous" and which anyone can
-set to someone else's name; the account behind the Class is who actually
-signed in, so it is used whenever its Access-Accept has been seen.
+set to someone else's name. The account behind the Class is who actually
+signed in. It is used whenever its Access-Accept has been seen, and once a
+session has it, no name a device gives replaces it.
 
 Filebeat on each NPS server pushes the lines onto their own Valkey list,
 `<channel>:nps`. Each worker takes what is waiting there before each batch of
@@ -40,8 +41,10 @@ connected device inside that window. Once stopped, the address is nobody's,
 because DHCP may give it to another device, and a lookup credited to the
 wrong person is worse than one credited to nobody. A phone that roams to
 another access point stops one session and starts another, often before the
-new one reports an address; a session reported without one takes the
-address its device last had, if that was within `grace_sec`. When two
+new one reports an address. A session that starts without one, within
+ROAM_SEC of its device last being reported, takes the address the device had
+then, unless another device has been reported with it since. Such a session
+only holds the address until one reported with it covers the time. When two
 sessions cover an event, the one that started later wins.
 
 What it cannot do: a session is only known once an access point reports it
@@ -63,6 +66,8 @@ from datetime import datetime, timezone
 
 from dateutil import tz
 
+from libtb.opensearch import report_once
+
 # processor.radius
 Settings = namedtuple('Settings', 'enable zone realms grace_sec keep_sec cache_sec')
 DEFAULT = Settings(False, None, (), 1200, 24 * 3600, 30)
@@ -70,15 +75,22 @@ KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'ca
 
 # One accounting request. `address` is None when it reported none, `user`
 # when the name it gave is not a person's; `start`, `seen` and `stopped` are
-# epoch seconds, `stopped` None while the session lasts.
-Session = namedtuple('Session', 'address key user mac start seen stopped klass')
+# epoch seconds, `stopped` None while the session lasts. `signed` says the
+# user is the account NPS authenticated, `bridged` that the address is the
+# one the device had before it roamed.
+Session = namedtuple('Session', 'address key user mac start seen stopped klass signed bridged',
+                     defaults=(False, False))
 
 ACCESS_ACCEPT, ACCOUNTING_REQUEST = '2', '4'
 START, STOP, INTERIM = '1', '2', '3'
 
-# How far apart two clocks may be: NPS's and the DNS sensor's. An event this
-# far outside a session still counts as in it.
+# How far apart two clocks may be: NPS's, Filebeat's and the DNS sensor's. An
+# event this far outside a session still counts as in it.
 CLOCK_SLACK = 60
+
+# How soon after its device was last reported a session that starts without
+# an address must start, to take the address the device had: a roam
+ROAM_SEC = 120
 
 # Sessions kept per address, the most recently reported; a lab machine's
 # address can see a new one every class
@@ -102,27 +114,40 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 
 # Merges one report into an address's sessions, atomically, since workers
 # take reports in parallel and a replayed batch hands them over out of order.
-# The start is the first reported, the last report the latest, and a stop,
-# once seen, stays. Then the hash's expiry is renewed and only the
-# MAX_SESSIONS most recently reported sessions are kept.
-#   KEYS[1] the address's hash
+#   - The start is the first reported, the last report the latest, and a
+#     stop, once seen, stays.
+#   - A report that starts after the session it names stopped is a new
+#     session that reused the id, and replaces it.
+#   - A name NPS authenticated is not replaced by one a device gave.
+#   - An address the session reported itself is not demoted to a roam's.
+# Then the hash's expiry is renewed, only the MAX_SESSIONS most recently
+# reported sessions are kept, and, for a report that gave its address, the
+# device's last address is updated if this report is newer.
+#   KEYS[1] the address's hash; KEYS[2], if given, the device's last address
 #   ARGV    session key, user, MAC or "", start, seen, stopped or "",
-#           seconds to keep, sessions to keep
+#           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
+#           clock slack, seconds to keep the device's address, the address
 RECORD_SCRIPT = """
 local start, seen = tonumber(ARGV[4]), tonumber(ARGV[5])
 local stopped = tonumber(ARGV[6])
+local user, signed, bridged = ARGV[2], ARGV[9] == '1', ARGV[10] == '1'
 local held = redis.call('HGET', KEYS[1], ARGV[1])
 if held then
   local ok, old = pcall(cjson.decode, held)
-  if ok and type(old) == 'table' then
+  if ok and type(old) == 'table'
+      and not (type(old.e) == 'number' and start > old.e + tonumber(ARGV[11])) then
     if type(old.s) == 'number' then start = old.s end
     if type(old.l) == 'number' and old.l > seen then seen = old.l end
     if type(old.e) == 'number' and (stopped == nil or old.e > stopped) then stopped = old.e end
+    if old.a == 1 and not signed and type(old.u) == 'string' then user, signed = old.u, true end
+    if old.b == nil then bridged = false end
   end
 end
-local value = {u = ARGV[2], s = start, l = seen}
+local value = {u = user, s = start, l = seen}
 if ARGV[3] ~= '' then value.m = ARGV[3] end
 if stopped then value.e = stopped end
+if signed then value.a = 1 end
+if bridged then value.b = 1 end
 redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(value))
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[7]))
 local keep = tonumber(ARGV[8])
@@ -138,6 +163,17 @@ if redis.call('HLEN', KEYS[1]) > keep then
   table.sort(rows, function(a, b) return a[2] < b[2] end)
   for i = 1, #rows - keep do redis.call('HDEL', KEYS[1], rows[i][1]) end
 end
+if #KEYS > 1 and ARGV[10] ~= '1' then
+  local newer = true
+  local last = redis.call('GET', KEYS[2])
+  if last then
+    local ok, v = pcall(cjson.decode, last)
+    if ok and type(v) == 'table' and type(v.l) == 'number' and v.l > tonumber(ARGV[5]) then newer = false end
+  end
+  if newer then
+    redis.call('SET', KEYS[2], cjson.encode({a = ARGV[13], l = tonumber(ARGV[5])}), 'EX', tonumber(ARGV[12]))
+  end
+end
 return 1
 """
 
@@ -145,8 +181,9 @@ return 1
 def settings(conf):
     r"""processor.radius, checked: unknown keys or bad values stop the worker at start.
 
-    enable      false unless set; with it off the accounting list is emptied
-                and DNS events are left as they were
+    enable      false unless set. Off, a worker leaves the accounting list to
+                workers that have it on, and only keeps it from growing past
+                ACCOUNTING_KEEP lines; DNS events are left as they were.
     timezone    the NPS servers' time zone, such as America/New_York, which
                 they write each line's Timestamp in. Needed when enabled.
     realms      the organisation's own realms and NetBIOS domain, such as
@@ -206,6 +243,12 @@ def attributes(line):
     for name, value in _ATTRIBUTE.findall(line):
         found.setdefault(name, html.unescape(value).strip())
     return found
+
+
+def misrouted(data):
+    """True for a line of NPS's log that came on the DNS queue instead of its own list."""
+    message = data.get('message') if isinstance(data, dict) and 'type' not in data else None
+    return isinstance(message, str) and message.lstrip().startswith('<Event>')
 
 
 def printable(value, limit=256):
@@ -318,18 +361,23 @@ def logged_at(fields, zone, received=None):
 
     Timestamp is in the NPS server's zone, which its time and Windows keep
     right. In the hour a change back from summer time repeats, the reading
-    nearer the access point's Event-Timestamp, which is UTC, or the time
-    Filebeat read the line, is taken. The access point's clock is not used
-    otherwise: one was seen to be an hour and three-quarters out.
+    is taken that is nearest when Filebeat read the line, and not after it;
+    without that, the one nearest the access point's Event-Timestamp, which
+    is UTC. The access point's clock is not used otherwise: one was seen to
+    be an hour and three-quarters out.
     """
     local = _clock(fields.get('Timestamp'))
     if local is None or zone is None:
         return None
-    readings = {tz.enfold(local, fold=fold).replace(tzinfo=zone).timestamp() for fold in (0, 1)}
-    near = _clock(fields.get('Event-Timestamp'))
-    near = near.replace(tzinfo=timezone.utc).timestamp() if near is not None else received
+    readings = sorted({tz.enfold(local, fold=fold).replace(tzinfo=zone).timestamp() for fold in (0, 1)})
+    near = received
+    if near is not None:
+        readings = [reading for reading in readings if reading <= near + CLOCK_SLACK] or readings
+    else:
+        near = _clock(fields.get('Event-Timestamp'))
+        near = near.replace(tzinfo=timezone.utc).timestamp() if near is not None else None
     if near is None:
-        return min(readings)
+        return readings[0]
     return min(readings, key=lambda reading: abs(reading - near))
 
 
@@ -359,7 +407,7 @@ def session(fields, zone, received=None, realms=()):
 
 
 def _decode(held):
-    """What HGETALL answered, as [{u, m, s, l, e}], leaving out what cannot be read."""
+    """What HGETALL answered, as [{u, m, s, l, e, a, b}], leaving out what cannot be read."""
     out = []
     for raw in (held or {}).values():
         try:
@@ -377,21 +425,25 @@ class Sessions:
 
     In the queue's database, since the librarian sweeps the host lists':
 
-        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e}
-        <prefix>:radius:mac:<mac>      the address a device last had, {a, l}
+        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, a, b}
+        <prefix>:radius:mac:<mac>      the address a device last reported, {a, l}
         <prefix>:radius:class:<class>  the account an Access-Accept named
 
     The first expires `keep_hours` after its last report, the second
-    `grace_sec`, the third `keep_hours` after its Access-Accept.
+    `grace_sec`, and the third `keep_hours` after it was last used.
     """
 
-    def __init__(self, redis, prefix, conf, monotonic=time.monotonic, clock=time.time):
+    # The clock the cache is kept by, the time lines are judged old by, and how
+    # a misconfiguration is said. Tests replace them.
+    monotonic = staticmethod(time.monotonic)
+    clock = staticmethod(time.time)
+    warn = staticmethod(report_once)
+
+    def __init__(self, redis, prefix, conf):
         """Keys start with `prefix`, the queue's channel; `conf` is processor.radius."""
         self.redis = redis
         self.prefix = prefix
         self.conf = conf
-        self.monotonic = monotonic
-        self.clock = clock
         self._cache = {}
 
     def key(self, kind, name):
@@ -399,55 +451,85 @@ class Sessions:
         return f'{self.prefix}:radius:{kind}:{name}'
 
     def take(self, line, received=None):
-        """Records what one line of the log says. Returns the session recorded, or None.
+        """Records what one line of the log says. Returns what it recorded, or None.
 
-        An Access-Accept is remembered by its Class, for the sessions it
-        signs in. A line older than `keep_hours` is not recorded: Filebeat
-        reads a log from its start when it first sees it.
+        An Access-Accept is remembered by its Class, for the sessions it signs
+        in, and its account returned. An accounting request is recorded as a
+        session, and returned. Not recorded: a line older than `keep_hours`,
+        since Filebeat reads a log from its start when it first sees it, and
+        one dated after Filebeat read it, which only a wrong timezone does.
         """
         fields = attributes(line)
         if fields.get('Packet-Type') == ACCESS_ACCEPT:
             account, klass = authenticated(fields, self.conf.realms), printable(fields.get('Class'))
-            if account and klass:
-                self.redis.set(self.key('class', klass), account, ex=self.conf.keep_sec)
-            return None
+            if not (account and klass):
+                return None
+            self.redis.set(self.key('class', klass), account, ex=self.conf.keep_sec)
+            return account
         found = session(fields, self.conf.zone, received, self.conf.realms)
         if found is None or found.seen < self.clock() - self.conf.keep_sec:
             return None
-        account = self.redis.get(self.key('class', found.klass)) if found.klass else None
-        if account:
-            found = found._replace(user=account.decode('utf-8', 'replace') if isinstance(account, bytes)
-                                   else account)
+        if received is not None and found.seen > received + CLOCK_SLACK:
+            self.warn(f'NPS lines are dated after Filebeat read them, so they are not recorded: is '
+                      f'processor.radius.timezone the NPS servers\' time zone? A line logged at '
+                      f'{printable(fields.get("Timestamp"), 40)} was read at {_utc(received)}.')
+            return None
+        found = self._named(found)
         if not found.user:
             return None
         if found.address is None:
-            found = found._replace(address=self.last_address(found.mac, found.seen))
-            if found.address is None:
+            found = self._roamed(found)
+            if found is None:
                 return None
         self.record(found)
         return found
 
-    def last_address(self, device, when):
-        """The address a device was last reported with, if within `grace_sec` of `when`."""
-        if not device:
+    def _named(self, found):
+        """The session with the account NPS authenticated, when its Access-Accept was seen."""
+        if not found.klass:
+            self.warn('NPS accounting lines carry no Class, so each session is named by the name '
+                      'its device gives, which a device can set to anyone\'s. Have the access '
+                      'points send Class back in accounting.')
+            return found
+        account = self.redis.getex(self.key('class', found.klass), ex=self.conf.keep_sec)
+        if account:
+            account = account.decode('utf-8', 'replace') if isinstance(account, bytes) else account
+            return found._replace(user=account, signed=True)
+        return found
+
+    def _roamed(self, found):
+        """The session at the address its device had before it roamed, or None.
+
+        Only for a session that starts within ROAM_SEC of its device's last
+        report, and only if no other device has been reported with the
+        address since.
+        """
+        if not found.mac:
             return None
         try:
-            last = json.loads(self.redis.get(self.key('mac', device)) or 'null')
+            last = json.loads(self.redis.get(self.key('mac', found.mac)) or 'null')
         except (TypeError, ValueError):
             return None
-        if isinstance(last, dict) and isinstance(last.get('l'), (int, float)) \
-                and when - self.conf.grace_sec <= last['l'] <= when + CLOCK_SLACK:
-            return address(last.get('a'))
-        return None
+        if not (isinstance(last, dict) and isinstance(last.get('l'), (int, float))
+                and last['l'] - CLOCK_SLACK <= found.start <= last['l'] + ROAM_SEC):
+            return None
+        where = address(last.get('a'))
+        if where is None:
+            return None
+        for held in _decode(self.redis.hgetall(self.key('ip', where))):
+            if held.get('m') != found.mac and not held.get('b') and held['l'] > last['l']:
+                return None
+        return found._replace(address=where, bridged=True)
 
     def record(self, found):
         """Merges one report into its address's sessions."""
-        self.redis.eval(RECORD_SCRIPT, 1, self.key('ip', found.address), found.key, found.user, found.mac or '',
-                        found.start, found.seen, '' if found.stopped is None else found.stopped,
-                        self.conf.keep_sec, MAX_SESSIONS)
+        keys = [self.key('ip', found.address)]
         if found.mac:
-            self.redis.set(self.key('mac', found.mac), json.dumps({'a': found.address, 'l': found.seen}),
-                           ex=self.conf.grace_sec)
+            keys.append(self.key('mac', found.mac))
+        self.redis.eval(RECORD_SCRIPT, len(keys), *keys, found.key, found.user, found.mac or '',
+                        found.start, found.seen, '' if found.stopped is None else found.stopped,
+                        self.conf.keep_sec, MAX_SESSIONS, int(bool(found.signed)), int(bool(found.bridged)),
+                        CLOCK_SLACK, self.conf.grace_sec, found.address)
         # This process at least sees the change at once
         self._cache.pop(found.address, None)
 
@@ -465,17 +547,25 @@ class Sessions:
         return held
 
     def holder(self, where, when):
-        """The session that held an address at a time, {u, m, s, l, e}, or None."""
+        """The session that held an address at a time, {u, m, s, l, e, a, b}, or None.
+
+        One reported with the address beats one that took it on roaming; then
+        the later start wins, and ties go the same way in every worker.
+        """
         where = address(where)
         if where is None:
             return None
         covering = [held for held in self._sessions(where)
                     if held['s'] - CLOCK_SLACK <= when <= self._end(held)]
-        # Ties go the same way in every worker
-        return max(covering, key=lambda held: (held['s'], held['l'], held['u']), default=None)
+        return max(covering, key=lambda held: (not held.get('b'), held['s'], held['l'], held['u']),
+                   default=None)
 
     def _end(self, held):
         stopped = held.get('e')
         if isinstance(stopped, (int, float)):
             return stopped + CLOCK_SLACK
         return held['l'] + self.conf.grace_sec
+
+
+def _utc(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')

@@ -807,6 +807,10 @@ class Processor(object):
             self._radius_sessions = held
         return held[1]
 
+    def radius_on(self):
+        """Whether processor.radius is on in this worker."""
+        return hasattr(self, 'sessions') or self._radius.enable
+
     def accounting_list(self):
         """The Valkey list Filebeat sends NPS's log lines to, <channel>:nps, or None."""
         channel = self.redis_conf.get('channel')

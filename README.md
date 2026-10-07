@@ -290,16 +290,21 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      and *Periodic accounting status*;
    - on **Log File**, choose **DTS Compliant**, and a new file **Daily**.
 
-   The access points must send accounting with interim updates. Check that
-   the log's accounting lines carry `Framed-IP-Address`, and that its
-   Access-Accept lines carry `SAM-Account-Name`.
+   The access points must send accounting with interim updates. Check that:
+   - the log's accounting lines carry `Framed-IP-Address` and `Class`;
+   - its Access-Accept lines carry `SAM-Account-Name` and `Class`.
 
    The name a device gives, `User-Name`, is its outer identity. For many
    profiles that is `anonymous`, and anyone can set it to someone else's name.
    The account NPS actually authenticated is in the Access-Accept, and the
-   session's `Class` ties the two together. TurkeyBite uses that account
-   whenever it has seen the Access-Accept, which is why authentication
+   session's `Class` ties the two together. That is why authentication
    requests are logged too.
+   - **When it has seen the Access-Accept,** TurkeyBite uses that account, and
+     once a session has it, no name the device gives replaces it.
+   - **When it has not,** it uses the name the device gives, if that is a
+     person's.
+   - **When accounting lines carry no `Class`,** every session is named by the
+     device's own word, and the workers say so in their log.
 
    Then install [Filebeat](https://www.elastic.co/beats/filebeat) on each
    server. It sends the lines to their own Valkey list, `<redis.channel>:nps`,
@@ -327,8 +332,11 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      datatype: "list"
    ```
 
-   Then turn it on in `config.yaml`:
-   - `timezone` is the time zone the NPS servers log in.
+   Then turn it on in `config.yaml`, in every worker at once:
+   - `timezone` is the time zone the NPS servers log in. It has no default,
+     because a wrong one dates every line hours out. A line dated after
+     Filebeat read it is not recorded, and the workers' log says to check
+     the zone.
    - `realms` lists your own realm and NetBIOS domain, so that
      `jsmith@example.edu` and `EXAMPLE\jsmith` are recorded as `jsmith`, as
      Browserbeat names people.
@@ -347,9 +355,13 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
 
    Each worker takes what waits on the list before each batch of DNS events.
    It keeps each address's sessions in Valkey, in the queue's database, for a
-   day after the last report. The lines themselves are not indexed. With
-   `radius` off they are taken and dropped, so the list cannot grow without
-   end.
+   day after the last report. The lines themselves are not indexed.
+   - **A worker with `radius` off** leaves the lines to workers that have it
+     on. It only keeps the list to its newest 10,000 lines, so the list cannot
+     grow without end while nobody takes them.
+   - **Lines that arrive on the DNS queue instead,** from a Filebeat sent to
+     the wrong key, are dropped, and the workers' log says where to send
+     them.
 
    - **How long an address counts as a person's.** A session holds its address
      from its start until it stops. While it has not stopped, it holds it
@@ -360,10 +372,12 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      credited to the wrong person.
    - **Roaming.** A phone that roams to another access point stops one session
      and starts another, often before the new one reports an address. A
-     session reported without an address takes the one its device last had,
-     if that was within `grace_sec`.
-   - **Two sessions at once.** When two sessions cover a lookup, the one that
-     started later wins.
+     session that starts without one, within two minutes of its device last
+     being reported, takes the address the device had then. It doesn't if
+     another device has been reported with that address since.
+   - **Two sessions at once.** When two sessions cover a lookup, one reported
+     with the address beats one that took it on roaming. Otherwise the one
+     that started later wins.
    - **What it cannot do.**
      - Lookups a device makes on joining, before an access point first reports
        its address, have no user.

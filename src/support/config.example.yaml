@@ -151,10 +151,12 @@ processor:
   # <redis.channel>:nps; see "RADIUS accounting" in the README. Workers keep
   # each address's sessions in Valkey and write bite.client_user and
   # bite.client_mac on DNS events, which costs each worker process a Valkey
-  # read per address every cache_sec. Unknown keys or bad values stop the
-  # worker at start.
-  #   timezone    the NPS servers' time zone, which they log in. Needed when
-  #               enabled.
+  # read per address every cache_sec. Turn it on in every worker at once: a
+  # worker with it off leaves the lines to the others. Unknown keys or bad
+  # values stop the worker at start.
+  #   timezone    the NPS servers' time zone, which they log in, such as
+  #               America/New_York. Needed when enabled: a wrong one dates
+  #               every line hours out, so there is no default.
   #   realms      your own realms and NetBIOS domain, taken off a user name so
   #               it matches the name Browserbeat reports: jsmith@example.edu
   #               and EXAMPLE\jsmith become jsmith. Other realms are kept.
@@ -166,7 +168,7 @@ processor:
   #   cache_sec   how long a worker reuses what it read for an address
   radius:
     enable: false
-    timezone: America/New_York
+    # timezone: America/New_York
     realms: []
     grace_sec: 1200
     keep_hours: 24

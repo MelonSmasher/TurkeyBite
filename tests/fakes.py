@@ -38,6 +38,11 @@ def _bytes(value):
     raise TypeError(f'Redis takes bytes, str or numbers, not {type(value).__name__}')
 
 
+def _number(value):
+    """What Lua's type() calls a number: JSON's true and false are not."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _key(key):
     return key.decode('utf-8') if isinstance(key, bytes) else key
 
@@ -118,6 +123,13 @@ class FakeRedis(object):
             self.ttls[_key(key)] = ex
         return True
 
+    def getex(self, key, ex=None):
+        """Get a string, renewing its expiry."""
+        value = self.get(key)
+        if value is not None and ex is not None:
+            self.ttls[_key(key)] = ex
+        return value
+
     def expire(self, key, seconds):
         """Record an expiry for a key that exists."""
         self._did('expire', key)
@@ -131,7 +143,7 @@ class FakeRedis(object):
         keys, args = keys_and_args[:numkeys], keys_and_args[numkeys:]
         self._did('eval', keys[0])
         if script == RECORD_SCRIPT:
-            return self._record(keys[0], *args)
+            return self._record(keys, *args)
         held = self.data.get(_key(keys[0]))
         mine = held == _bytes(args[0])
         if script == RENEW_SCRIPT:
@@ -155,41 +167,72 @@ class FakeRedis(object):
             return moved
         raise NotImplementedError('a script the fake does not know')
 
-    def _record(self, key, field, user, device, start, seen, stopped, keep_sec, keep):
+    def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
+                slack, device_sec, where):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
-        start, seen = float(start), float(seen)
-        stopped = float(stopped) if stopped not in ('', b'') else None
+        value = self._merged(keys[0], field, {
+            'u': user, 's': float(start), 'l': float(seen),
+            'e': float(stopped) if stopped not in ('', b'') else None,
+            'a': str(signed) == '1', 'b': str(bridged) == '1'}, float(slack))
+        stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
+        if device:
+            stored['m'] = device
+        if value['e'] is not None:
+            stored['e'] = value['e']
+        if value['a']:
+            stored['a'] = 1
+        if value['b']:
+            stored['b'] = 1
+        self.hset(keys[0], field, json.dumps(stored))
+        self.expire(keys[0], int(keep_sec))
+        self._trim(keys[0], int(keep))
+        if len(keys) > 1 and str(bridged) != '1':
+            self._remember_device(keys[1], where, float(seen), int(device_sec))
+        return 1
+
+    def _merged(self, key, field, value, slack):
+        """A report merged into what the hash holds for its session, as RECORD_SCRIPT merges it."""
         try:
             old = json.loads(self._hash(key).get(_bytes(field)) or 'null')
         except ValueError:
             old = None
-        if isinstance(old, dict):
-            if isinstance(old.get('s'), (int, float)):
-                start = old['s']
-            if isinstance(old.get('l'), (int, float)) and old['l'] > seen:
-                seen = old['l']
-            if isinstance(old.get('e'), (int, float)) and (stopped is None or old['e'] > stopped):
-                stopped = old['e']
-        value = {'u': user, 's': start, 'l': seen}
-        if device:
-            value['m'] = device
-        if stopped is not None:
-            value['e'] = stopped
-        self.hset(key, field, json.dumps(value))
-        self.expire(key, int(keep_sec))
-        if self.hlen(key) > int(keep):
-            rows = []
-            for name, raw in self.hgetall(key).items():
-                try:
-                    held = json.loads(raw)
-                except ValueError:
-                    held = None
-                last = held['l'] if isinstance(held, dict) and isinstance(held.get('l'), (int, float)) else -1
-                rows.append((last, name))
-            rows.sort(key=lambda row: row[0])
-            for _, name in rows[:len(rows) - int(keep)]:
-                self.hdel(key, name)
-        return 1
+        if not isinstance(old, dict) or (_number(old.get('e')) and value['s'] > old['e'] + slack):
+            return value
+        if _number(old.get('s')):
+            value['s'] = old['s']
+        if _number(old.get('l')) and old['l'] > value['l']:
+            value['l'] = old['l']
+        if _number(old.get('e')) and (value['e'] is None or old['e'] > value['e']):
+            value['e'] = old['e']
+        if old.get('a') == 1 and not value['a'] and isinstance(old.get('u'), str):
+            value['u'], value['a'] = old['u'], True
+        if old.get('b') is None:
+            value['b'] = False
+        return value
+
+    def _trim(self, key, keep):
+        """Keeps a hash's `keep` most recently reported sessions."""
+        if self.hlen(key) <= keep:
+            return
+        rows = []
+        for name, raw in self.hgetall(key).items():
+            try:
+                held = json.loads(raw)
+            except ValueError:
+                held = None
+            rows.append((held['l'] if isinstance(held, dict) and _number(held.get('l')) else -1, name))
+        rows.sort(key=lambda row: row[0])
+        for _, name in rows[:len(rows) - keep]:
+            self.hdel(key, name)
+
+    def _remember_device(self, key, where, seen, seconds):
+        """Sets a device's last address, unless a newer report set it."""
+        try:
+            last = json.loads(self.data.get(_key(key)) or 'null')
+        except ValueError:
+            last = None
+        if not (isinstance(last, dict) and _number(last.get('l')) and last['l'] > seen):
+            self.set(key, json.dumps({'a': where, 'l': seen}), ex=seconds)
 
     def delete(self, *keys):
         removed = 0
@@ -296,6 +339,10 @@ class FakeRedis(object):
         held[_bytes(field)] = _bytes(value)
         self.data[_key(key)] = held
         return added
+
+    def hget(self, key, field):
+        self._did('hget', key)
+        return self._hash(key).get(_bytes(field))
 
     def hgetall(self, key):
         self._did('hgetall', key)
