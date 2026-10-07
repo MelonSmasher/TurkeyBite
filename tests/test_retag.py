@@ -27,7 +27,7 @@ from libtb.evidence import resolvers as R
 from libtb.index import Source
 from libtb.index.builder import apply_ignorelist, build
 from libtb.processor import Processor
-from libtb.retag import VERDICT_FIELDS, run
+from libtb.retag import VERDICT_FIELDS, Options, default_pattern, run
 
 VENDOR = Source('vendor', 'nextdns', 'high', False, ())
 STEVENBLACK = Source('stevenblack', 'StevenBlack', 'medium', False, ())
@@ -36,10 +36,11 @@ ARMY = Source('army', 'phishing.army', 'medium', False, ())
 SOURCES = {s.name: s for s in (VENDOR, STEVENBLACK, HAGEZI, ARMY)}
 
 
-class FakeCluster(object):
+class FakeCluster:
     """Documents by (index, id), with sequence numbers, updated as OpenSearch would."""
 
     def __init__(self, docs):
+        """Holds `docs` as the event sources of one daily index, each at sequence 1."""
         self.docs = {}
         for i, source in enumerate(docs):
             self.docs[('tb-index-2026-10-01', str(i))] = {'seq': 1, 'source': source}
@@ -134,10 +135,14 @@ class RetagTest(unittest.TestCase):
         return {'@timestamp': '2026-10-01T00:00:00Z', 'bite': bite,
                 'packet': {'kept': 'as it was'}}
 
+    @staticmethod
+    def options(apply=True, **kwargs):
+        return Options(apply=apply, log=lambda m: None, **kwargs)
+
     def retag(self, docs, apply=True, evidence=None):
         cluster = FakeCluster(docs)
-        result = run(None, self.processor(evidence), 'tb-index-*', apply=apply,
-                     scan=cluster.scan, bulk=cluster.bulk, log=lambda m: None)
+        result = run(None, self.processor(evidence), 'tb-index-*',
+                     self.options(apply, scan=cluster.scan, bulk=cluster.bulk))
         return cluster, result
 
     # -- the verdict ----------------------------------------------------------
@@ -247,8 +252,8 @@ class RetagTest(unittest.TestCase):
                                self.stored('www.pornsite.com', [])])
         for _ in range(2):
             cluster.updates = []
-            run(None, self.processor(), 'tb-index-*', apply=True,
-                scan=cluster.scan, bulk=cluster.bulk, log=lambda m: None)
+            run(None, self.processor(), 'tb-index-*',
+                self.options(scan=cluster.scan, bulk=cluster.bulk))
         self.assertEqual(cluster.updates, [])
 
     def test_an_event_changed_since_it_was_read_is_not_overwritten(self):
@@ -259,8 +264,8 @@ class RetagTest(unittest.TestCase):
             doc['source']['bite']['contexts'] = ['set-by-someone-else']
             doc['seq'] += 1
         cluster.between = someone_else_writes
-        result = run(None, self.processor(), 'tb-index-*', apply=True,
-                     scan=cluster.scan, bulk=cluster.bulk, log=lambda m: None)
+        result = run(None, self.processor(), 'tb-index-*',
+                     self.options(scan=cluster.scan, bulk=cluster.bulk))
         self.assertEqual(result['counts']['conflicts'], 1)
         self.assertEqual(cluster.bite(0)['contexts'], ['set-by-someone-else'])
 
@@ -293,22 +298,94 @@ class RetagTest(unittest.TestCase):
         self.assertEqual(cluster.bite(0)['contexts'], ['malicious'])
         self.assertEqual(cluster.bite(1)['contexts'], [])
 
+    # -- one generation per run ---------------------------------------------------
+
+    def rebuild(self, built_at, entries):
+        build(entries, path=self.path, built_at=built_at, sources=SOURCES)
+
+    def test_a_rebuild_during_the_run_does_not_mix_generations(self):
+        # Two events for one name and one for another, with the index swapped
+        # after the first is weighed: the run keeps the generation it began
+        # with, for the cached name and the uncached one alike
+        docs = [self.stored('ads.example.com', ['advertising']),
+                self.stored('www.pornsite.com', []),
+                self.stored('ads.example.com', ['advertising'])]
+        cluster = FakeCluster(docs)
+        swapped = []
+
+        def scan(*args, **kwargs):
+            for n, hit in enumerate(cluster.scan(*args, **kwargs)):
+                if n == 1 and not swapped:
+                    # Both lists now agree on ads.example.com, and nothing
+                    # names pornsite.com any more
+                    self.rebuild(3000, {'ads.example.com': {'hagezi': {'advertising'},
+                                                            'stevenblack': {'advertising'}}})
+                    swapped.append(True)
+                yield hit
+        result = run(None, self.processor(), 'tb-index-*',
+                     self.options(scan=scan, bulk=cluster.bulk))
+        self.assertEqual(swapped, [True])
+        self.assertEqual(result['generation'], 2000)
+        for i in range(3):
+            self.assertEqual(cluster.bite(i)['index_built_at'], 2000, i)
+        self.assertEqual(cluster.bite(0)['contexts'], [])
+        self.assertEqual(cluster.bite(1)['contexts'], ['porn'])
+        self.assertEqual(cluster.bite(2)['contexts'], [])
+
+    def test_the_run_leaves_the_worker_index_unpinned(self):
+        processor = self.processor()
+        cluster = FakeCluster([self.stored('ads.example.com', ['advertising'])])
+        run(None, processor, 'tb-index-*', self.options(scan=cluster.scan, bulk=cluster.bulk))
+        self.assertIsNone(processor.pinned_index)
+
     # -- refusals -----------------------------------------------------------------
 
     def test_only_index_mode_can_relabel(self):
         processor = Processor({'domain_index': {'mode': 'compare', 'path': self.path}}, {})
         with self.assertRaises(ValueError):
-            run(None, processor, 'tb-index-*', scan=FakeCluster([]).scan)
+            run(None, processor, 'tb-index-*', self.options(scan=FakeCluster([]).scan))
 
-    def test_a_missing_index_stops_rather_than_writing_the_fallback(self):
+    def test_a_missing_index_stops_before_anything_is_read(self):
         processor = Processor({'domain_index': {'mode': 'index',
                                                 'path': os.path.join(self.root, 'none')}}, {})
-        processor.valkey_contexts = lambda searches: ['from-valkey']
         cluster = FakeCluster([self.stored('ads.example.com', ['advertising'])])
-        with self.assertRaises(RuntimeError):
-            run(None, processor, 'tb-index-*', apply=True,
-                scan=cluster.scan, bulk=cluster.bulk, log=lambda m: None)
+        with self.assertRaises(OSError):
+            run(None, processor, 'tb-index-*', self.options(scan=cluster.scan, bulk=cluster.bulk))
         self.assertEqual(cluster.bite(0)['contexts'], ['advertising'])
+
+    def test_an_index_lost_midway_stops_rather_than_writing_a_partial_verdict(self):
+        # The CNAME lookup failing on its own drops the chain's categories;
+        # writing that would erase them from the event
+        cname = [{'type': 'CNAME', 'data': 'x.tracker.example.net'}]
+        cluster = FakeCluster([self.stored('www.pornsite.com', ['porn', 'tracking'], cname)])
+        processor = self.processor()
+        original = Processor.open_index
+
+        def chain_fails(this, path):
+            if this.resolve_chain_in_progress:
+                raise OSError('index gone')
+            return original(this, path)
+        original_chain = Processor.resolve_chain
+
+        def resolve_chain(this, chain):
+            this.resolve_chain_in_progress = True
+            try:
+                return original_chain(this, chain)
+            finally:
+                this.resolve_chain_in_progress = False
+        processor.resolve_chain_in_progress = False
+        with mock.patch.object(Processor, 'open_index', chain_fails), \
+                mock.patch.object(Processor, 'resolve_chain', resolve_chain):
+            with self.assertRaises(RuntimeError):
+                run(None, processor, 'tb-index-*',
+                    self.options(scan=cluster.scan, bulk=cluster.bulk))
+        self.assertEqual(cluster.bite(0)['contexts'], ['porn', 'tracking'])
+        self.assertEqual(cluster.updates, [])
+
+    def test_the_default_reaches_only_daily_indices(self):
+        self.assertEqual(default_pattern('tb-index'), 'tb-index-2*')
+        with self.assertRaises(ValueError):
+            default_pattern('tb-*')
 
 
 if __name__ == '__main__':

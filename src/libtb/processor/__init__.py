@@ -514,6 +514,17 @@ class Processor(object):
             settings.get('path', 'lists/index/domains.tbidx'),
         )
 
+    def open_index(self, path):
+        """The domain index to weigh against: the process's, reopened when swapped.
+
+        `turkeybite retag` sets `self.pinned_index` so a run spanning a rebuild
+        weighs every event against the one generation it started with.
+        """
+        pinned = getattr(self, 'pinned_index', None)
+        if pinned is not None:
+            return pinned
+        return domain_index(path)
+
     def min_publishers(self):
         """Independent publishers a medium trust category needs, see libtb.evidence.
 
@@ -611,7 +622,7 @@ class Processor(object):
             return drop_disabled(self.valkey_contexts(searches), disabled), {}
 
         try:
-            index = domain_index(path)
+            index = self.open_index(path)
             claims, verdict = categorise(index, host, self.min_publishers(),
                                          disabled=disabled, navigation=navigation)
         except Exception as e:
@@ -667,16 +678,19 @@ class Processor(object):
         microseconds in memory and several network round trips each against
         Valkey. In valkey mode the chain is still recorded on the event, it is
         just not categorised, so nothing regresses for a deployment that has not
-        switched over.
+        switched over. An index that cannot be read contributes nothing, and
+        why is left in `self.chain_error` for categorise_lookup.
         """
+        self.chain_error = None
         mode, path = self.index_settings()
         if mode == 'valkey' or not chain:
             return [], [], []
         try:
-            index = domain_index(path)
-        except Exception:
-            # resolve_contexts already reported the same failure and recorded
-            # index_error; a second complaint per event would add nothing
+            index = self.open_index(path)
+        except Exception as e:
+            # resolve_contexts reports a failure it meets itself; one that
+            # starts between the two lookups is recorded here instead
+            self.chain_error = str(e)
             return [], [], []
 
         # Weighed together, so two publishers agreeing about different links
@@ -706,7 +720,12 @@ class Processor(object):
         # chain-enriched answer against one that never had a chain.
         match_source = ['question'] if contexts else []
         if chain:
+            self.chain_error = None
             chain_contexts, chain_sources, chain_matched = self.resolve_chain(chain)
+            if getattr(self, 'chain_error', None) and 'index_error' not in extra:
+                # A verdict without the chain is partial; say so, as a worker
+                # does when the name itself could not be looked up
+                extra['index_error'] = self.chain_error
             if chain_contexts:
                 extra['cname_matched_on'] = chain_matched
                 extra['cname_contexts'] = chain_contexts

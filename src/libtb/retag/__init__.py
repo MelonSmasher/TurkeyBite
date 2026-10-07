@@ -14,6 +14,12 @@ name, so an event from before bite.searches existed is relabelled from
 bite.requested, whose first entry is the same name. Nothing about who asked,
 when, or the raw packet is touched, and processor.privacy is not re-applied.
 
+The whole run weighs against one index generation, the one open when it
+starts. The librarian may rebuild the index meanwhile; the run keeps the
+generation it began with, so no two events are judged by different lists,
+and every event it writes names that generation in bite.index_built_at. Run
+it again afterwards to apply the newer one.
+
 The public resolvers are never asked. Where processor.evidence.resolvers is
 on, the answers already stored on the event in bite.resolvers are replayed,
 so a candidate a resolver corroborated stays asserted. A candidate that now
@@ -21,8 +27,7 @@ qualifies for a resolver vote, but was not asked about at the time, stays a
 candidate: sending a million old names to Quad9 is not this command's call.
 
 An event whose verdict is unchanged is not written, so a rerun after a
-partial one only writes what is left. A written event carries the current
-index generation in bite.index_built_at; an unchanged one keeps the
+partial one only writes what is left. An unchanged event keeps the
 generation it was processed with, whose verdict it shares.
 
 Each update is conditional on the sequence number read, so an event changed
@@ -30,12 +35,15 @@ by anything else in between is reported as a conflict and left alone.
 """
 
 import sys
-from collections import Counter
+from collections import Counter, namedtuple
 
-from opensearchpy import helpers
+from opensearchpy import OpenSearch, helpers
 
 from libtb.evidence import resolve
 from libtb.evidence.resolvers import BLOCKED, PROVIDERS, SOURCES, qualifies
+from libtb.index import DomainIndex
+from libtb.opensearch import client_kwargs
+from libtb.retention import index_pattern
 
 # Everything categorise_lookup or categorise_visit can put on an event, and
 # the compare-mode and fallback fields a verdict from index mode replaces.
@@ -63,8 +71,33 @@ DNS, VISIT = 'dns', 'browser.history'
 # of a deployment's traffic, and each entry is small.
 CACHE_MAX = 500_000
 
+# How a run reads and writes. `scan` and `bulk` are opensearch-py's helpers,
+# replaced in tests by a fake cluster.
+Options = namedtuple('Options', 'apply batch_size limit log scan bulk')
+Options.__new__.__defaults__ = (False, 1000, None, print, helpers.scan, helpers.streaming_bulk)
 
-class ReplayChecker(object):
+
+def default_pattern(prefix):
+    """The daily indices a worker writes, <prefix>-YYYY-MM-DD.
+
+    Nothing else that happens to share the prefix, such as an archive or an
+    incident copy, is relabelled unless named with --index.
+    """
+    return index_pattern(prefix)
+
+
+def client_for(elastic):
+    """An OpenSearch client over every host in processor.elastic.
+
+    The client fails over between them, as the workers do. They are one
+    cluster, so the TLS settings and credentials of the first are the rest's.
+    """
+    kwargs = client_kwargs(elastic['hosts'][0])
+    kwargs['hosts'] = [client_kwargs(host)['hosts'][0] for host in elastic['hosts']]
+    return OpenSearch(**kwargs)
+
+
+class ReplayChecker:
     """Stands in for resolvers.Checker, answering from what an event recorded.
 
     The same rule as the live checker: a provider is consulted only when its
@@ -74,10 +107,12 @@ class ReplayChecker(object):
     """
 
     def __init__(self, adult):
+        """Consults the same providers the live checker would, given `adult`."""
         self.providers = tuple(p for p in PROVIDERS if adult or p.vote != 'porn')
         self.answers = {}
 
-    def corroborate(self, host, claims, verdict, min_publishers):
+    def corroborate(self, _host, claims, verdict, min_publishers):
+        """(claims, verdict, statuses), as resolvers.Checker.corroborate returns them."""
         statuses = {}
         for provider in self.providers:
             if not qualifies(provider, claims, verdict):
@@ -102,47 +137,75 @@ def _comparable(value):
     return value
 
 
-class Retagger(object):
-    """Recomputes one event at a time, remembering verdicts by their inputs."""
+def _input(bite):
+    """(kind, host, chain) a stored bite is weighed on, or None when it has none."""
+    kind = bite.get('type')
+    names = bite.get('searches') or bite.get('requested')
+    if kind not in (DNS, VISIT) or not isinstance(names, list) or not names:
+        return None
+    host = names[0]
+    if not isinstance(host, str) or not host.strip():
+        return None
+    chain = bite.get('cname_chain') if kind == DNS else None
+    chain = tuple(str(link) for link in chain) if isinstance(chain, list) else ()
+    return kind, host.strip().lower(), chain
+
+
+class Retagger:
+    """Recomputes one event at a time against one index generation."""
 
     def __init__(self, processor):
-        mode, _ = processor.index_settings()
+        """Pins `processor` to the index open now and to replayed resolver answers.
+
+        Raises ValueError outside index mode, and OSError or ValueError when
+        the index cannot be opened.
+        """
+        mode, path = processor.index_settings()
         if mode != 'index':
             raise ValueError(f'processor.domain_index.mode is {mode!r}; only index mode '
                              f'weighs evidence, so only it can relabel stored events')
         self.processor = processor
+        # A handle of its own rather than the process's shared one, which
+        # reopens itself when the librarian swaps the file
+        self.index = DomainIndex(path)
+        processor.pinned_index = self.index
         conf = processor.resolver_conf()
         self.replay = ReplayChecker(conf.adult) if conf.enable else None
         # Read by Processor.resolver_checker in place of the live checker
         processor.checker = self.replay
         self.cache = {}
 
+    @property
+    def generation(self):
+        """The index generation every verdict in this run is weighed against."""
+        return self.index.built_at
+
+    def close(self):
+        """Releases the pinned index."""
+        self.processor.pinned_index = None
+        self.index.close()
+
     def verdict(self, bite):
         """(contexts, extra) for a stored bite, or None when it cannot be relabelled."""
-        kind = bite.get('type')
-        names = bite.get('searches') or bite.get('requested')
-        if kind not in (DNS, VISIT) or not isinstance(names, list) or not names:
+        found = _input(bite)
+        if found is None:
             return None
-        host = names[0]
-        if not isinstance(host, str) or not host.strip():
-            return None
-        host = host.strip().lower()
-        chain = bite.get('cname_chain') if kind == DNS else None
-        chain = [str(link) for link in chain] if isinstance(chain, list) else []
+        kind, host, chain = found
         answers = bite.get('resolvers') if self.replay is not None else None
         answers = answers if isinstance(answers, dict) else {}
-        key = (kind, host, tuple(chain), tuple(sorted(answers.items())))
+        key = (kind, host, chain, tuple(sorted(answers.items())))
         found = self.cache.get(key)
         if found is None:
             if self.replay is not None:
                 self.replay.answers = answers
             if kind == DNS:
-                found = self.processor.categorise_lookup([host], chain)
+                found = self.processor.categorise_lookup([host], list(chain))
             else:
                 found = self.processor.categorise_visit([host])
             if 'index_error' in found[1]:
-                # The worker falls back to Valkey rather than lose the event;
-                # writing that fallback over a stored verdict would be a loss
+                # The worker falls back to Valkey, or drops the chain, rather
+                # than lose the event; writing that over a stored verdict would
+                # be a loss
                 raise RuntimeError(f'domain index unavailable: {found[1]["index_error"]}')
             if len(self.cache) >= CACHE_MAX:
                 self.cache.clear()
@@ -165,63 +228,95 @@ class Retagger(object):
         return new, unset
 
 
-def run(client, processor, pattern, apply=False, batch_size=1000, limit=None,
-        log=print, scan=helpers.scan, bulk=helpers.streaming_bulk):
+class _Run:
+    """One pass over the indices: what it read, what it would write, and the tally."""
+
+    def __init__(self, retagger, options):
+        self.retagger = retagger
+        self.options = options
+        self.counts = Counter()
+        self.added = Counter()
+        self.removed = Counter()
+
+    def update(self, hit):
+        """The bulk update for one hit, or None when it needs none. Counts it."""
+        self.counts['read'] += 1
+        bite = (hit.get('_source') or {}).get('bite') or {}
+        change = self.retagger.changes(bite)
+        if change is None:
+            current = self.retagger.verdict(bite) is not None
+            self.counts['unchanged' if current else 'skipped'] += 1
+            return None
+        new, unset = change
+        self.counts['changed'] += 1
+        before, after = set(bite.get('contexts') or []), set(new.get('contexts') or [])
+        self.added.update(after - before)
+        self.removed.update(before - after)
+        return {'_op_type': 'update', '_index': hit['_index'], '_id': hit['_id'],
+                'if_seq_no': hit['_seq_no'], 'if_primary_term': hit['_primary_term'],
+                'script': {'source': SCRIPT, 'lang': 'painless',
+                           'params': {'set': new, 'unset': unset}}}
+
+    def updates(self, hits):
+        """The updates for every hit read, up to the limit."""
+        limit, log = self.options.limit, self.options.log
+        for hit in hits:
+            if limit is not None and self.counts['read'] >= limit:
+                return
+            action = self.update(hit)
+            if action is not None and self.options.apply:
+                yield action
+            if self.counts['read'] % 1_000_000 == 0:
+                verb = 'changed' if self.options.apply else 'would change'
+                log(f'{self.counts["read"]:,} read, {self.counts["changed"]:,} {verb}')
+
+    def record(self, ok, item):
+        """Counts one bulk result."""
+        if ok:
+            self.counts['written'] += 1
+            return
+        status = (item.get('update') or {}).get('status')
+        self.counts['conflicts' if status == 409 else 'failed'] += 1
+        if status != 409 and self.counts['failed'] <= 10:
+            print(f'Not updated: {item}', file=sys.stderr)
+
+    def result(self):
+        """The counts and category tallies `format_report` prints."""
+        return {'counts': dict(self.counts), 'added': dict(self.added),
+                'removed': dict(self.removed), 'generation': self.retagger.generation}
+
+
+def run(client, processor, pattern, options=Options()):
     """Relabels every event in the indices `pattern` matches. Returns the counts.
 
-    Without `apply` nothing is written and the counts say what would be.
+    Without `options.apply` nothing is written and the counts say what would be.
     """
     retagger = Retagger(processor)
-    counts = Counter()
-    added, removed = Counter(), Counter()
-
-    def updates():
-        hits = scan(client, index=pattern, query={'query': {'match_all': {}}},
-                    _source=READ_FIELDS, size=batch_size, scroll='15m',
-                    seq_no_primary_term=True, request_timeout=120)
-        for hit in hits:
-            if limit is not None and counts['read'] >= limit:
-                return
-            counts['read'] += 1
-            bite = (hit.get('_source') or {}).get('bite') or {}
-            change = retagger.changes(bite)
-            if change is None:
-                counts['unchanged' if retagger.verdict(bite) is not None else 'skipped'] += 1
-            else:
-                new, unset = change
-                counts['changed'] += 1
-                before, after = set(bite.get('contexts') or []), set(new.get('contexts') or [])
-                added.update(after - before)
-                removed.update(before - after)
-                if apply:
-                    yield {'_op_type': 'update', '_index': hit['_index'], '_id': hit['_id'],
-                           'if_seq_no': hit['_seq_no'], 'if_primary_term': hit['_primary_term'],
-                           'script': {'source': SCRIPT, 'lang': 'painless',
-                                      'params': {'set': new, 'unset': unset}}}
-            if counts['read'] % 1_000_000 == 0:
-                log(f'{counts["read"]:,} read, {counts["changed"]:,} '
-                    f'{"changed" if apply else "would change"}')
-
-    if apply:
-        for ok, item in bulk(client, updates(), chunk_size=batch_size, raise_on_error=False,
-                             max_retries=3, request_timeout=120):
-            if ok:
-                counts['written'] += 1
-                continue
-            status = (item.get('update') or {}).get('status')
-            counts['conflicts' if status == 409 else 'failed'] += 1
-            if status != 409 and counts['failed'] <= 10:
-                print(f'Not updated: {item}', file=sys.stderr)
-    else:
-        for _ in updates():
-            pass
-    return {'counts': dict(counts), 'added': dict(added), 'removed': dict(removed)}
+    try:
+        current = _Run(retagger, options)
+        hits = options.scan(client, index=pattern, query={'query': {'match_all': {}}},
+                            _source=READ_FIELDS, size=options.batch_size, scroll='15m',
+                            seq_no_primary_term=True, request_timeout=120)
+        actions = current.updates(hits)
+        if options.apply:
+            for ok, item in options.bulk(client, actions, chunk_size=options.batch_size,
+                                         raise_on_error=False, max_retries=3,
+                                         request_timeout=120):
+                current.record(ok, item)
+        else:
+            for _ in actions:
+                pass
+        return current.result()
+    finally:
+        retagger.close()
 
 
 def format_report(result, apply):
+    """The result of `run` as printable lines."""
     counts = result['counts']
-    verb = 'Changed' if apply else 'Would change'
-    lines = [f'Read {counts.get("read", 0):,} events: {verb.lower()} '
+    verb = 'changed' if apply else 'would change'
+    lines = [f'Weighed against index generation {result["generation"]}.',
+             f'Read {counts.get("read", 0):,} events: {verb} '
              f'{counts.get("changed", 0):,}, {counts.get("unchanged", 0):,} already current, '
              f'{counts.get("skipped", 0):,} without a name to look up.']
     if apply:
