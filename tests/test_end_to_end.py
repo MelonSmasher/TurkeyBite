@@ -54,7 +54,7 @@ LISTS = {
     'gambling/PheeLeep-barikada': ['*.casino-example.co.uk'],
     'tracking/Easyprivacy': ['*.collect.tracker-example.net', 'pixel.solo-tracker-example.net'],
     'tracking/notrack-blocklist': ['casino-example.collect.tracker-example.net'],
-    'url-shorteners/hagezi-urlshortener': ['short-example.com', 'files-example.com'],
+    'url-shorteners/hagezi-urlshortener': ['files-example.com'],
     'url-shorteners/PeterDaveHello-url-shorteners': ['short-example.com'],
 }
 
