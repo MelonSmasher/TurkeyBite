@@ -298,6 +298,16 @@ class RetagTest(unittest.TestCase):
         self.assertEqual(cluster.bite(0)['contexts'], ['malicious'])
         self.assertEqual(cluster.bite(1)['contexts'], [])
 
+    def test_a_stored_answer_that_no_longer_votes_is_kept(self):
+        # Two lists now agree on porn, so Quad9's old answer settles nothing,
+        # but it cannot be asked for again, so it stays on the event
+        old = self.stored('www.pornsite.com', [], resolvers={'quad9': 'blocked'})
+        cluster, _ = self.retag([old], evidence=self.ON)
+        bite = cluster.bite(0)
+        self.assertEqual(bite['contexts'], ['porn'])
+        self.assertEqual(bite['resolvers'], {'quad9': 'blocked'})
+        self.assertNotIn('malicious:quad9', bite['claims'])
+
     # -- one generation per run ---------------------------------------------------
 
     def rebuild(self, built_at, entries):

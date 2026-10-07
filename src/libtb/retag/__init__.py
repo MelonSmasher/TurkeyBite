@@ -100,10 +100,10 @@ def client_for(elastic):
 class ReplayChecker:
     """Stands in for resolvers.Checker, answering from what an event recorded.
 
-    The same rule as the live checker: a provider is consulted only when its
-    vote could settle a candidate, and the verdict is weighed again after each
-    block. A provider the event has no answer from casts no vote and is not
-    recorded, since it was not asked.
+    The same rule as the live checker: a provider's answer is a vote only when
+    it could settle a candidate, and the verdict is weighed again after each
+    block. Every answer the event holds is kept on it, vote or not: none can
+    be asked for again, and a later run under other lists may need it.
     """
 
     def __init__(self, adult):
@@ -113,14 +113,13 @@ class ReplayChecker:
 
     def corroborate(self, _host, claims, verdict, min_publishers):
         """(claims, verdict, statuses), as resolvers.Checker.corroborate returns them."""
-        statuses = {}
+        statuses = dict(self.answers)
         for provider in self.providers:
             if not qualifies(provider, claims, verdict):
                 continue
             status = self.answers.get(provider.name)
             if status is None:
                 continue
-            statuses[provider.name] = status
             if status == BLOCKED:
                 claims = list(claims) + [(None, SOURCES[provider.name], provider.vote)]
                 verdict = resolve(claims, min_publishers)
