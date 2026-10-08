@@ -168,7 +168,7 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where, reported, moved, timed, klass, signin, signins, accepted):
+                slack, device_sec, where, reported, moved, timed, klass, signin, signins):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         stopped = float(stopped) if stopped not in ('', b'') else None
         klass = klass.decode() if isinstance(klass, bytes) else klass
@@ -182,8 +182,7 @@ class FakeRedis(object):
         if value is None:
             return 0
         self._merge_signins(value, klass, user, str(signed) == '1',
-                            float(signin) if signin not in ('', b'') else None, float(seen), int(signins),
-                            str(accepted) == '1')
+                            float(signin) if signin not in ('', b'') else None, float(seen), int(signins))
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
         if value['n']:
             stored['n'] = value['n']
@@ -225,7 +224,7 @@ class FakeRedis(object):
         if timed and value['s'] > old['l'] + slack:
             return value
         if isinstance(old.get('n'), list):
-            value['n'] = [list(period) for period in old['n']]
+            value['n'] = [[period[0], list(period[1]), period[2], period[3]] for period in old['n']]
         reported_at = value['l']
         if value['x'] and old['l'] > value['e']:
             value['e'], value['x'] = None, False
@@ -246,7 +245,7 @@ class FakeRedis(object):
         return value
 
     @staticmethod
-    def _merge_signins(value, klass, user, signed, signin, reported_at, keep, accepted):
+    def _merge_signins(value, klass, user, signed, signin, reported_at, keep):
         """Each sign-in keeps its own name, from its Access-Accept, or the session's start for the first.
 
         The same person signing in again is one sign-in, and only the latest
@@ -257,24 +256,24 @@ class FakeRedis(object):
         periods = value['n']
         at = None
         for period in periods:
-            if period[1] == klass:
+            if klass in period[1]:
                 at = period
         if at is not None:
             if user != '' and not (at[3] == 1 and not signed):
                 at[2], at[3] = user, 1 if signed else 0
             if signin is not None and signin < at[0]:
                 at[0] = signin
-        elif accepted or not periods:
+        else:
             if signin is not None:
                 begins = signin
             else:
                 begins = reported_at if periods else value['s']
-            periods.append([begins, klass, user, 1 if signed else 0])
+            periods.append([begins, [klass], user, 1 if signed else 0])
         periods.sort(key=lambda period: period[0])
         merged = []
         for period in periods:
             if merged and merged[-1][2] == period[2] and merged[-1][3] == period[3]:
-                merged[-1][1] = period[1]
+                merged[-1][1] = (merged[-1][1] + period[1])[-keep:]
             else:
                 merged.append(period)
         value['n'] = merged[-keep:]

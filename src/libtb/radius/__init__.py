@@ -92,11 +92,10 @@ KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'ca
 # had before it roamed, and `reported` when the device was last reported with
 # it. `timed` says the start is known, from a start or Acct-Session-Time,
 # `moved` that the stop is only inferred, from the device being reported with
-# another address, `signin` when its Access-Accept was logged, and `accepted`
-# that its Access-Accept was seen at all.
+# another address, and `signin` when its Access-Accept was logged.
 Session = namedtuple('Session',
-                     'address key user mac start seen stopped klass signed bridged reported timed moved signin '
-                     'accepted', defaults=(False, False, None, True, False, None, False))
+                     'address key user mac start seen stopped klass signed bridged reported timed moved signin',
+                     defaults=(False, False, None, True, False, None))
 
 ACCESS_ACCEPT, ACCOUNTING_REQUEST = '2', '4'
 START, STOP, INTERIM = '1', '2', '3'
@@ -166,8 +165,7 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #           clock slack, seconds to keep the device's address, the address,
 #           for a roam when the device last reported the address or "",
 #           stop inferred from a move 1/0, start known 1/0, Class or "",
-#           when the Class's Access-Accept was logged or "", sign-ins to keep,
-#           the Class's Access-Accept seen 1/0
+#           when the Class's Access-Accept was logged or "", sign-ins to keep
 # Sessions last reported over the seconds to keep before this report are
 # dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
@@ -233,7 +231,7 @@ if old then
   if reported == nil and type(old.r) == 'number' then reported = old.r end
   if type(old.f) == 'number' and (first == nil or old.f < first) then first = old.f end
 end
--- The sign-ins (n) the session has had, each {from, Class, user, signed},
+-- The sign-ins (n) the session has had, each {from, Classes, user, signed},
 -- oldest first, so a lookup handled late gets the name in force at its time
 local periods = {}
 if old and type(old.n) == 'table' then periods = old.n end
@@ -241,7 +239,11 @@ if ARGV[17] ~= '' then
   local signin = tonumber(ARGV[18])
   local at = nil
   for _, p in ipairs(periods) do
-    if p[2] == ARGV[17] then at = p end
+    if type(p[2]) == 'table' then
+      for _, c in ipairs(p[2]) do
+        if c == ARGV[17] then at = p end
+      end
+    end
   end
   if at then
     if in_user ~= '' and not (at[4] == 1 and not in_signed) then
@@ -250,23 +252,23 @@ if ARGV[17] ~= '' then
     end
     -- Recorded before its Access-Accept was seen: it began then
     if signin and signin < at[1] then at[1] = signin end
-  elseif ARGV[20] == '1' or #periods == 0 then
-    -- A Class whose Access-Accept was not seen does not begin a sign-in on a
-    -- session that has one: it may be one merged away, or long expired
+  else
     local from = signin
     if from == nil then
       if #periods == 0 then from = start else from = reported_at end
     end
-    periods[#periods + 1] = {from, ARGV[17], in_user, in_signed and 1 or 0}
+    periods[#periods + 1] = {from, {ARGV[17]}, in_user, in_signed and 1 or 0}
   end
   table.sort(periods, function(a, b) return a[1] < b[1] end)
   -- The same person signing in again, as a session timeout makes them, is
-  -- one sign-in; and only the latest MAX_SIGNINS are kept
+  -- one sign-in, under each of its Classes, the latest MAX_SIGNINS of them;
+  -- and only the latest MAX_SIGNINS sign-ins are kept
   local merged = {}
   for _, p in ipairs(periods) do
     local last = merged[#merged]
     if last and last[3] == p[3] and last[4] == p[4] then
-      last[2] = p[2]
+      for _, c in ipairs(p[2]) do last[2][#last[2] + 1] = c end
+      while #last[2] > tonumber(ARGV[19]) do table.remove(last[2], 1) end
     else
       merged[#merged + 1] = p
     end
@@ -677,7 +679,7 @@ class Sessions:
             return found if self.conf.trust_names else found._replace(user=None)
         account, at = signin
         # An Access-Accept with no person's account is a machine's: nobody's, whatever it says
-        return found._replace(user=account or None, signed=bool(account), signin=at, accepted=True)
+        return found._replace(user=account or None, signed=bool(account), signin=at)
 
     def _device(self, device):
         """What the device's key holds, {a, l, t}, or None."""
@@ -756,7 +758,7 @@ class Sessions:
             int(bool(found.signed)), int(bool(found.bridged)), CLOCK_SLACK, self.conf.grace_sec,
             found.address, '' if found.reported is None else found.reported, int(bool(found.moved)),
             int(bool(found.timed)), found.klass or '', '' if found.signin is None else found.signin,
-            MAX_SIGNINS, int(bool(found.accepted)))
+            MAX_SIGNINS)
         self._nobody.pop(found.address, None)
         return bool(recorded)
 
@@ -805,12 +807,12 @@ class Sessions:
                    key=lambda held: (confirmed(held), held['s'], held['l'], held['u']), default=None)
         if best is None:
             return None
-        name, klass = _in_force(best, when)
-        if not name and best.get('m') and klass:
+        name, classes = _in_force(best, when)
+        if not name and best.get('m') and classes:
             # The same device under the same sign-in, at another access point, is the same person
             for other in covering:
-                lent, other_class = _in_force(other, when)
-                if lent and other.get('m') == best['m'] and other_class == klass:
+                lent, other_classes = _in_force(other, when)
+                if lent and other.get('m') == best['m'] and set(classes) & set(other_classes):
                     name = lent
                     break
         return {**best, 'u': name}
@@ -839,19 +841,19 @@ def _signin(raw):
 
 
 def _in_force(held, when):
-    """The name and Class of the sign-in a session had at a time.
+    """The name and Classes of the sign-in a session had at a time.
 
     The last that began by then. Before the first, that one if it began
     with the session, and nobody's if not: an earlier sign-in was missed. A
     session recorded before sign-ins were kept has its one name.
     """
     periods = [p for p in held.get('n') or [] if isinstance(p, list) and len(p) == 4 and _number(p[0])
-               and isinstance(p[2], str)]
+               and isinstance(p[1], list) and isinstance(p[2], str)]
     if not periods:
-        return held['u'], held.get('c')
+        return held['u'], [held['c']] if isinstance(held.get('c'), str) else []
     current = periods[0]
     if when < current[0] and current[0] > held['s'] + CLOCK_SLACK:
-        return '', None
+        return '', []
     for period in periods:
         if period[0] <= when:
             current = period

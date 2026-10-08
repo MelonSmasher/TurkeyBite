@@ -657,7 +657,17 @@ class DefaultNamesTest(unittest.TestCase):
         self.redis.delete('turkeybite:radius:class:P1')
         self.sessions.take(nps_line(klass='P1', logged='10/07/2026 18:24:34.212', session_time='900'))
         self.assertEqual(self.holder(LOGGED + 8 * 60), 'jo')
-        self.assertEqual(len(self.sessions.holder('10.212.16.219', LOGGED)['n']), 1)
+        self.assertEqual(self.sessions.holder('10.212.16.219', LOGGED)['n'][0][1], ['P1', 'P2'])
+
+    def test_a_new_sign_in_not_yet_seen_is_not_the_last_persons(self):
+        # Bob signs in at 18:35; his first report is handled before his Access-Accept
+        self.sessions.take(accept_line(klass='C1', logged='10/07/2026 18:04:30.000'))
+        self.sessions.take(nps_line(klass='C1', logged='10/07/2026 18:24:34.212', session_time='1200'))
+        self.sessions.take(nps_line(klass='C3', logged='10/07/2026 18:39:34.212', session_time='2100'))
+        self.assertEqual(self.holder(LOGGED + 22 * 60), '')
+        # Nor is a machine's whose Access-Accept is never seen
+        self.sessions.take(nps_line(klass='C5', logged='10/07/2026 19:29:34.212', session_time='5100'))
+        self.assertEqual(self.holder(LOGGED + 75 * 60), '')
 
     def test_the_same_device_under_the_same_sign_in_is_the_same_person(self):
         # Roamed to a second access point under the same Class, whose account has expired
@@ -1062,7 +1072,7 @@ class RealValkeyTest(unittest.TestCase):
         strict.take(accept_line(account='EXAMPLE\\jo', klass='P2', logged='10/07/2026 18:20:00.000'))
         strict.take(nps_line(klass='P2', address='10.212.16.203', mac='BA-F7-F8-00-00-0B', session_id='P',
                              logged='10/07/2026 18:29:34.212', session_time='1200'))
-        # A late report under the merged-away Class, its account expired, begins nothing
+        # A late report under the merged-away Class, its account expired, still finds its sign-in
         redis.delete('turkeybite:radius:class:P1')
         strict.take(nps_line(klass='P1', address='10.212.16.203', mac='BA-F7-F8-00-00-0B', session_id='P',
                              logged='10/07/2026 18:24:34.212', session_time='900'))
@@ -1129,12 +1139,12 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual(real[16]['a'], '10.212.16.201')
         self.assertEqual(real[17]['ap-hall-12|K2']['x'], 1)
         machine = real[18]['ap-hall-11|M']
-        self.assertEqual(machine['n'], [[datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc).timestamp(), 'M1', 'hana', 1],
-                                        [datetime(2026, 10, 7, 22, 25, tzinfo=timezone.utc).timestamp(), 'M2', '', 0],
-                                        [datetime(2026, 10, 7, 22, 31, tzinfo=timezone.utc).timestamp(), 'M3',
+        self.assertEqual(machine['n'], [[datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc).timestamp(), ['M1'], 'hana', 1],
+                                        [datetime(2026, 10, 7, 22, 25, tzinfo=timezone.utc).timestamp(), ['M2'], '', 0],
+                                        [datetime(2026, 10, 7, 22, 31, tzinfo=timezone.utc).timestamp(), ['M3'],
                                          'ivan', 1]])
         self.assertEqual(real[19]['ap-hall-11|P']['n'],
-                         [[datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc).timestamp(), 'P2', 'jo', 1]])
+                         [[datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc).timestamp(), ['P1', 'P2'], 'jo', 1]])
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 
