@@ -648,6 +648,17 @@ class DefaultNamesTest(unittest.TestCase):
         self.assertEqual(len(held['n']), 1)
         self.assertEqual(held['u'], 'jsmith')
 
+    def test_a_late_report_under_a_merged_away_sign_in_keeps_the_name(self):
+        self.sessions.take(accept_line(account='EXAMPLE\\jo', klass='P1', logged='10/07/2026 18:00:00.000'))
+        self.sessions.take(nps_line(klass='P1'))
+        self.sessions.take(accept_line(account='EXAMPLE\\jo', klass='P2', logged='10/07/2026 18:20:00.000'))
+        self.sessions.take(nps_line(klass='P2', logged='10/07/2026 18:29:34.212', session_time='1200'))
+        # P1's account has expired by the time a late report under it is handled
+        self.redis.delete('turkeybite:radius:class:P1')
+        self.sessions.take(nps_line(klass='P1', logged='10/07/2026 18:24:34.212', session_time='900'))
+        self.assertEqual(self.holder(LOGGED + 8 * 60), 'jo')
+        self.assertEqual(len(self.sessions.holder('10.212.16.219', LOGGED)['n']), 1)
+
     def test_the_same_device_under_the_same_sign_in_is_the_same_person(self):
         # Roamed to a second access point under the same Class, whose account has expired
         self.sessions.take(accept_line(klass='C1'))
@@ -1051,6 +1062,10 @@ class RealValkeyTest(unittest.TestCase):
         strict.take(accept_line(account='EXAMPLE\\jo', klass='P2', logged='10/07/2026 18:20:00.000'))
         strict.take(nps_line(klass='P2', address='10.212.16.203', mac='BA-F7-F8-00-00-0B', session_id='P',
                              logged='10/07/2026 18:29:34.212', session_time='1200'))
+        # A late report under the merged-away Class, its account expired, begins nothing
+        redis.delete('turkeybite:radius:class:P1')
+        strict.take(nps_line(klass='P1', address='10.212.16.203', mac='BA-F7-F8-00-00-0B', session_id='P',
+                             logged='10/07/2026 18:24:34.212', session_time='900'))
         # An older sign-in's report handled after a newer one's
         strict.take(nps_line(klass='M1', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
                              logged='10/07/2026 18:24:34.212', session_time='900'))

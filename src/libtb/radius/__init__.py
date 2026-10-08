@@ -92,10 +92,11 @@ KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'ca
 # had before it roamed, and `reported` when the device was last reported with
 # it. `timed` says the start is known, from a start or Acct-Session-Time,
 # `moved` that the stop is only inferred, from the device being reported with
-# another address, and `signin` when its Access-Accept was logged.
+# another address, `signin` when its Access-Accept was logged, and `accepted`
+# that its Access-Accept was seen at all.
 Session = namedtuple('Session',
-                     'address key user mac start seen stopped klass signed bridged reported timed moved signin',
-                     defaults=(False, False, None, True, False, None))
+                     'address key user mac start seen stopped klass signed bridged reported timed moved signin '
+                     'accepted', defaults=(False, False, None, True, False, None, False))
 
 ACCESS_ACCEPT, ACCOUNTING_REQUEST = '2', '4'
 START, STOP, INTERIM = '1', '2', '3'
@@ -165,7 +166,8 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #           clock slack, seconds to keep the device's address, the address,
 #           for a roam when the device last reported the address or "",
 #           stop inferred from a move 1/0, start known 1/0, Class or "",
-#           when the Class's Access-Accept was logged or "", sign-ins to keep
+#           when the Class's Access-Accept was logged or "", sign-ins to keep,
+#           the Class's Access-Accept seen 1/0
 # Sessions last reported over the seconds to keep before this report are
 # dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
@@ -248,7 +250,9 @@ if ARGV[17] ~= '' then
     end
     -- Recorded before its Access-Accept was seen: it began then
     if signin and signin < at[1] then at[1] = signin end
-  else
+  elseif ARGV[20] == '1' or #periods == 0 then
+    -- A Class whose Access-Accept was not seen does not begin a sign-in on a
+    -- session that has one: it may be one merged away, or long expired
     local from = signin
     if from == nil then
       if #periods == 0 then from = start else from = reported_at end
@@ -673,7 +677,7 @@ class Sessions:
             return found if self.conf.trust_names else found._replace(user=None)
         account, at = signin
         # An Access-Accept with no person's account is a machine's: nobody's, whatever it says
-        return found._replace(user=account or None, signed=bool(account), signin=at)
+        return found._replace(user=account or None, signed=bool(account), signin=at, accepted=True)
 
     def _device(self, device):
         """What the device's key holds, {a, l, t}, or None."""
@@ -752,7 +756,7 @@ class Sessions:
             int(bool(found.signed)), int(bool(found.bridged)), CLOCK_SLACK, self.conf.grace_sec,
             found.address, '' if found.reported is None else found.reported, int(bool(found.moved)),
             int(bool(found.timed)), found.klass or '', '' if found.signin is None else found.signin,
-            MAX_SIGNINS)
+            MAX_SIGNINS, int(bool(found.accepted)))
         self._nobody.pop(found.address, None)
         return bool(recorded)
 

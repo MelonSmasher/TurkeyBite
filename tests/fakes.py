@@ -168,7 +168,7 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where, reported, moved, timed, klass, signin, signins):
+                slack, device_sec, where, reported, moved, timed, klass, signin, signins, accepted):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         stopped = float(stopped) if stopped not in ('', b'') else None
         klass = klass.decode() if isinstance(klass, bytes) else klass
@@ -182,7 +182,8 @@ class FakeRedis(object):
         if value is None:
             return 0
         self._merge_signins(value, klass, user, str(signed) == '1',
-                            float(signin) if signin not in ('', b'') else None, float(seen), int(signins))
+                            float(signin) if signin not in ('', b'') else None, float(seen), int(signins),
+                            str(accepted) == '1')
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
         if value['n']:
             stored['n'] = value['n']
@@ -245,7 +246,7 @@ class FakeRedis(object):
         return value
 
     @staticmethod
-    def _merge_signins(value, klass, user, signed, signin, reported_at, keep):
+    def _merge_signins(value, klass, user, signed, signin, reported_at, keep, accepted):
         """Each sign-in keeps its own name, from its Access-Accept, or the session's start for the first.
 
         The same person signing in again is one sign-in, and only the latest
@@ -263,7 +264,7 @@ class FakeRedis(object):
                 at[2], at[3] = user, 1 if signed else 0
             if signin is not None and signin < at[0]:
                 at[0] = signin
-        else:
+        elif accepted or not periods:
             if signin is not None:
                 begins = signin
             else:
