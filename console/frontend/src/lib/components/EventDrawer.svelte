@@ -97,6 +97,7 @@
             <div class="v addrs">{#each ipv4First(b.client_ips).slice(0, 3) as ip (ip)}<span class="addr"><EntityLink field="bite.client_ips" value={ip} /><DeviceLookup value={ip} label="Device lookup" /></span>{/each}</div>
           {/if}
           {#if b.client_user}<div class="k">User</div><div class="v"><EntityLink field="bite.client_user" value={b.client_user} /></div>{/if}
+          {#if b.client_mac}<div class="k">Device</div><div class="v"><EntityLink field="bite.client_mac" value={b.client_mac} /></div>{/if}
           {#if b.client_hostname_short}<div class="k">Machine</div><div class="v"><EntityLink field="bite.client_hostname_short" value={b.client_hostname_short} /></div>{/if}
           {#if b.client_hosts_short?.length}<div class="k">PTR name</div><div class="v"><EntityLink field="bite.client_hosts_short" value={b.client_hosts_short[0]} /></div>{/if}
           {#if b.client_platform}<div class="k">Platform</div><div class="v">{b.client_platform} · {b.client_browser}</div>{/if}

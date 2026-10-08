@@ -105,6 +105,7 @@ echo "OpenSearch is available! Creating/updating index template..."
                             "client_hostname": { "type": "keyword" },
                             "client_hostname_short": { "type": "keyword" },
                             "client_user": { "type": "keyword" },
+                            "client_mac": { "type": "keyword" },
                             "client_platform": { "type": "keyword" },
                             "client_browser": { "type": "keyword" },
                             "client_ips": { "type": "ip" },
@@ -157,6 +158,22 @@ echo "OpenSearch is available! Creating/updating index template..."
     }'
 
 echo "✅ Index template created successfully!"
+
+# The template applies only to indices made after it. A field added since
+# today's index was made is mapped there too, while it has not seen it:
+# otherwise the first worker to write bite.client_mac maps it as text, and
+# the console's terms on it fail for every profile that spans the day. An
+# index that has already mapped it keeps what it has.
+mapped=$(opensearch_curl -sS -o /dev/null -w "%{http_code}" -XPUT \
+    "$OPENSEARCH_URL/tb-index-*/_mapping?allow_no_indices=true&ignore_unavailable=true" \
+    -H "Content-Type: application/json" \
+    -u "${OPENSEARCH_USER}:${OPENSEARCH_PASS}" \
+    -d '{"properties": {"bite": {"properties": {"client_mac": {"type": "keyword"}}}}}' || true)
+if [ "$mapped" -ge 200 ] 2>/dev/null && [ "$mapped" -lt 300 ]; then
+    echo "✅ Existing indices map the newer fields"
+else
+    echo "Note: the existing indices did not take the newer fields' mapping (HTTP $mapped). One that already maps bite.client_mac as text fails the request for all of them, and makes profiles that span it fail until retention deletes it."
+fi
 
 # The retention policy, see libtb/retention. Python rather than curl so the
 # policy and the decision to create, update or remove it can be tested.

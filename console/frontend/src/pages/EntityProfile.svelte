@@ -51,7 +51,7 @@
   const p = $derived(profile.data);
   const Icon = $derived(field === 'bite.client_user' ? User : field === 'bite.client' ? Network : field === 'bite.client_hosts_short' ? Server : Monitor);
   const times = $derived(p?.timeline.map((b) => new Date(b.t).getTime()) ?? []);
-  const alias = $derived(({ 'bite.client_user': 'user', 'bite.client_hostname_short': 'host', 'bite.client': 'client' } as Record<string, string>)[field] ?? field);
+  const alias = $derived(({ 'bite.client_user': 'user', 'bite.client_hostname_short': 'host', 'bite.client': 'client', 'bite.client_mac': 'mac' } as Record<string, string>)[field] ?? field);
   const exploreQuery = $derived(`${alias}:${/[\s():"]/.test(value) ? `"${value}"` : value}`);
   const ringOffset = $derived(p ? 113 - (113 * Math.min(100, p.risk.score)) / 100 : 113);
 
@@ -60,7 +60,7 @@
     const labels: Record<string, string> = {
       'bite.client_user': 'Users', 'bite.client_hostname_short': 'Machines', 'bite.client': 'Addresses',
       'bite.client_ips': 'Interface addresses', 'bite.client_hosts_short': 'Reverse names',
-      'bite.client_platform': 'Platform', 'bite.client_browser': 'Browser' };
+      'bite.client_mac': 'Devices', 'bite.client_platform': 'Platform', 'bite.client_browser': 'Browser' };
     return Object.entries(labels).map(([f, label]) => ({ field: f, label, values: (p.identity[f] ?? []).filter((v) => !(f === field && v.key === value)) }))
       .filter((r) => r.values.length);
   });

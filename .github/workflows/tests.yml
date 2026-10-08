@@ -21,6 +21,13 @@ jobs:
     # The librarian's script waits up to ten minutes for OpenSearch, so a test
     # that let it reach a real cluster would hang rather than fail
     timeout-minutes: 10
+    # A real Valkey, for the Lua that libtb.radius runs in it. The fakes do in
+    # Python what it does, and this holds the two together.
+    services:
+      valkey:
+        image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
+        ports:
+          - 6379:6379
     strategy:
       fail-fast: false
       matrix:
@@ -49,3 +56,7 @@ jobs:
         run: >-
           sudo unshare --net sh -c
           "ip link set lo up && exec sudo -u $(id -un) env TB_VENV=$PWD/.venv tests/run.sh"
+
+      - name: Run the Lua against a real Valkey
+        # Outside the namespace above, since it needs the service
+        run: TB_VENV=$PWD/.venv TB_TEST_VALKEY=redis://127.0.0.1:6379/0 tests/run.sh test_radius.RealValkeyTest

@@ -47,9 +47,12 @@ import sys
 import time
 
 from redis.exceptions import ConnectionError as ValkeyConnectionError
+from redis.exceptions import RedisError
 from redis.exceptions import TimeoutError as ValkeyTimeoutError
 
 from libtb.privacy import TRIMMED, trim_url
+from libtb.opensearch import report_once
+from libtb.radius import ACCESS_ACCEPT, address, attributes, misrouted
 from libtb.util import dig
 from libtb.processor import DeliveryError
 from libtb.queue import NotOwner
@@ -66,6 +69,11 @@ VALKEY_ERRORS = (ValkeyConnectionError, ValkeyTimeoutError)
 # How often a batch being handled renews the consumer's name, well inside
 # ListQueue.OWNER_TTL, so a slow batch cannot outlast the reservation
 RENEW_SECONDS = 20.0
+
+# The most lines of NPS's log taken from the accounting list at a time, and
+# the most kept on it while this worker has processor.radius off
+ACCOUNTING_BATCH = 500
+ACCOUNTING_KEEP = 10000
 
 
 def describe(data, verdict, urls=TRIMMED):
@@ -109,6 +117,22 @@ def describe(data, verdict, urls=TRIMMED):
     return None
 
 
+def describe_accounting(data, verdict):
+    """Builds the log line for a line of NPS's log, taken from the accounting list.
+
+    Only what libtb.radius would accept as an address, so a line cannot
+    forge another in the log, and no names: every sign-in on the network
+    would otherwise be in the container's log.
+    """
+    fields = attributes(dig(data, 'message'))
+    kind = 'Accept' if fields.get('Packet-Type') == ACCESS_ACCEPT else 'Accounting'
+    line = f'[NPS][{kind}] {verdict}'
+    where = address(fields.get('Framed-IP-Address'))
+    if where:
+        line = line + ': ' + where
+    return line
+
+
 class NameLost(Exception):
     """Another process has this consumer's name, so its processing list."""
 
@@ -138,7 +162,7 @@ class Consumer(object):
         # Set when another process took this consumer's name, so it stopped
         self.name_lost = False
         self.stats = {'claimed': 0, 'kept': 0, 'dropped': 0, 'unreadable': 0,
-                      'indexed': 0, 'requeued': 0, 'batches': 0}
+                      'indexed': 0, 'requeued': 0, 'batches': 0, 'accounting': 0}
 
     def stop(self, *_):
         """Finish the batch in hand, then exit. Supervisor stops us with TERM."""
@@ -187,7 +211,7 @@ class Consumer(object):
                 if line:
                     print(line)
             if not keep:
-                self.stats['dropped'] += 1
+                self.drop(data)
                 continue
             try:
                 self.processor.process_packet(data)
@@ -221,6 +245,14 @@ class Consumer(object):
 
         self.stats['kept'] += kept
         return len(items)
+
+    def drop(self, data):
+        """Counts a packet the sieve dropped, and says where NPS's lines should go if it is one."""
+        self.stats['dropped'] += 1
+        if misrouted(data):
+            report_once(f'Lines of NPS\'s log are arriving on {getattr(self.queue, "key", "the queue")}, '
+                        f'which drops them: send them to the accounting list, '
+                        f'{self.processor.accounting_list() or "<channel>:nps"}')
 
     def rest(self):
         """Waits after a batch was requeued or Valkey did not answer.
@@ -268,8 +300,49 @@ class Consumer(object):
             self.queue.ack(acked)
             self.failures = 0
 
+    def take_accounting(self):
+        """Records what waits on the accounting list, see libtb.radius. Returns lines taken.
+
+        Taken at most once, with LPOP: lines in hand when a worker dies are
+        lost, which costs no more than the next interim update puts back.
+        With processor.radius off here, the lines are left for workers that
+        have it on, and the list is only kept to its newest ACCOUNTING_KEEP
+        lines, so it cannot grow without end while nobody takes them.
+        """
+        key = self.processor.accounting_list()
+        redis = getattr(self.queue, 'redis', None)
+        if not key or redis is None:
+            return 0
+        try:
+            if not self.processor.radius_on():
+                redis.ltrim(key, -ACCOUNTING_KEEP, -1)
+                return 0
+            items = redis.lpop(key, ACCOUNTING_BATCH) or []
+        except RedisError as e:
+            if isinstance(e, VALKEY_ERRORS):
+                raise
+            # Valkey refusing the list must not stop the DNS events too
+            report_once(f'The accounting list {key} could not be read: {type(e).__name__}')
+            return 0
+        for raw in items:
+            try:
+                data = json.loads(raw.decode('utf-8') if isinstance(raw, bytes) else raw)
+                recorded = self.processor.process_nps(data)
+            except Exception as e:
+                if isinstance(e, VALKEY_ERRORS):
+                    raise
+                # A line we cannot read costs that line and no more
+                print(f'[{self.name}] skipped an unreadable accounting line: {e}', file=sys.stderr)
+                self.stats['unreadable'] += 1
+                continue
+            if self.log_events:
+                print(describe_accounting(data, 'Recorded' if recorded else 'Dropped'))
+        self.stats['accounting'] += len(items)
+        return len(items)
+
     def run_once(self):
         """One claim, handle, acknowledge cycle. Returns items claimed."""
+        self.take_accounting()
         items = self.queue.claim(self.batch_size, self.block_seconds)
         if not items:
             return 0

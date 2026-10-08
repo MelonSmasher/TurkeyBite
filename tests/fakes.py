@@ -22,8 +22,10 @@ publish is half done, say.
 """
 
 import fnmatch
+import json
 
 from libtb.queue import ACK_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
+from libtb.radius import RECORD_SCRIPT
 
 
 def _bytes(value):
@@ -34,6 +36,11 @@ def _bytes(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(value).encode('ascii')
     raise TypeError(f'Redis takes bytes, str or numbers, not {type(value).__name__}')
+
+
+def _number(value):
+    """What Lua's type() calls a number: JSON's true and false are not."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _key(key):
@@ -116,6 +123,13 @@ class FakeRedis(object):
             self.ttls[_key(key)] = ex
         return True
 
+    def getex(self, key, ex=None):
+        """Get a string, renewing its expiry."""
+        value = self.get(key)
+        if value is not None and ex is not None:
+            self.ttls[_key(key)] = ex
+        return value
+
     def expire(self, key, seconds):
         """Record an expiry for a key that exists."""
         self._did('expire', key)
@@ -125,9 +139,11 @@ class FakeRedis(object):
         return True
 
     def eval(self, script, numkeys, *keys_and_args):
-        """Run the queue's Lua scripts, in Python."""
+        """Run the queue's Lua scripts, and libtb.radius's, in Python."""
         keys, args = keys_and_args[:numkeys], keys_and_args[numkeys:]
         self._did('eval', keys[0])
+        if script == RECORD_SCRIPT:
+            return self._record(keys, *args)
         held = self.data.get(_key(keys[0]))
         mine = held == _bytes(args[0])
         if script == RENEW_SCRIPT:
@@ -150,6 +166,193 @@ class FakeRedis(object):
                 moved += 1
             return moved
         raise NotImplementedError('a script the fake does not know')
+
+    def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
+                slack, device_sec, where, reported, moved, timed, klass, signin, signins):
+        """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
+        stopped = float(stopped) if stopped not in ('', b'') else None
+        klass = klass.decode() if isinstance(klass, bytes) else klass
+        value = self._merged(keys[0], field, {
+            'u': user, 'm': device, 's': float(start), 'l': float(seen), 'e': stopped,
+            'x': stopped is not None and str(moved) == '1', 'k': str(timed) == '1',
+            'a': str(signed) == '1', 'b': str(bridged) == '1',
+            'r': float(reported) if reported not in ('', b'') else None,
+            'f': None if str(bridged) == '1' else float(seen),
+            'c': klass}, float(slack), str(timed) == '1')
+        if value is None:
+            return 0
+        self._merge_signins(value, klass, user, str(signed) == '1',
+                            float(signin) if signin not in ('', b'') else None, float(seen), int(signins))
+        stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
+        if value['n']:
+            stored['n'] = value['n']
+        for name in ('m', 'e', 'f', 'c'):
+            if value[name] not in (None, ''):
+                stored[name] = value[name]
+        if value['x']:
+            stored['x'] = 1
+        if value['k']:
+            stored['k'] = 1
+        if value['a']:
+            stored['a'] = 1
+        if value['b']:
+            stored['b'] = 1
+            if value['r'] is not None:
+                stored['r'] = value['r']
+        self.hset(keys[0], field, json.dumps(stored))
+        self.expire(keys[0], int(keep_sec))
+        self._trim(keys[0], int(keep), float(seen) - int(keep_sec))
+        if len(keys) > 1:
+            stop = stopped is not None and str(moved) != '1'
+            # A stop whose start is not known is taken as from before the device was last seen
+            self._remember_device(keys[1], where, float(seen), int(device_sec), value['b'],
+                                  (float(start) if str(timed) == '1' else float('-inf')) if stop else None,
+                                  float(slack))
+        return 1
+
+    def _merged(self, key, field, value, slack, timed):
+        """A report merged into what the hash holds for its session, or None to ignore it."""
+        try:
+            old = json.loads(self._hash(key).get(_bytes(field)) or 'null')
+        except ValueError:
+            old = None
+        value['n'] = []
+        if not (isinstance(old, dict) and _number(old.get('s')) and _number(old.get('l'))):
+            return value
+        if old.get('k') == 1 and value['l'] < old['s'] - slack:
+            return None
+        if timed and value['s'] > old['l'] + slack:
+            return value
+        if isinstance(old.get('n'), list):
+            value['n'] = [[period[0], list(period[1]), period[2], period[3]] for period in old['n']]
+        reported_at = value['l']
+        if value['x'] and old['l'] > value['e']:
+            value['e'], value['x'] = None, False
+        if not (timed and old.get('k') != 1 and value['s'] < old['s']):
+            value['s'] = old['s']
+        value['k'] = timed or old.get('k') == 1
+        value['l'] = max(value['l'], old['l'])
+        self._merge_stop(value, old, reported_at)
+        self._merge_name(value, old)
+        if value['m'] == '' and isinstance(old.get('m'), str):
+            value['m'] = old['m']
+        if old.get('b') is None:
+            value['b'] = False
+        if value['r'] is None and _number(old.get('r')):
+            value['r'] = old['r']
+        if _number(old.get('f')) and (value['f'] is None or old['f'] < value['f']):
+            value['f'] = old['f']
+        return value
+
+    @staticmethod
+    def _merge_signins(value, klass, user, signed, signin, reported_at, keep):
+        """Each sign-in keeps its own name, from its Access-Accept, or the session's start for the first.
+
+        The same person signing in again is one sign-in, and only the latest
+        `keep` are kept.
+        """
+        if klass == '':
+            return
+        periods = value['n']
+        at = None
+        for period in periods:
+            if klass in period[1]:
+                at = period
+        if at is not None:
+            if user != '' and not (at[3] == 1 and not signed):
+                at[2], at[3] = user, 1 if signed else 0
+            if signin is not None and signin < at[0]:
+                at[0] = signin
+        else:
+            if signin is not None:
+                begins = signin
+            else:
+                begins = reported_at if periods else value['s']
+            periods.append([begins, [klass], user, 1 if signed else 0])
+        periods.sort(key=lambda period: period[0])
+        merged = []
+        for period in periods:
+            if merged and merged[-1][2] == period[2] and merged[-1][3] == period[3]:
+                merged[-1][1] = (merged[-1][1] + period[1])[-keep:]
+            else:
+                merged.append(period)
+        value['n'] = merged[-keep:]
+
+    @staticmethod
+    def _merge_name(value, old):
+        """A name holds for reports under the Class it was given under; a signed one is not replaced."""
+        same = value['c'] == '' or not isinstance(old.get('c'), str) or old['c'] == value['c']
+        if value['u'] == '':
+            if same and isinstance(old.get('u'), str):
+                value['u'] = old['u']
+            value['a'] = same and old.get('a') == 1
+        elif same and old.get('a') == 1 and not value['a'] and isinstance(old.get('u'), str):
+            value['u'], value['a'] = old['u'], True
+        if value['c'] == '' and isinstance(old.get('c'), str):
+            value['c'] = old['c']
+
+    @staticmethod
+    def _merge_stop(value, old, reported_at):
+        """A real stop stays; one inferred from a move gives way to a later report of the session."""
+        if not _number(old.get('e')):
+            return
+        old_moved = old.get('x') == 1
+        if value['e'] is None:
+            if not (old_moved and reported_at > old['e']):
+                value['e'], value['x'] = old['e'], old_moved
+        elif value['x']:
+            if not old_moved:
+                value['e'], value['x'] = old['e'], False
+            elif old['e'] < value['e']:
+                value['e'] = old['e']
+        elif old_moved:
+            if value['e'] > old['e']:
+                value['e'], value['l'] = old['e'], old['l']
+            value['x'] = False
+        elif old['e'] > value['e']:
+            value['e'] = old['e']
+
+    def _trim(self, key, keep, cutoff):
+        """Drops sessions last reported before `cutoff`, then keeps the `keep` most recent."""
+        if self.hlen(key) <= 1:
+            return
+        rows = []
+        for name, raw in self.hgetall(key).items():
+            try:
+                held = json.loads(raw)
+            except ValueError:
+                held = None
+            last = held['l'] if isinstance(held, dict) and _number(held.get('l')) else -1
+            if last < cutoff:
+                self.hdel(key, name)
+            else:
+                rows.append((last, name))
+        rows.sort(key=lambda row: row[0])
+        for _, name in rows[:max(0, len(rows) - keep)]:
+            self.hdel(key, name)
+
+    def _remember_device(self, key, where, seen, seconds, roamed, stop_started=None, slack=0.0):
+        """A device's last address: moved by a newer report that gave it, only its t by a roam.
+
+        A stop at another address than the one held, from a session that
+        started before the device was last reported there, does not move it.
+        """
+        try:
+            last = json.loads(self.data.get(_key(key)) or 'null')
+        except ValueError:
+            last = None
+        if not isinstance(last, dict):
+            last = None
+        if roamed:
+            if last is not None:
+                if not _number(last.get('t')) or last['t'] < seen:
+                    last['t'] = seen
+                self.set(key, json.dumps(last), ex=seconds)
+        elif not (last is not None and _number(last.get('l')) and last['l'] > seen) \
+                and not (stop_started is not None and last is not None and last.get('a') != where
+                         and _number(last.get('l')) and stop_started < last['l'] - slack):
+            latest = last['t'] if last is not None and _number(last.get('t')) and last['t'] > seen else seen
+            self.set(key, json.dumps({'a': where, 'l': seen, 't': latest}), ex=seconds)
 
     def delete(self, *keys):
         removed = 0
@@ -174,6 +377,16 @@ class FakeRedis(object):
         self._store_list(key, items)
         self._did('lpush', key)
         return len(items)
+
+    def lpop(self, key, count=None):
+        """Pops from the head; with a count, a list of up to that many, or None when empty."""
+        self._did('lpop', key)
+        items = self._list(key)
+        taken = items[:1 if count is None else count]
+        self._store_list(key, items[len(taken):])
+        if count is None:
+            return taken[0] if taken else None
+        return taken or None
 
     def llen(self, key):
         self._did('llen', key)
@@ -228,6 +441,45 @@ class FakeRedis(object):
 
     def pipeline(self, transaction=True):
         return FakePipeline(self)
+
+    # -- hashes -----------------------------------------------------------
+
+    def _hash(self, key):
+        value = self.data.get(_key(key))
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise TypeError('WRONGTYPE Operation against a key holding the wrong kind of value')
+        return value
+
+    def hset(self, key, field, value):
+        self._did('hset', key)
+        held = self._hash(key)
+        added = int(_bytes(field) not in held)
+        held[_bytes(field)] = _bytes(value)
+        self.data[_key(key)] = held
+        return added
+
+    def hget(self, key, field):
+        self._did('hget', key)
+        return self._hash(key).get(_bytes(field))
+
+    def hgetall(self, key):
+        self._did('hgetall', key)
+        return dict(self._hash(key))
+
+    def hdel(self, key, *fields):
+        """Removes fields; a hash left empty stops existing."""
+        self._did('hdel', key)
+        held = self._hash(key)
+        removed = sum(1 for field in fields if held.pop(_bytes(field), None) is not None)
+        if not held:
+            self.data.pop(_key(key), None)
+        return removed
+
+    def hlen(self, key):
+        self._did('hlen', key)
+        return len(self._hash(key))
 
     # -- keys -------------------------------------------------------------
 
