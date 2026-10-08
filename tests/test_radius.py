@@ -629,6 +629,12 @@ class DefaultNamesTest(unittest.TestCase):
         self.assertEqual(self.holder(LOGGED + 17 * 60, '10.212.16.220'), 'jsmith')
         self.assertEqual(json.loads(self.redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:01'))['a'],
                          '10.212.16.220')
+        # Nor one that does not say how long its session was
+        self.sessions.take(nps_line(status='2', logged='10/07/2026 18:35:34.212', session_time=None,
+                                    session_id='OLD2'))
+        self.assertEqual(self.holder(LOGGED + 17 * 60, '10.212.16.220'), 'jsmith')
+        self.assertEqual(json.loads(self.redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:01'))['a'],
+                         '10.212.16.220')
 
     def test_a_short_session_whose_only_address_is_in_its_stop_moves_the_device(self):
         # Walking through buildings, each access point's session shorter than

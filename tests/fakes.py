@@ -198,8 +198,10 @@ class FakeRedis(object):
         self._trim(keys[0], int(keep), float(seen) - int(keep_sec))
         if len(keys) > 1:
             stop = stopped is not None and str(moved) != '1'
+            # A stop whose start is not known is taken as from before the device was last seen
             self._remember_device(keys[1], where, float(seen), int(device_sec), value['b'],
-                                  float(start) if stop else None, float(slack))
+                                  (float(start) if str(timed) == '1' else float('-inf')) if stop else None,
+                                  float(slack))
         return 1
 
     def _merged(self, key, field, value, slack, timed):

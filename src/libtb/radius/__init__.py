@@ -260,7 +260,7 @@ if #KEYS > 1 then
     end
   elseif not (known and type(known.l) == 'number' and known.l > now)
       and not (stop_report and known and known.a ~= ARGV[13]
-               and type(known.l) == 'number' and started < known.l - slack) then
+               and (ARGV[16] ~= '1' or (type(known.l) == 'number' and started < known.l - slack))) then
     local seen_last = now
     if known and type(known.t) == 'number' and known.t > now then seen_last = known.t end
     redis.call('SET', KEYS[2], cjson.encode({a = ARGV[13], l = now, t = seen_last}), 'EX', tonumber(ARGV[12]))
@@ -657,14 +657,15 @@ class Sessions:
 
         The stop is only inferred: a later report of such a session at that
         address undoes it. A stop at another address moves the device only if
-        its session started after the device was last reported where it was:
-        otherwise it comes late, from an access point the device has left.
+        its session's known start is after the device was last reported where
+        it was: otherwise it may come late, from an access point the device
+        has left.
         """
         last = self._device(found.mac)
         before = address(last.get('a')) if last else None
         if before is None or before == found.address or last['l'] > found.seen:
             return
-        if found.stopped is not None and found.start < last['l'] - CLOCK_SLACK:
+        if found.stopped is not None and (not found.timed or found.start < last['l'] - CLOCK_SLACK):
             return
         for key, held in _decode(self.redis.hgetall(self.key('ip', before))).items():
             if held.get('m') == found.mac and not _number(held.get('e')):
