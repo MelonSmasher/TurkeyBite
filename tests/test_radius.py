@@ -265,6 +265,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(got._replace(zone=None), radius.Settings(True, None, ('example.edu', 'example'), 900,
                                                                   48 * 3600, 0, True))
         self.assertFalse(radius.settings({'enable': True, 'timezone': NEW_YORK}).trust_names)
+        self.assertEqual(radius.settings({}).cache_sec, 5)
         self.assertIsNotNone(got.zone)
 
     def test_mistakes_stop_the_worker(self):
@@ -460,7 +461,7 @@ class SessionsTest(unittest.TestCase):
 
     def test_without_the_sign_in_the_name_given_is_used_if_a_persons(self):
         self.assertEqual(self.take(nps_line(klass=None)).user, 'jsmith')
-        self.assertIsNone(self.take(nps_line(user='anonymous@example.edu', session_id='B2')))
+        self.assertIsNone(self.take(nps_line(user='anonymous@example.edu', session_id='B2')).user)
         self.assertIsNone(self.take(accept_line(account=None)))
 
     def test_reports_handled_out_of_order_do_not_move_a_session_back(self):
@@ -567,12 +568,38 @@ class DefaultNamesTest(unittest.TestCase):
         return held and held['u']
 
     def test_a_session_is_named_only_by_its_sign_in(self):
-        # The name the device gives could be anyone's
-        self.assertIsNone(self.sessions.take(nps_line(user='dean@example.edu')))
-        self.assertIsNone(self.holder(LOGGED))
+        # The name the device gives could be anyone's: until the sign-in is
+        # seen, the address is held by someone unnamed
+        self.assertIsNone(self.sessions.take(nps_line(user='dean@example.edu')).user)
+        self.assertEqual(self.holder(LOGGED), '')
         self.sessions.take(accept_line())
         self.sessions.take(nps_line(user='dean@example.edu', logged='10/07/2026 18:29:34.212', session_time='1200'))
         self.assertEqual(self.holder(LOGGED), 'jsmith')
+
+    def test_someone_unnamed_still_holds_the_address_from_the_last_holder(self):
+        # Alice's stop was lost; Bob's sign-in was not seen
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.sessions.take(nps_line(user='bob@example.edu', mac='BA-F7-F8-00-00-02', session_id='B1', klass='B',
+                                    logged='10/07/2026 18:34:34.212', session_time='600'))
+        self.assertEqual(self.holder(LOGGED + 6 * 60), '')
+
+    def test_a_stop_before_its_sign_in_still_counts(self):
+        # The stop is handled first, then the sign-in and an earlier report
+        self.sessions.take(nps_line(status='2', logged='10/07/2026 18:21:34.212', session_time='720'))
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line())
+        self.assertEqual(self.holder(LOGGED + 60), 'jsmith')
+        self.assertIsNone(self.holder(LOGGED + 121))
+
+    def test_an_inferred_stop_older_than_a_report_since_is_ignored(self):
+        # Another worker recorded a report at the old address after the move was read
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line(logged='10/07/2026 18:29:34.212', session_time='1200'))
+        self.sessions.record(radius.Session('10.212.16.219', 'ap-hall-11|88322DF2520E596E', None,
+                                            'ba:f7:f8:00:00:01', LOGGED - 600, LOGGED, LOGGED + 300, None,
+                                            timed=False, moved=True), device=False)
+        self.assertEqual(self.holder(LOGGED + 700), 'jsmith')
 
     def test_a_stop_naming_nobody_still_ends_the_session(self):
         self.sessions.take(accept_line())
@@ -708,6 +735,13 @@ class ProcessorTest(unittest.TestCase):
         bite = self.shipped[0]['bite']
         self.assertEqual(bite['client'], '10.212.16.219')
         self.assertEqual(bite['client_user'], 'jsmith')
+        self.assertEqual(bite['client_mac'], 'ba:f7:f8:00:00:01')
+
+    def test_a_session_nobody_was_named_for_gives_the_device_only(self):
+        self.on.process_nps(nps_event())
+        self.on.process_packet(dns_event())
+        bite = self.shipped[0]['bite']
+        self.assertNotIn('client_user', bite)
         self.assertEqual(bite['client_mac'], 'ba:f7:f8:00:00:01')
 
     def test_an_address_nobody_held_then_is_left_as_it_was(self):
@@ -973,7 +1007,7 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual(real[3]['a'], '10.212.16.230')
         erin = real[6]['ap-hall-11|E1']
         self.assertEqual((erin['u'], erin['e'], erin['m'], erin['a']), ('erin', LOGGED + 180, 'ba:f7:f8:00:00:05', 1))
-        self.assertEqual(real[7], {})
+        self.assertEqual(real[7]['ap-hall-11|NOBODY']['u'], '')
         self.assertEqual((real[8]['ap-hall-11|F1']['e'], real[8]['ap-hall-11|F1']['x']), (LOGGED + 300, 1))
         self.assertEqual((real[9]['ap-hall-11|F1']['e'], real[9]['ap-hall-11|F1']['u']), (LOGGED + 720, 'finn'))
         self.assertNotIn('x', real[9]['ap-hall-11|F1'])

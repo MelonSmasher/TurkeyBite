@@ -177,7 +177,7 @@ class FakeRedis(object):
             'a': str(signed) == '1', 'b': str(bridged) == '1',
             'r': float(reported) if reported not in ('', b'') else None,
             'f': None if str(bridged) == '1' else float(seen)}, float(slack), str(timed) == '1')
-        if value is None or value['u'] == '':
+        if value is None:
             return 0
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
         for name in ('m', 'e', 'f'):
@@ -217,6 +217,8 @@ class FakeRedis(object):
         if timed and value['s'] > old['l'] + slack:
             return value
         reported_at = value['l']
+        if value['x'] and old['l'] > value['e']:
+            value['e'], value['x'] = None, False
         if not (timed and old.get('k') != 1 and value['s'] < old['s']):
             value['s'] = old['s']
         value['k'] = timed or old.get('k') == 1

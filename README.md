@@ -301,10 +301,12 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    requests are logged too.
    - **When it has seen the Access-Accept,** TurkeyBite uses that account, and
      once a session has it, no name the device gives replaces it.
-   - **When it has not,** the session is not named, since the name the device
-     gives could be anyone's. A later interim update names it once the
-     Access-Accept has been seen. Set `trust_given_names: true` to name such
-     sessions by the device's own word instead, if it is a person's.
+   - **When it has not,** the session is held by someone unnamed, since the
+     name the device gives could be anyone's. Its lookups get the device's MAC
+     address but no user, and it still counts as the address's holder, so the
+     previous holder is not credited with them. A later interim update names
+     it once the Access-Accept has been seen. Set `trust_given_names: true` to
+     name such sessions by the device's own word instead, if it is a person's.
    - **When accounting lines carry no `Class`,** no session can be tied to its
      sign-in, and the workers say so in their log.
 
@@ -359,7 +361,9 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    It keeps each address's sessions in Valkey, in the queue's database, for a
    day after the last report. Who held an address is asked of Valkey for
    every lookup, so a stop recorded by one worker counts in all of them at
-   once; only that nobody held an address is remembered, for `cache_sec`. The
+   once. Only that nobody held an address is remembered, for `cache_sec` (5
+   seconds), so a lookup that soon after another worker records the
+   address's first session can miss it. The
    lines themselves are not indexed, and the workers' log names no one.
    - **A worker with `radius` off** leaves the lines to workers that have it
      on. It only keeps the list to its newest 10,000 lines, so the list cannot

@@ -848,7 +848,8 @@ class Processor(object):
             return {}
         if held is None:
             return {}
-        who = {'client_user': held['u']}
+        # A session nobody was named for still says which device it was
+        who = {'client_user': held['u']} if held['u'] else {}
         if isinstance(held.get('m'), str):
             who['client_mac'] = held['m']
         return who

@@ -60,7 +60,8 @@ Who held an address, and when:
 
 What it cannot do: a session is only known once an access point reports it
 with an address. Lookups a device makes before then, on joining the network,
-are recorded without a user. Lines are taken at most once, so those in hand
+are recorded without a user, as are those of a session whose Access-Accept
+was not seen. Lines are taken at most once, so those in hand
 when a worker dies are lost, which costs no more than the next interim update
 puts back. IPv6 addresses are not reported, so lookups over IPv6 get no user.
 And anyone who can write to Valkey can claim an address for anyone, as they
@@ -81,7 +82,7 @@ from libtb.opensearch import report_once
 
 # processor.radius
 Settings = namedtuple('Settings', 'enable zone realms grace_sec keep_sec cache_sec trust_names')
-DEFAULT = Settings(False, None, (), 1200, 24 * 3600, 30, False)
+DEFAULT = Settings(False, None, (), 1200, 24 * 3600, 5, False)
 KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'cache_sec', 'trust_given_names'))
 
 # One accounting request. `address` is None when it reported none, `user`
@@ -139,9 +140,9 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #     the device moving to another address gives way to a later report of
 #     the session at this one, and a real stop after it does not move it
 #     later.
-#   - A report that names nobody (user "") only updates a session already
-#     recorded, keeping its name. A name NPS authenticated is not replaced by
-#     one a device gave.
+#   - A report that names nobody (user "") keeps the name of the session
+#     already recorded, or records one held by someone unnamed. A name NPS
+#     authenticated is not replaced by one a device gave.
 #   - An address the session reported itself is not demoted to a roam's.
 # Then the hash's expiry is renewed, and only the MAX_SESSIONS most recently
 # reported sessions are kept. The device's key holds the address it was last
@@ -184,6 +185,9 @@ if old then
   if not (timed and old.k ~= 1 and start < old.s) then start = old.s end
   timed = timed or old.k == 1
   if old.l > seen then seen = old.l end
+  -- A stop inferred from a move, for a session reported here since, came
+  -- from a read another worker's report overtook
+  if moved and old.l > stopped then stopped, moved = nil, false end
   if type(old.e) == 'number' then
     local old_moved = old.x == 1
     if stopped == nil then
@@ -214,7 +218,6 @@ if old then
   if reported == nil and type(old.r) == 'number' then reported = old.r end
   if type(old.f) == 'number' and (first == nil or old.f < first) then first = old.f end
 end
-if user == '' then return 0 end
 local value = {u = user, s = start, l = seen}
 if device ~= '' then value.m = device end
 if stopped then value.e = stopped end
@@ -290,13 +293,16 @@ def settings(conf):
                 report, for a backlog of DNS events to be matched against.
                 Lines older than this are not recorded.
     cache_sec   how long each worker process remembers that nobody held an
-                address before asking Valkey again. Who did hold one is
-                always asked, so a stop recorded by another worker counts at
-                once.
+                address before asking Valkey again: a session another worker
+                records meanwhile is missed for that long. Who did hold one
+                is always asked, so a stop recorded by another worker counts
+                at once.
     trust_given_names
                 false unless set: a session whose Access-Accept was not seen
-                is not named, since the name a device gives can be anyone's.
-                On, it is named by that name, when a person's.
+                is recorded as held by someone unnamed, since the name a
+                device gives can be anyone's; its lookups get the device's
+                MAC address and no user. On, it is named by that name, when a
+                person's.
     """
     if conf is None:
         return DEFAULT

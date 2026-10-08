@@ -165,19 +165,21 @@ processor:
   #               above the access points' interim interval
   #   keep_hours  how long an address's sessions are kept after the last
   #               report; older lines are not recorded
-  #   cache_sec   how long a worker remembers that nobody held an address;
-  #               who did is asked every time
+  #   cache_sec   how long a worker remembers that nobody held an address, so
+  #               misses a session another worker records meanwhile; who did
+  #               is asked every time
   #   trust_given_names
-  #               a session whose Access-Accept was not seen is not named,
-  #               since the name a device gives can be anyone's. true names it
-  #               by that name.
+  #               a session whose Access-Accept was not seen is held by someone
+  #               unnamed, since the name a device gives can be anyone's: its
+  #               lookups get the device's MAC and no user. true names it by
+  #               that name.
   radius:
     enable: false
     # timezone: America/New_York
     realms: []
     grace_sec: 1200
     keep_hours: 24
-    cache_sec: 30
+    cache_sec: 5
     trust_given_names: false
   dns:
     lookup_ips: true
