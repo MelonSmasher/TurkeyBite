@@ -59,8 +59,12 @@ def nps_line(status='3', user='jsmith@example.edu', address='10.212.16.219', mac
 
 
 def accept_line(account='EXAMPLE\\jsmith', user='anonymous@example.edu',
-                klass='311 1 10.0.0.10 09/10/2026 07:32:43 9428172', logged='10/07/2026 18:19:34.212'):
-    """The Access-Accept NPS logs for a sign-in."""
+                klass='311 1 10.0.0.10 09/10/2026 07:32:43 9428172', logged='10/07/2026 16:00:00.000'):
+    """The Access-Accept NPS logs for a sign-in.
+
+    By default before the sessions here start, as NPS logs an Access-Accept
+    before the access point's accounting for it.
+    """
     return nps_line(status=None, user=user, address=None, session_id=None, session_time=None, delay=None,
                     packet_type='2', klass=klass, account=account, logged=logged)
 
@@ -615,6 +619,35 @@ class DefaultNamesTest(unittest.TestCase):
         self.assertEqual(self.holder(LOGGED + 18 * 60), 'bob')
         self.assertEqual(self.holder(LOGGED + 25 * 60), '')
 
+    def test_sign_ins_handled_out_of_order_still_begin_when_they_did(self):
+        # Bob's report is handled before Alice's
+        self.sessions.take(accept_line(klass='C1', logged='10/07/2026 18:04:30.000'))
+        self.sessions.take(accept_line(account='EXAMPLE\\bob', klass='C3', logged='10/07/2026 18:35:34.212'))
+        self.sessions.take(nps_line(klass='C3', logged='10/07/2026 18:39:34.212', session_time='2100'))
+        self.sessions.take(nps_line(klass='C1', logged='10/07/2026 18:24:34.212', session_time='1200'))
+        self.assertEqual(self.holder(LOGGED + 6 * 60), 'jsmith')
+        self.assertEqual(self.holder(LOGGED + 18 * 60), 'bob')
+
+    def test_a_sign_in_recorded_before_its_access_accept_is_moved_back_to_it(self):
+        self.sessions.take(accept_line(klass='C1', logged='10/07/2026 18:04:30.000'))
+        self.sessions.take(nps_line(klass='C1', logged='10/07/2026 18:24:34.212', session_time='1200'))
+        # Bob's first report comes before his Access-Accept is handled
+        self.sessions.take(nps_line(klass='C3', logged='10/07/2026 18:39:34.212', session_time='2100'))
+        self.sessions.take(accept_line(account='EXAMPLE\\bob', klass='C3', logged='10/07/2026 18:35:34.212'))
+        self.sessions.take(nps_line(klass='C3', logged='10/07/2026 18:49:34.212', session_time='2700'))
+        self.assertEqual(self.holder(LOGGED + 18 * 60), 'bob')
+
+    def test_the_same_person_signing_in_again_is_one_sign_in(self):
+        # A session timeout makes the device sign in again every so often
+        for n in range(20):
+            klass = f'R{n}'
+            self.sessions.take(accept_line(klass=klass, logged=f'10/07/2026 17:{10 + n:02d}:00.000'))
+            self.sessions.take(nps_line(klass=klass, logged=f'10/07/2026 17:{10 + n:02d}:30.000',
+                                        session_time=str(600 + 60 * n)))
+        held = self.sessions.holder('10.212.16.219', LOGGED - 3600)
+        self.assertEqual(len(held['n']), 1)
+        self.assertEqual(held['u'], 'jsmith')
+
     def test_the_same_device_under_the_same_sign_in_is_the_same_person(self):
         # Roamed to a second access point under the same Class, whose account has expired
         self.sessions.take(accept_line(klass='C1'))
@@ -1012,6 +1045,12 @@ class RealValkeyTest(unittest.TestCase):
         strict.take(accept_line(account='EXAMPLE\\ivan', klass='M3', logged='10/07/2026 18:31:00.000'))
         strict.take(nps_line(klass='M3', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
                              logged='10/07/2026 18:39:34.212', session_time='1800'))
+        # The same person signing in again is one sign-in
+        strict.take(accept_line(account='EXAMPLE\\jo', klass='P1', logged='10/07/2026 18:00:00.000'))
+        strict.take(nps_line(klass='P1', address='10.212.16.203', mac='BA-F7-F8-00-00-0B', session_id='P'))
+        strict.take(accept_line(account='EXAMPLE\\jo', klass='P2', logged='10/07/2026 18:20:00.000'))
+        strict.take(nps_line(klass='P2', address='10.212.16.203', mac='BA-F7-F8-00-00-0B', session_id='P',
+                             logged='10/07/2026 18:29:34.212', session_time='1200'))
         # An older sign-in's report handled after a newer one's
         strict.take(nps_line(klass='M1', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
                              logged='10/07/2026 18:24:34.212', session_time='900'))
@@ -1044,7 +1083,8 @@ class RealValkeyTest(unittest.TestCase):
                 dump('turkeybite:radius:ip:10.212.16.255'),
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:07')),
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:09')),
-                dump('turkeybite:radius:ip:10.212.16.200'), dump('turkeybite:radius:ip:10.212.16.202'))
+                dump('turkeybite:radius:ip:10.212.16.200'), dump('turkeybite:radius:ip:10.212.16.202'),
+                dump('turkeybite:radius:ip:10.212.16.203'))
 
     def test_the_lua_does_what_the_fake_does(self):
         real = self.story(self.redis)
@@ -1074,10 +1114,12 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual(real[16]['a'], '10.212.16.201')
         self.assertEqual(real[17]['ap-hall-12|K2']['x'], 1)
         machine = real[18]['ap-hall-11|M']
-        self.assertEqual(machine['n'], [[LOGGED - 600, 'M1', 'hana', 1],
+        self.assertEqual(machine['n'], [[datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc).timestamp(), 'M1', 'hana', 1],
                                         [datetime(2026, 10, 7, 22, 25, tzinfo=timezone.utc).timestamp(), 'M2', '', 0],
                                         [datetime(2026, 10, 7, 22, 31, tzinfo=timezone.utc).timestamp(), 'M3',
                                          'ivan', 1]])
+        self.assertEqual(real[19]['ap-hall-11|P']['n'],
+                         [[datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc).timestamp(), 'P2', 'jo', 1]])
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

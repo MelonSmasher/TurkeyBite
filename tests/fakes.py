@@ -168,7 +168,7 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where, reported, moved, timed, klass, signin):
+                slack, device_sec, where, reported, moved, timed, klass, signin, signins):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         stopped = float(stopped) if stopped not in ('', b'') else None
         klass = klass.decode() if isinstance(klass, bytes) else klass
@@ -182,7 +182,7 @@ class FakeRedis(object):
         if value is None:
             return 0
         self._merge_signins(value, klass, user, str(signed) == '1',
-                            float(signin) if signin not in ('', b'') else None, float(seen))
+                            float(signin) if signin not in ('', b'') else None, float(seen), int(signins))
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
         if value['n']:
             stored['n'] = value['n']
@@ -245,8 +245,12 @@ class FakeRedis(object):
         return value
 
     @staticmethod
-    def _merge_signins(value, klass, user, signed, signin, reported_at):
-        """Each sign-in keeps its own name, from when it began: the first from the session's start."""
+    def _merge_signins(value, klass, user, signed, signin, reported_at, keep):
+        """Each sign-in keeps its own name, from its Access-Accept, or the session's start for the first.
+
+        The same person signing in again is one sign-in, and only the latest
+        `keep` are kept.
+        """
         if klass == '':
             return
         periods = value['n']
@@ -257,13 +261,22 @@ class FakeRedis(object):
         if at is not None:
             if user != '' and not (at[3] == 1 and not signed):
                 at[2], at[3] = user, 1 if signed else 0
-            return
-        if not periods:
-            begins = value['s']
+            if signin is not None and signin < at[0]:
+                at[0] = signin
         else:
-            begins = signin if signin is not None else reported_at
-        periods.append([begins, klass, user, 1 if signed else 0])
+            if signin is not None:
+                begins = signin
+            else:
+                begins = reported_at if periods else value['s']
+            periods.append([begins, klass, user, 1 if signed else 0])
         periods.sort(key=lambda period: period[0])
+        merged = []
+        for period in periods:
+            if merged and merged[-1][2] == period[2] and merged[-1][3] == period[3]:
+                merged[-1][1] = period[1]
+            else:
+                merged.append(period)
+        value['n'] = merged[-keep:]
 
     @staticmethod
     def _merge_name(value, old):

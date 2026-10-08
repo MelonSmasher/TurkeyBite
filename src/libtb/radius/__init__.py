@@ -113,6 +113,9 @@ ROAM_SEC = 120
 # has the owners its backlog of DNS events needs
 MAX_SESSIONS = 64
 
+# Sign-ins kept per session: a shared laptop's users in turn
+MAX_SIGNINS = 16
+
 # A session longer than this, or a delay, is not believed
 MAX_SECONDS = 31 * 24 * 3600
 
@@ -162,7 +165,7 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #           clock slack, seconds to keep the device's address, the address,
 #           for a roam when the device last reported the address or "",
 #           stop inferred from a move 1/0, start known 1/0, Class or "",
-#           when the Class's Access-Accept was logged or ""
+#           when the Class's Access-Accept was logged or "", sign-ins to keep
 # Sessions last reported over the seconds to keep before this report are
 # dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
@@ -233,6 +236,7 @@ end
 local periods = {}
 if old and type(old.n) == 'table' then periods = old.n end
 if ARGV[17] ~= '' then
+  local signin = tonumber(ARGV[18])
   local at = nil
   for _, p in ipairs(periods) do
     if p[2] == ARGV[17] then at = p end
@@ -242,16 +246,29 @@ if ARGV[17] ~= '' then
       at[3] = in_user
       at[4] = in_signed and 1 or 0
     end
+    -- Recorded before its Access-Accept was seen: it began then
+    if signin and signin < at[1] then at[1] = signin end
   else
-    local from = tonumber(ARGV[18])
-    if #periods == 0 then
-      from = start
-    elseif from == nil then
-      from = reported_at
+    local from = signin
+    if from == nil then
+      if #periods == 0 then from = start else from = reported_at end
     end
     periods[#periods + 1] = {from, ARGV[17], in_user, in_signed and 1 or 0}
-    table.sort(periods, function(a, b) return a[1] < b[1] end)
   end
+  table.sort(periods, function(a, b) return a[1] < b[1] end)
+  -- The same person signing in again, as a session timeout makes them, is
+  -- one sign-in; and only the latest MAX_SIGNINS are kept
+  local merged = {}
+  for _, p in ipairs(periods) do
+    local last = merged[#merged]
+    if last and last[3] == p[3] and last[4] == p[4] then
+      last[2] = p[2]
+    else
+      merged[#merged + 1] = p
+    end
+  end
+  periods = {}
+  for i = math.max(1, #merged - tonumber(ARGV[19]) + 1), #merged do periods[#periods + 1] = merged[i] end
 end
 local value = {u = user, s = start, l = seen}
 if #periods > 0 then value.n = periods end
@@ -734,7 +751,8 @@ class Sessions:
             found.seen, '' if found.stopped is None else found.stopped, self.conf.keep_sec, MAX_SESSIONS,
             int(bool(found.signed)), int(bool(found.bridged)), CLOCK_SLACK, self.conf.grace_sec,
             found.address, '' if found.reported is None else found.reported, int(bool(found.moved)),
-            int(bool(found.timed)), found.klass or '', '' if found.signin is None else found.signin)
+            int(bool(found.timed)), found.klass or '', '' if found.signin is None else found.signin,
+            MAX_SIGNINS)
         self._nobody.pop(found.address, None)
         return bool(recorded)
 
@@ -819,14 +837,17 @@ def _signin(raw):
 def _in_force(held, when):
     """The name and Class of the sign-in a session had at a time.
 
-    The last that began by then, or its first; a session recorded before
-    sign-ins were kept has its one name.
+    The last that began by then. Before the first, that one if it began
+    with the session, and nobody's if not: an earlier sign-in was missed. A
+    session recorded before sign-ins were kept has its one name.
     """
     periods = [p for p in held.get('n') or [] if isinstance(p, list) and len(p) == 4 and _number(p[0])
                and isinstance(p[2], str)]
     if not periods:
         return held['u'], held.get('c')
     current = periods[0]
+    if when < current[0] and current[0] > held['s'] + CLOCK_SLACK:
+        return '', None
     for period in periods:
         if period[0] <= when:
             current = period
