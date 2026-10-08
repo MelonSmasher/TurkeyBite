@@ -142,7 +142,8 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #     later.
 #   - A report that names nobody (user "") keeps the name of the session
 #     already recorded, or records one held by someone unnamed. A name NPS
-#     authenticated is not replaced by one a device gave.
+#     authenticated is not replaced by one a device gave. Either holds only
+#     for reports under the Class, the sign-in, it was given under (c).
 #   - An address the session reported itself is not demoted to a roam's.
 # Then the hash's expiry is renewed, and only the MAX_SESSIONS most recently
 # reported sessions are kept. The device's key holds the address it was last
@@ -158,7 +159,7 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
 #           clock slack, seconds to keep the device's address, the address,
 #           for a roam when the device last reported the address or "",
-#           stop inferred from a move 1/0, start known 1/0
+#           stop inferred from a move 1/0, start known 1/0, Class or ""
 # Sessions last reported over the seconds to keep before this report are
 # dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
@@ -171,6 +172,7 @@ local user, device = ARGV[2], ARGV[3]
 local signed, bridged = ARGV[9] == '1', ARGV[10] == '1'
 local slack, reported = tonumber(ARGV[11]), tonumber(ARGV[14])
 local timed = ARGV[16] == '1'
+local klass = ARGV[17]
 local first = nil
 if not bridged then first = seen end
 local old = nil
@@ -207,12 +209,16 @@ if old then
       stopped = old.e
     end
   end
+  -- A name holds only for reports of the sign-in it was given under: a new
+  -- Class, a machine signing in after its user logs off say, is someone else
+  local same = klass == '' or type(old.c) ~= 'string' or old.c == klass
   if user == '' then
-    if type(old.u) == 'string' then user = old.u end
-    signed = old.a == 1
-  elseif old.a == 1 and not signed and type(old.u) == 'string' then
+    if same and type(old.u) == 'string' then user = old.u end
+    signed = same and old.a == 1
+  elseif same and old.a == 1 and not signed and type(old.u) == 'string' then
     user, signed = old.u, true
   end
+  if klass == '' and type(old.c) == 'string' then klass = old.c end
   if device == '' and type(old.m) == 'string' then device = old.m end
   if old.b == nil then bridged = false end
   if reported == nil and type(old.r) == 'number' then reported = old.r end
@@ -225,6 +231,7 @@ if moved then value.x = 1 end
 if timed then value.k = 1 end
 if signed then value.a = 1 end
 if first then value.f = first end
+if klass ~= '' then value.c = klass end
 if bridged then
   value.b = 1
   if reported then value.r = reported end
@@ -540,7 +547,7 @@ class Sessions:
 
     In the queue's database, since the librarian sweeps the host lists':
 
-        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, k, a, b, r, f}
+        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, k, a, b, r, f, c}
         <prefix>:radius:mac:<mac>      the address a device last reported, {a, l, t}
         <prefix>:radius:class:<class>  the account an Access-Accept named
 
@@ -693,7 +700,7 @@ class Sessions:
             found.seen, '' if found.stopped is None else found.stopped, self.conf.keep_sec, MAX_SESSIONS,
             int(bool(found.signed)), int(bool(found.bridged)), CLOCK_SLACK, self.conf.grace_sec,
             found.address, '' if found.reported is None else found.reported, int(bool(found.moved)),
-            int(bool(found.timed)))
+            int(bool(found.timed)), found.klass or '')
         self._nobody.pop(found.address, None)
         return bool(recorded)
 
@@ -738,8 +745,14 @@ class Sessions:
             # with it, or its device's before a roam, and its last report
             since = held.get('r') if held.get('b') else held.get('f')
             return _number(since) and since - CLOCK_SLACK <= when <= held['l'] + CLOCK_SLACK
-        return max((held for held in covering if not overruled(held)),
+        best = max((held for held in covering if not overruled(held)),
                    key=lambda held: (confirmed(held), held['s'], held['l'], held['u']), default=None)
+        if best is not None and not best['u'] and best.get('m') and best.get('c'):
+            # The same device under the same sign-in, at another access point, is the same person
+            for other in covering:
+                if other['u'] and other.get('m') == best['m'] and other.get('c') == best['c']:
+                    return {**best, 'u': other['u']}
+        return best
 
     def _end(self, held):
         last = held['l'] + self.conf.grace_sec

@@ -584,6 +584,30 @@ class DefaultNamesTest(unittest.TestCase):
                                     logged='10/07/2026 18:34:34.212', session_time='600'))
         self.assertEqual(self.holder(LOGGED + 6 * 60), '')
 
+    def test_a_machine_signing_in_after_logoff_is_not_the_last_user(self):
+        # The laptop's user logs off; Windows signs the machine in, under a new Class
+        self.sessions.take(accept_line(klass='C1'))
+        self.sessions.take(nps_line(klass='C1'))
+        self.sessions.take(accept_line(account='EXAMPLE\\LAB-12$', klass='C2'))
+        self.sessions.take(nps_line(klass='C2', logged='10/07/2026 18:29:34.212', session_time='1200'))
+        self.assertEqual(self.holder(LOGGED + 15 * 60), '')
+        # A stop under the session's own Class keeps its name
+        self.sessions.take(accept_line(account='EXAMPLE\\jsmith', klass='C3'))
+        self.sessions.take(nps_line(klass='C3', session_id='S3', address='10.212.16.230'))
+        self.redis.delete('turkeybite:radius:class:C3')
+        self.sessions.take(nps_line(klass='C3', session_id='S3', address='10.212.16.230', status='2',
+                                    user='anonymous', logged='10/07/2026 18:21:34.212', session_time='720'))
+        self.assertEqual(self.holder(LOGGED + 60, '10.212.16.230'), 'jsmith')
+
+    def test_the_same_device_under_the_same_sign_in_is_the_same_person(self):
+        # Roamed to a second access point under the same Class, whose account has expired
+        self.sessions.take(accept_line(klass='C1'))
+        self.sessions.take(nps_line(klass='C1'))
+        self.redis.delete('turkeybite:radius:class:C1')
+        self.sessions.take(nps_line(klass='C1', nas='ap-hall-12', session_id='N2', logged='10/07/2026 18:21:34.212',
+                                    session_time='60'))
+        self.assertEqual(self.holder(LOGGED + 3 * 60), 'jsmith')
+
     def test_a_stop_before_its_sign_in_still_counts(self):
         # The stop is handled first, then the sign-in and an earlier report
         self.sessions.take(nps_line(status='2', logged='10/07/2026 18:21:34.212', session_time='720'))
@@ -963,6 +987,12 @@ class RealValkeyTest(unittest.TestCase):
                              nas='ap-hall-12', logged='10/07/2026 18:25:34.212', session_time='60'))
         strict.take(nps_line(klass='G1', status='2', address='10.212.16.253', mac='BA-F7-F8-00-00-07',
                              session_id='G1', logged='10/07/2026 18:36:34.212', session_time='1620'))
+        # A machine signing in after its user logs off, under a new Class
+        strict.take(accept_line(account='EXAMPLE\\hana', klass='M1'))
+        strict.take(nps_line(klass='M1', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M'))
+        strict.take(accept_line(account='EXAMPLE\\LAB-12$', klass='M2'))
+        strict.take(nps_line(klass='M2', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
+                             logged='10/07/2026 18:29:34.212', session_time='1200'))
         # A short session whose only address is in its stop moves the device
         strict.take(nps_line(klass='G1', status='2', address='10.212.16.200', mac='BA-F7-F8-00-00-09',
                              session_id='K1'))
@@ -992,7 +1022,7 @@ class RealValkeyTest(unittest.TestCase):
                 dump('turkeybite:radius:ip:10.212.16.255'),
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:07')),
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:09')),
-                dump('turkeybite:radius:ip:10.212.16.200'))
+                dump('turkeybite:radius:ip:10.212.16.200'), dump('turkeybite:radius:ip:10.212.16.202'))
 
     def test_the_lua_does_what_the_fake_does(self):
         real = self.story(self.redis)
@@ -1021,6 +1051,9 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual(real[15]['a'], '10.212.16.255')
         self.assertEqual(real[16]['a'], '10.212.16.201')
         self.assertEqual(real[17]['ap-hall-12|K2']['x'], 1)
+        machine = real[18]['ap-hall-11|M']
+        self.assertEqual((machine['u'], machine['c']), ('', 'M2'))
+        self.assertNotIn('a', machine)
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

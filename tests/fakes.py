@@ -168,7 +168,7 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where, reported, moved, timed):
+                slack, device_sec, where, reported, moved, timed, klass):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         stopped = float(stopped) if stopped not in ('', b'') else None
         value = self._merged(keys[0], field, {
@@ -176,11 +176,12 @@ class FakeRedis(object):
             'x': stopped is not None and str(moved) == '1', 'k': str(timed) == '1',
             'a': str(signed) == '1', 'b': str(bridged) == '1',
             'r': float(reported) if reported not in ('', b'') else None,
-            'f': None if str(bridged) == '1' else float(seen)}, float(slack), str(timed) == '1')
+            'f': None if str(bridged) == '1' else float(seen),
+            'c': klass.decode() if isinstance(klass, bytes) else klass}, float(slack), str(timed) == '1')
         if value is None:
             return 0
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
-        for name in ('m', 'e', 'f'):
+        for name in ('m', 'e', 'f', 'c'):
             if value[name] not in (None, ''):
                 stored[name] = value[name]
         if value['x']:
@@ -224,12 +225,7 @@ class FakeRedis(object):
         value['k'] = timed or old.get('k') == 1
         value['l'] = max(value['l'], old['l'])
         self._merge_stop(value, old, reported_at)
-        if value['u'] == '':
-            if isinstance(old.get('u'), str):
-                value['u'] = old['u']
-            value['a'] = old.get('a') == 1
-        elif old.get('a') == 1 and not value['a'] and isinstance(old.get('u'), str):
-            value['u'], value['a'] = old['u'], True
+        self._merge_name(value, old)
         if value['m'] == '' and isinstance(old.get('m'), str):
             value['m'] = old['m']
         if old.get('b') is None:
@@ -239,6 +235,19 @@ class FakeRedis(object):
         if _number(old.get('f')) and (value['f'] is None or old['f'] < value['f']):
             value['f'] = old['f']
         return value
+
+    @staticmethod
+    def _merge_name(value, old):
+        """A name holds for reports under the Class it was given under; a signed one is not replaced."""
+        same = value['c'] == '' or not isinstance(old.get('c'), str) or old['c'] == value['c']
+        if value['u'] == '':
+            if same and isinstance(old.get('u'), str):
+                value['u'] = old['u']
+            value['a'] = same and old.get('a') == 1
+        elif same and old.get('a') == 1 and not value['a'] and isinstance(old.get('u'), str):
+            value['u'], value['a'] = old['u'], True
+        if value['c'] == '' and isinstance(old.get('c'), str):
+            value['c'] = old['c']
 
     @staticmethod
     def _merge_stop(value, old, reported_at):
