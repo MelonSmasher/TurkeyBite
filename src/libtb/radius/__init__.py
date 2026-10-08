@@ -90,11 +90,12 @@ KEYS = frozenset(('enable', 'timezone', 'realms', 'grace_sec', 'keep_hours', 'ca
 # `stopped` None while the session lasts. `signed` says the user is the
 # account NPS authenticated, `bridged` that the address is the one the device
 # had before it roamed, and `reported` when the device was last reported with
-# it. `timed` says the start is known, from a start or Acct-Session-Time, and
+# it. `timed` says the start is known, from a start or Acct-Session-Time,
 # `moved` that the stop is only inferred, from the device being reported with
-# another address.
-Session = namedtuple('Session', 'address key user mac start seen stopped klass signed bridged reported timed moved',
-                     defaults=(False, False, None, True, False))
+# another address, and `signin` when its Access-Accept was logged.
+Session = namedtuple('Session',
+                     'address key user mac start seen stopped klass signed bridged reported timed moved signin',
+                     defaults=(False, False, None, True, False, None))
 
 ACCESS_ACCEPT, ACCOUNTING_REQUEST = '2', '4'
 START, STOP, INTERIM = '1', '2', '3'
@@ -143,7 +144,8 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #   - A report that names nobody (user "") keeps the name of the session
 #     already recorded, or records one held by someone unnamed. A name NPS
 #     authenticated is not replaced by one a device gave. Either holds only
-#     for reports under the Class, the sign-in, it was given under (c).
+#     for reports under the Class, the sign-in, it was given under (c), and
+#     each sign-in keeps its own name from when it began (n).
 #   - An address the session reported itself is not demoted to a roam's.
 # Then the hash's expiry is renewed, and only the MAX_SESSIONS most recently
 # reported sessions are kept. The device's key holds the address it was last
@@ -159,7 +161,8 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 #           seconds to keep, sessions to keep, signed 1/0, bridged 1/0,
 #           clock slack, seconds to keep the device's address, the address,
 #           for a roam when the device last reported the address or "",
-#           stop inferred from a move 1/0, start known 1/0, Class or ""
+#           stop inferred from a move 1/0, start known 1/0, Class or "",
+#           when the Class's Access-Accept was logged or ""
 # Sessions last reported over the seconds to keep before this report are
 # dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
@@ -170,6 +173,7 @@ local moved = stopped ~= nil and ARGV[15] == '1'
 local stop_report = stopped ~= nil and not moved
 local user, device = ARGV[2], ARGV[3]
 local signed, bridged = ARGV[9] == '1', ARGV[10] == '1'
+local in_user, in_signed = user, signed
 local slack, reported = tonumber(ARGV[11]), tonumber(ARGV[14])
 local timed = ARGV[16] == '1'
 local klass = ARGV[17]
@@ -224,7 +228,33 @@ if old then
   if reported == nil and type(old.r) == 'number' then reported = old.r end
   if type(old.f) == 'number' and (first == nil or old.f < first) then first = old.f end
 end
+-- The sign-ins (n) the session has had, each {from, Class, user, signed},
+-- oldest first, so a lookup handled late gets the name in force at its time
+local periods = {}
+if old and type(old.n) == 'table' then periods = old.n end
+if ARGV[17] ~= '' then
+  local at = nil
+  for _, p in ipairs(periods) do
+    if p[2] == ARGV[17] then at = p end
+  end
+  if at then
+    if in_user ~= '' and not (at[4] == 1 and not in_signed) then
+      at[3] = in_user
+      at[4] = in_signed and 1 or 0
+    end
+  else
+    local from = tonumber(ARGV[18])
+    if #periods == 0 then
+      from = start
+    elseif from == nil then
+      from = reported_at
+    end
+    periods[#periods + 1] = {from, ARGV[17], in_user, in_signed and 1 or 0}
+    table.sort(periods, function(a, b) return a[1] < b[1] end)
+  end
+end
 local value = {u = user, s = start, l = seen}
+if #periods > 0 then value.n = periods end
 if device ~= '' then value.m = device end
 if stopped then value.e = stopped end
 if moved then value.x = 1 end
@@ -547,9 +577,9 @@ class Sessions:
 
     In the queue's database, since the librarian sweeps the host lists':
 
-        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, k, a, b, r, f, c}
+        <prefix>:radius:ip:<address>   hash, session key -> {u, m, s, l, e, x, k, a, b, r, f, c, n}
         <prefix>:radius:mac:<mac>      the address a device last reported, {a, l, t}
-        <prefix>:radius:class:<class>  the account an Access-Accept named
+        <prefix>:radius:class:<class>  the account an Access-Accept named, and when, {u, t}
 
     The first expires `keep_hours` after its last report, the second
     `grace_sec`, and the third `keep_hours` after it was last used.
@@ -584,10 +614,14 @@ class Sessions:
         """
         fields = attributes(line)
         if fields.get('Packet-Type') == ACCESS_ACCEPT:
-            account, klass = authenticated(fields, self.conf.realms), printable(fields.get('Class'))
-            if not (account and klass):
+            # A machine's own sign-in is kept too, with no account, so its
+            # sessions are known to be no person's
+            account, klass = authenticated(fields, self.conf.realms) or '', printable(fields.get('Class'))
+            if not klass:
                 return None
-            self.redis.set(self.key('class', klass), account, ex=self.conf.keep_sec)
+            self.redis.set(self.key('class', klass),
+                           json.dumps({'u': account, 't': logged_at(fields, self.conf.zone, received)}),
+                           ex=self.conf.keep_sec)
             return account
         found = session(fields, self.conf.zone, received, self.conf.realms)
         if found is None or found.seen < self.clock() - self.conf.keep_sec:
@@ -613,16 +647,16 @@ class Sessions:
 
         The name the device gave is kept instead only with trust_given_names.
         """
-        account = None
-        if found.klass:
-            account = self.redis.getex(self.key('class', found.klass), ex=self.conf.keep_sec)
-        else:
+        if not found.klass:
             self.warn('NPS accounting lines carry no Class, so sessions cannot be tied to the account '
                       'NPS signed in. Have the access points send Class back in accounting.')
-        if account:
-            account = account.decode('utf-8', 'replace') if isinstance(account, bytes) else account
-            return found._replace(user=account, signed=True)
-        return found if self.conf.trust_names else found._replace(user=None)
+            return found if self.conf.trust_names else found._replace(user=None)
+        signin = _signin(self.redis.getex(self.key('class', found.klass), ex=self.conf.keep_sec))
+        if signin is None:
+            return found if self.conf.trust_names else found._replace(user=None)
+        account, at = signin
+        # An Access-Accept with no person's account is a machine's: nobody's, whatever it says
+        return found._replace(user=account or None, signed=bool(account), signin=at)
 
     def _device(self, device):
         """What the device's key holds, {a, l, t}, or None."""
@@ -700,7 +734,7 @@ class Sessions:
             found.seen, '' if found.stopped is None else found.stopped, self.conf.keep_sec, MAX_SESSIONS,
             int(bool(found.signed)), int(bool(found.bridged)), CLOCK_SLACK, self.conf.grace_sec,
             found.address, '' if found.reported is None else found.reported, int(bool(found.moved)),
-            int(bool(found.timed)), found.klass or '')
+            int(bool(found.timed)), found.klass or '', '' if found.signin is None else found.signin)
         self._nobody.pop(found.address, None)
         return bool(recorded)
 
@@ -747,17 +781,56 @@ class Sessions:
             return _number(since) and since - CLOCK_SLACK <= when <= held['l'] + CLOCK_SLACK
         best = max((held for held in covering if not overruled(held)),
                    key=lambda held: (confirmed(held), held['s'], held['l'], held['u']), default=None)
-        if best is not None and not best['u'] and best.get('m') and best.get('c'):
+        if best is None:
+            return None
+        name, klass = _in_force(best, when)
+        if not name and best.get('m') and klass:
             # The same device under the same sign-in, at another access point, is the same person
             for other in covering:
-                if other['u'] and other.get('m') == best['m'] and other.get('c') == best['c']:
-                    return {**best, 'u': other['u']}
-        return best
+                lent, other_class = _in_force(other, when)
+                if lent and other.get('m') == best['m'] and other_class == klass:
+                    name = lent
+                    break
+        return {**best, 'u': name}
 
     def _end(self, held):
         last = held['l'] + self.conf.grace_sec
         stopped = held.get('e')
         return min(stopped, last) if _number(stopped) else last
+
+
+def _signin(raw):
+    """What a Class's key holds, (account or "", when or None), or None.
+
+    An older key holds the account alone.
+    """
+    if raw is None:
+        return None
+    text = raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else raw
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return text, None
+    if isinstance(value, dict) and isinstance(value.get('u'), str):
+        return value['u'], value['t'] if _number(value.get('t')) else None
+    return (value, None) if isinstance(value, str) else None
+
+
+def _in_force(held, when):
+    """The name and Class of the sign-in a session had at a time.
+
+    The last that began by then, or its first; a session recorded before
+    sign-ins were kept has its one name.
+    """
+    periods = [p for p in held.get('n') or [] if isinstance(p, list) and len(p) == 4 and _number(p[0])
+               and isinstance(p[2], str)]
+    if not periods:
+        return held['u'], held.get('c')
+    current = periods[0]
+    for period in periods:
+        if period[0] <= when:
+            current = period
+    return current[2], current[1]
 
 
 def _whole_hours_out(fields, logged):

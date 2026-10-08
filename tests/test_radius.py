@@ -59,10 +59,10 @@ def nps_line(status='3', user='jsmith@example.edu', address='10.212.16.219', mac
 
 
 def accept_line(account='EXAMPLE\\jsmith', user='anonymous@example.edu',
-                klass='311 1 10.0.0.10 09/10/2026 07:32:43 9428172'):
+                klass='311 1 10.0.0.10 09/10/2026 07:32:43 9428172', logged='10/07/2026 18:19:34.212'):
     """The Access-Accept NPS logs for a sign-in."""
     return nps_line(status=None, user=user, address=None, session_id=None, session_time=None, delay=None,
-                    packet_type='2', klass=klass, account=account)
+                    packet_type='2', klass=klass, account=account, logged=logged)
 
 
 def nps_event(**kwargs):
@@ -462,7 +462,8 @@ class SessionsTest(unittest.TestCase):
     def test_without_the_sign_in_the_name_given_is_used_if_a_persons(self):
         self.assertEqual(self.take(nps_line(klass=None)).user, 'jsmith')
         self.assertIsNone(self.take(nps_line(user='anonymous@example.edu', session_id='B2')).user)
-        self.assertIsNone(self.take(accept_line(account=None)))
+        # An Access-Accept naming no person is kept, as a sign-in that is no one's
+        self.assertEqual(self.take(accept_line(account=None)), '')
 
     def test_reports_handled_out_of_order_do_not_move_a_session_back(self):
         self.take(nps_line(logged='10/07/2026 18:29:34.212', session_time='1200'))
@@ -598,6 +599,21 @@ class DefaultNamesTest(unittest.TestCase):
         self.sessions.take(nps_line(klass='C3', session_id='S3', address='10.212.16.230', status='2',
                                     user='anonymous', logged='10/07/2026 18:21:34.212', session_time='720'))
         self.assertEqual(self.holder(LOGGED + 60, '10.212.16.230'), 'jsmith')
+
+    def test_a_lookup_handled_late_gets_the_sign_in_in_force_at_its_time(self):
+        # Alice signs in at the session's start; Bob signs in on the same
+        # session at 18:35, and its next report is at 18:39
+        self.sessions.take(accept_line(klass='C1'))
+        self.sessions.take(nps_line(klass='C1', logged='10/07/2026 18:29:34.212', session_time='1200'))
+        self.sessions.take(accept_line(account='EXAMPLE\\bob', klass='C3', logged='10/07/2026 18:35:34.212'))
+        self.sessions.take(nps_line(klass='C3', logged='10/07/2026 18:39:34.212', session_time='1800'))
+        self.assertEqual(self.holder(LOGGED + 6 * 60), 'jsmith')
+        self.assertEqual(self.holder(LOGGED + 18 * 60), 'bob')
+        # A machine signing in after Bob logs off is no one's from then
+        self.sessions.take(accept_line(account='EXAMPLE\\LAB-12$', klass='C4', logged='10/07/2026 18:42:34.212'))
+        self.sessions.take(nps_line(klass='C4', logged='10/07/2026 18:49:34.212', session_time='2400'))
+        self.assertEqual(self.holder(LOGGED + 18 * 60), 'bob')
+        self.assertEqual(self.holder(LOGGED + 25 * 60), '')
 
     def test_the_same_device_under_the_same_sign_in_is_the_same_person(self):
         # Roamed to a second access point under the same Class, whose account has expired
@@ -990,9 +1006,15 @@ class RealValkeyTest(unittest.TestCase):
         # A machine signing in after its user logs off, under a new Class
         strict.take(accept_line(account='EXAMPLE\\hana', klass='M1'))
         strict.take(nps_line(klass='M1', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M'))
-        strict.take(accept_line(account='EXAMPLE\\LAB-12$', klass='M2'))
+        strict.take(accept_line(account='EXAMPLE\\LAB-12$', klass='M2', logged='10/07/2026 18:25:00.000'))
         strict.take(nps_line(klass='M2', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
                              logged='10/07/2026 18:29:34.212', session_time='1200'))
+        strict.take(accept_line(account='EXAMPLE\\ivan', klass='M3', logged='10/07/2026 18:31:00.000'))
+        strict.take(nps_line(klass='M3', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
+                             logged='10/07/2026 18:39:34.212', session_time='1800'))
+        # An older sign-in's report handled after a newer one's
+        strict.take(nps_line(klass='M1', address='10.212.16.202', mac='BA-F7-F8-00-00-0A', session_id='M',
+                             logged='10/07/2026 18:24:34.212', session_time='900'))
         # A short session whose only address is in its stop moves the device
         strict.take(nps_line(klass='G1', status='2', address='10.212.16.200', mac='BA-F7-F8-00-00-09',
                              session_id='K1'))
@@ -1052,8 +1074,10 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual(real[16]['a'], '10.212.16.201')
         self.assertEqual(real[17]['ap-hall-12|K2']['x'], 1)
         machine = real[18]['ap-hall-11|M']
-        self.assertEqual((machine['u'], machine['c']), ('', 'M2'))
-        self.assertNotIn('a', machine)
+        self.assertEqual(machine['n'], [[LOGGED - 600, 'M1', 'hana', 1],
+                                        [datetime(2026, 10, 7, 22, 25, tzinfo=timezone.utc).timestamp(), 'M2', '', 0],
+                                        [datetime(2026, 10, 7, 22, 31, tzinfo=timezone.utc).timestamp(), 'M3',
+                                         'ivan', 1]])
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

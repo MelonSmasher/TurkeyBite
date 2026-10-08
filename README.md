@@ -303,7 +303,9 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
      once a session has it, no name the device gives replaces it. The name
      holds only under that sign-in's `Class`. A laptop whose user logs off and
      whose machine account then signs in, under a new `Class`, is no longer
-     that person's.
+     that person's. Each sign-in keeps its own name from when its
+     Access-Accept was logged, so a lookup handled late, after a backlog,
+     gets the name in force at its time.
    - **When it has not,** the session is held by someone unnamed, since the
      name the device gives could be anyone's. Its lookups get the device's MAC
      address but no user, and it still counts as the address's holder, so the

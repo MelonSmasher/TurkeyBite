@@ -168,19 +168,24 @@ class FakeRedis(object):
         raise NotImplementedError('a script the fake does not know')
 
     def _record(self, keys, field, user, device, start, seen, stopped, keep_sec, keep, signed, bridged,
-                slack, device_sec, where, reported, moved, timed, klass):
+                slack, device_sec, where, reported, moved, timed, klass, signin):
         """libtb.radius.RECORD_SCRIPT, as the Lua does it."""
         stopped = float(stopped) if stopped not in ('', b'') else None
+        klass = klass.decode() if isinstance(klass, bytes) else klass
         value = self._merged(keys[0], field, {
             'u': user, 'm': device, 's': float(start), 'l': float(seen), 'e': stopped,
             'x': stopped is not None and str(moved) == '1', 'k': str(timed) == '1',
             'a': str(signed) == '1', 'b': str(bridged) == '1',
             'r': float(reported) if reported not in ('', b'') else None,
             'f': None if str(bridged) == '1' else float(seen),
-            'c': klass.decode() if isinstance(klass, bytes) else klass}, float(slack), str(timed) == '1')
+            'c': klass}, float(slack), str(timed) == '1')
         if value is None:
             return 0
+        self._merge_signins(value, klass, user, str(signed) == '1',
+                            float(signin) if signin not in ('', b'') else None, float(seen))
         stored = {'u': value['u'], 's': value['s'], 'l': value['l']}
+        if value['n']:
+            stored['n'] = value['n']
         for name in ('m', 'e', 'f', 'c'):
             if value[name] not in (None, ''):
                 stored[name] = value[name]
@@ -211,12 +216,15 @@ class FakeRedis(object):
             old = json.loads(self._hash(key).get(_bytes(field)) or 'null')
         except ValueError:
             old = None
+        value['n'] = []
         if not (isinstance(old, dict) and _number(old.get('s')) and _number(old.get('l'))):
             return value
         if old.get('k') == 1 and value['l'] < old['s'] - slack:
             return None
         if timed and value['s'] > old['l'] + slack:
             return value
+        if isinstance(old.get('n'), list):
+            value['n'] = [list(period) for period in old['n']]
         reported_at = value['l']
         if value['x'] and old['l'] > value['e']:
             value['e'], value['x'] = None, False
@@ -235,6 +243,27 @@ class FakeRedis(object):
         if _number(old.get('f')) and (value['f'] is None or old['f'] < value['f']):
             value['f'] = old['f']
         return value
+
+    @staticmethod
+    def _merge_signins(value, klass, user, signed, signin, reported_at):
+        """Each sign-in keeps its own name, from when it began: the first from the session's start."""
+        if klass == '':
+            return
+        periods = value['n']
+        at = None
+        for period in periods:
+            if period[1] == klass:
+                at = period
+        if at is not None:
+            if user != '' and not (at[3] == 1 and not signed):
+                at[2], at[3] = user, 1 if signed else 0
+            return
+        if not periods:
+            begins = value['s']
+        else:
+            begins = signin if signin is not None else reported_at
+        periods.append([begins, klass, user, 1 if signed else 0])
+        periods.sort(key=lambda period: period[0])
 
     @staticmethod
     def _merge_name(value, old):
