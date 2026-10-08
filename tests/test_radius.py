@@ -630,6 +630,21 @@ class DefaultNamesTest(unittest.TestCase):
         self.assertEqual(json.loads(self.redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:01'))['a'],
                          '10.212.16.220')
 
+    def test_a_short_session_whose_only_address_is_in_its_stop_moves_the_device(self):
+        # Walking through buildings, each access point's session shorter than
+        # the interim interval: a start without an address, then a stop with one
+        self.sessions.take(accept_line())
+        self.sessions.take(nps_line(status='2'))
+        self.sessions.take(nps_line(status='1', address=None, nas='ap-hall-12', session_id='N2', session_time=None,
+                                    logged='10/07/2026 18:19:40.212'))
+        self.sessions.take(nps_line(status='2', address='10.212.16.220', nas='ap-hall-12', session_id='N2',
+                                    session_time='300', logged='10/07/2026 18:24:40.212'))
+        third = self.sessions.take(nps_line(status='1', address=None, nas='ap-hall-13', session_id='N3',
+                                            session_time=None, logged='10/07/2026 18:24:45.212'))
+        self.assertEqual(third.address, '10.212.16.220')
+        self.assertEqual(self.holder(LOGGED + 8 * 60, '10.212.16.220'), 'jsmith')
+        self.assertIsNone(self.holder(LOGGED + 8 * 60))
+
     def test_a_start_handled_after_an_interim_without_session_time_is_kept(self):
         self.sessions.take(accept_line())
         self.sessions.take(nps_line(session_time=None, logged='10/07/2026 18:29:34.212'))
@@ -908,6 +923,14 @@ class RealValkeyTest(unittest.TestCase):
                              nas='ap-hall-12', logged='10/07/2026 18:25:34.212', session_time='60'))
         strict.take(nps_line(klass='G1', status='2', address='10.212.16.253', mac='BA-F7-F8-00-00-07',
                              session_id='G1', logged='10/07/2026 18:36:34.212', session_time='1620'))
+        # A short session whose only address is in its stop moves the device
+        strict.take(nps_line(klass='G1', status='2', address='10.212.16.200', mac='BA-F7-F8-00-00-09',
+                             session_id='K1'))
+        strict.take(nps_line(klass='G1', status='1', address=None, mac='BA-F7-F8-00-00-09', session_id='K2',
+                             nas='ap-hall-12', session_time=None, logged='10/07/2026 18:19:40.212'))
+        strict.take(nps_line(klass='G1', status='2', address='10.212.16.201', mac='BA-F7-F8-00-00-09',
+                             session_id='K2', nas='ap-hall-12', session_time='300',
+                             logged='10/07/2026 18:24:40.212'))
         strict.take(nps_line(klass='G1', address='10.212.16.254', mac='BA-F7-F8-00-00-08', session_id='H1',
                              session_time=None, logged='10/07/2026 18:29:34.212'))
         strict.take(nps_line(klass='G1', status='1', address='10.212.16.254', mac='BA-F7-F8-00-00-08',
@@ -927,7 +950,9 @@ class RealValkeyTest(unittest.TestCase):
                 json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:06')),
                 dump('turkeybite:radius:ip:10.212.16.252'), dump('turkeybite:radius:ip:10.212.16.254'),
                 dump('turkeybite:radius:ip:10.212.16.255'),
-                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:07')))
+                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:07')),
+                json.loads(redis.get('turkeybite:radius:mac:ba:f7:f8:00:00:09')),
+                dump('turkeybite:radius:ip:10.212.16.200'))
 
     def test_the_lua_does_what_the_fake_does(self):
         real = self.story(self.redis)
@@ -954,6 +979,8 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual((real[13]['ap-hall-11|H1']['s'], real[13]['ap-hall-11|H1']['k']), (LOGGED, 1))
         self.assertNotIn('e', real[14]['ap-hall-12|G2'])
         self.assertEqual(real[15]['a'], '10.212.16.255')
+        self.assertEqual(real[16]['a'], '10.212.16.201')
+        self.assertEqual(real[17]['ap-hall-12|K2']['x'], 1)
         self.assertEqual(self.redis.ttl('turkeybite:radius:ip:10.212.16.219'), 24 * 3600)
 
 

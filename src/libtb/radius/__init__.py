@@ -147,8 +147,9 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 # reported sessions are kept. The device's key holds the address it was last
 # reported with, when (l), and when it was last reported at all (t). A
 # report that gave its address updates it if newer, except a stop at another
-# address than the one it holds, which may come late from an access point
-# the device has left; a roam moves only t and renews its expiry, so the roam
+# address than the one it holds from a session that started before the
+# device was last reported there, which comes late from an access point the
+# device has left; a roam moves only t and renews its expiry, so the roam
 # keeps it while the session lasts, and the next roam can follow on. Returns
 # 1 if it recorded the report, 0 if not.
 #   KEYS[1] the address's hash; KEYS[2], if given, the device's last address
@@ -161,7 +162,7 @@ _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 # dropped as it is recorded, so an address's hash stays small.
 RECORD_SCRIPT = """
 local start, seen = tonumber(ARGV[4]), tonumber(ARGV[5])
-local reported_at = seen
+local reported_at, started = seen, start
 local stopped = tonumber(ARGV[6])
 local moved = stopped ~= nil and ARGV[15] == '1'
 local stop_report = stopped ~= nil and not moved
@@ -258,7 +259,8 @@ if #KEYS > 1 then
       redis.call('SET', KEYS[2], cjson.encode(known), 'EX', tonumber(ARGV[12]))
     end
   elseif not (known and type(known.l) == 'number' and known.l > now)
-      and not (stop_report and known and known.a ~= ARGV[13]) then
+      and not (stop_report and known and known.a ~= ARGV[13]
+               and type(known.l) == 'number' and started < known.l - slack) then
     local seen_last = now
     if known and type(known.t) == 'number' and known.t > now then seen_last = known.t end
     redis.call('SET', KEYS[2], cjson.encode({a = ARGV[13], l = now, t = seen_last}), 'EX', tonumber(ARGV[12]))
@@ -589,8 +591,7 @@ class Sessions:
             found = self._located(found)
             if found is None:
                 return None
-        # A stop says the device left an address, not that it is there now
-        if not found.bridged and found.stopped is None:
+        if not found.bridged:
             self._left(found)
         return found if self.record(found) else None
 
@@ -655,11 +656,15 @@ class Sessions:
         """Ends the device's sessions at the address it had, when this report gives it a new one.
 
         The stop is only inferred: a later report of such a session at that
-        address undoes it.
+        address undoes it. A stop at another address moves the device only if
+        its session started after the device was last reported where it was:
+        otherwise it comes late, from an access point the device has left.
         """
         last = self._device(found.mac)
         before = address(last.get('a')) if last else None
         if before is None or before == found.address or last['l'] > found.seen:
+            return
+        if found.stopped is not None and found.start < last['l'] - CLOCK_SLACK:
             return
         for key, held in _decode(self.redis.hgetall(self.key('ip', before))).items():
             if held.get('m') == found.mac and not _number(held.get('e')):

@@ -197,8 +197,9 @@ class FakeRedis(object):
         self.expire(keys[0], int(keep_sec))
         self._trim(keys[0], int(keep), float(seen) - int(keep_sec))
         if len(keys) > 1:
+            stop = stopped is not None and str(moved) != '1'
             self._remember_device(keys[1], where, float(seen), int(device_sec), value['b'],
-                                  stopped is not None and str(moved) != '1')
+                                  float(start) if stop else None, float(slack))
         return 1
 
     def _merged(self, key, field, value, slack, timed):
@@ -275,10 +276,11 @@ class FakeRedis(object):
         for _, name in rows[:max(0, len(rows) - keep)]:
             self.hdel(key, name)
 
-    def _remember_device(self, key, where, seen, seconds, roamed, stop=False):
+    def _remember_device(self, key, where, seen, seconds, roamed, stop_started=None, slack=0.0):
         """A device's last address: moved by a newer report that gave it, only its t by a roam.
 
-        A stop at another address than the one held does not move it.
+        A stop at another address than the one held, from a session that
+        started before the device was last reported there, does not move it.
         """
         try:
             last = json.loads(self.data.get(_key(key)) or 'null')
@@ -292,7 +294,8 @@ class FakeRedis(object):
                     last['t'] = seen
                 self.set(key, json.dumps(last), ex=seconds)
         elif not (last is not None and _number(last.get('l')) and last['l'] > seen) \
-                and not (stop and last is not None and last.get('a') != where):
+                and not (stop_started is not None and last is not None and last.get('a') != where
+                         and _number(last.get('l')) and stop_started < last['l'] - slack):
             latest = last['t'] if last is not None and _number(last.get('t')) and last['t'] > seen else seen
             self.set(key, json.dumps({'a': where, 'l': seen, 't': latest}), ex=seconds)
 
