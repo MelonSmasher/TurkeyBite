@@ -7,7 +7,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from tbconsole import db
 from tbconsole.models import AuditEvent, Finding, Rule, Webhook
@@ -580,3 +580,17 @@ async def test_a_profile_gives_the_address_a_machine_was_last_seen_at(client, se
     search.answer = lambda body, index=None: {'hits': {'total': {'value': 0}, 'hits': []}, 'aggregations': {}}
     quiet = (await client.get('/api/v1/entities/profile', params={'field': 'user', 'value': 'ava'})).json()
     assert quiet['latest_address'] is None  # nosec B101
+
+
+async def test_the_times_pages_count_by_are_indexed():
+    # The overview, the findings page and the rules page count findings by
+    # when they were raised, the time to resolve and pruning read them by
+    # when they were closed, and the webhook pages and pruning read
+    # deliveries by when they were made: each would read every row kept
+    async with db.sessionmaker()() as session:
+        await session.execute(text('SET LOCAL enable_seqscan = off'))
+        for table, column in (('findings', 'created_at'), ('findings', 'resolved_at'),
+                              ('webhook_deliveries', 'created_at')):
+            plan = (await session.execute(text(
+                f'EXPLAIN SELECT count(*) FROM {table} WHERE {column} >= now()'))).scalars().all()
+            assert any(f'ix_{table}_{column}' in line for line in plan), plan  # nosec B101
