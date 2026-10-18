@@ -184,12 +184,15 @@ def read_labels(lines):
 
 
 def _listed(path):
-    """The domains a list already names, leaving out comments."""
+    """The domains a list already names, as the index reads it: whole lines.
+
+    A line with a note after the domain names nothing the index can use, so
+    a domain listed only that way is added again, on a line of its own.
+    """
     if not os.path.exists(path):
         return set()
     with open(path, encoding='utf-8', errors='replace') as handle:
-        return {normalise(line.split('#', 1)[0]) for line in handle
-                if line.split('#', 1)[0].strip()}
+        return {normalise(line) for line in handle if line.strip() and not line.startswith('#')}
 
 
 def apply(labels, lists_dir='lists', write=False):

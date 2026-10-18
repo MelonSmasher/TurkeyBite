@@ -203,11 +203,13 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(self.custom('shopping'), '# mine\nExample.com\nlast.example\nnew.example\n')
         self.assertEqual(apply([('new.example', 'shopping')], self.lists, write=True), {})
 
-    def test_a_listed_domain_with_a_comment_is_still_listed(self):
+    def test_a_domain_only_listed_with_a_note_is_added_on_a_line_of_its_own(self):
+        # The index reads a line whole, so that line categorises nothing
         os.makedirs(os.path.join(self.lists, 'shopping'))
         with open(os.path.join(self.lists, 'shopping', 'custom'), 'wb') as handle:
-            handle.write(b'shop.example  # from the help desk\n\xff\xfe not utf-8\n')
-        self.assertEqual(apply([('shop.example', 'shopping')], self.lists), {})
+            handle.write(b'shop.example  # from the help desk\nkept.example\n\xff\xfe not utf-8\n')
+        self.assertEqual(apply([('shop.example', 'shopping'), ('kept.example', 'shopping')],
+                               self.lists), {'shopping': ['shop.example']})
 
 
 def _message(labels=None, stop_reason='end_turn', text=None):

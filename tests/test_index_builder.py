@@ -403,35 +403,49 @@ class ConcurrentBuildTest(unittest.TestCase):
         self.assertEqual(open(self.path, 'rb').read(), before)
         self.assertEqual(os.listdir(self.root), ['domains.tbidx'])
 
-    def test_builds_take_turns(self):
-        """The file, its marker and what is published are one build's."""
-        import fcntl
+    def build_index(self):
+        import contextlib
+        import io
         from libtb import util
-        os.makedirs(os.path.join(self.root, 'lists'))
+        out = io.StringIO()
+        settings = {'path': self.path, 'publish': False}
+        with unittest.mock.patch.object(util, 'read_config', return_value={}), \
+                unittest.mock.patch.object(util, 'index_config', return_value=settings), \
+                contextlib.redirect_stdout(out):
+            stats = util.build_domain_index()
+        return stats, out.getvalue()
+
+    def in_lists(self):
+        os.makedirs(os.path.join(self.root, 'lists'), exist_ok=True)
         cwd = os.getcwd()
         os.chdir(self.root)
         self.addCleanup(os.chdir, cwd)
-        settings = {'path': self.path, 'publish': False}
+
+    def test_builds_take_turns(self):
+        """The file, its marker and what is published are one build's."""
+        import fcntl
+        import threading
+        import time
+        self.in_lists()
         held = open(self.path + '.lock', 'w')
         self.addCleanup(held.close)
         fcntl.flock(held, fcntl.LOCK_EX)
-        tried = []
-        real = fcntl.flock
+        threading.Timer(0.3, fcntl.flock, (held, fcntl.LOCK_UN)).start()
+        began = time.monotonic()
+        stats, log = self.build_index()
+        self.assertIsNotNone(stats)
+        self.assertGreaterEqual(time.monotonic() - began, 0.3)
+        self.assertIn('Waiting for another build of the domain index to finish', log)
 
-        def flock(handle, op):
-            # The lock is held elsewhere: a build must wait for it, not go on
-            tried.append(op)
-            if len(tried) == 1:
-                with self.assertRaises(BlockingIOError):
-                    real(handle, op | fcntl.LOCK_NB)
-                real(held, fcntl.LOCK_UN)
-            return real(handle, op)
-        with unittest.mock.patch.object(util, 'read_config', return_value={}), \
-                unittest.mock.patch.object(util, 'index_config', return_value=settings), \
-                unittest.mock.patch('fcntl.flock', side_effect=flock), \
-                unittest.mock.patch('sys.stdout'):
-            self.assertIsNotNone(util.build_domain_index())
-        self.assertEqual(tried, [fcntl.LOCK_EX])
+    def test_a_killed_builds_file_is_removed_by_the_next(self):
+        self.in_lists()
+        stale = self.path + '.k1llt.new'
+        with open(stale, 'wb') as handle:
+            handle.write(b'half an index')
+        stats, log = self.build_index()
+        self.assertIsNotNone(stats)
+        self.assertNotIn('Waiting', log)
+        self.assertFalse(os.path.exists(stale))
 
 
 class NegativeControlTest(unittest.TestCase):

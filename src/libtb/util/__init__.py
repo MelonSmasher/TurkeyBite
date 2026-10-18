@@ -196,7 +196,19 @@ def build_domain_index(path=None, publish_to_valkey=None):
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None
     with lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print('Waiting for another build of the domain index to finish')
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        # A build that was killed left its file behind, as large as the
+        # index, and holding the lock no other build is writing one now
+        import glob
+        for stale in glob.glob(glob.escape(target) + '.*.new'):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
         return _build_domain_index(config, settings, target, publish_to_valkey)
 
 

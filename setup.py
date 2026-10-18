@@ -1034,8 +1034,11 @@ class TurkeyBiteSetup:
                                                     default=True)
             if not self.publish_index:
                 return
-            self.print_info("Next, run setup.py on each worker node and switch it, then run "
-                            "it here again to switch this node.")
+            self.print_info("Next, restart the librarian here (docker compose up -d "
+                            "turkeybite-librarian) and wait for 'Published domain index "
+                            "generation' in its log; it publishes as it refreshes the lists, "
+                            "which it does at start. Then run setup.py on each worker node and "
+                            "switch it, and finally run it here again to switch this node.")
             return
         self.print_info("This node publishes the index. Once it runs the index itself it stops "
                         "loading the lists into Valkey, so switch it only after every worker "
