@@ -501,12 +501,16 @@ class RealValkeyTest(unittest.TestCase):
         Here a proxy drops the claim script's reply.
         """
         from urllib.parse import urlsplit
+        from redis import Redis
         from redis.exceptions import ConnectionError as ValkeyConnectionError
         url = urlsplit(os.environ['TB_TEST_VALKEY'])
         proxy = DroppingProxy(url.hostname, url.port or 6379, b'EVAL')
         self.addCleanup(proxy.close)
+        # With a timeout, so a proxy that fails to drop the connection fails
+        # the test rather than hanging it
         client = consumer_client({'host': '127.0.0.1', 'port': proxy.port,
-                                  'db': int(url.path.strip('/') or 0), 'password': None})
+                                  'db': int(url.path.strip('/') or 0), 'password': None},
+                                 connect=lambda **kwargs: Redis(socket_timeout=10, **kwargs))
         queue = ListQueue(client, KEY, 'worker1-01')
         for n in range(20):
             self.redis.rpush(KEY, f'e{n}')
@@ -565,16 +569,24 @@ class DroppingProxy:
                 pending.clear()
                 self.dropped = True
                 for sock in (source, target):
-                    sock.close()
+                    self.drop(sock)
                 return
             try:
                 target.sendall(data)
             except OSError:
                 return
 
+    @staticmethod
+    def drop(sock):
+        """Ends the connection. On Linux close() alone does not while another
+        thread waits on the socket, so the far end would never hear of it."""
+        import socket
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        sock.close()
+
     def close(self):
         for sock in self.sockets:
-            try:
-                sock.close()
-            except OSError:
-                pass
+            self.drop(sock)
