@@ -138,6 +138,10 @@ class TurkeyBiteSetup:
         # before either is written, see decide_updates
         self.update_config = True
         self.update_env = True
+        # How events are categorised, decided in setup_categorisation. None
+        # leaves what an existing config.yaml says as it is.
+        self.lookup_mode = None
+        self.use_resolvers = None
         self.enable_dns_lookups = False
         self.dns_resolver = "172.172.0.100"  # Default resolver (Bind9 container)
         self.use_opensearch = True  # Default to using OpenSearch
@@ -358,6 +362,22 @@ class TurkeyBiteSetup:
                                     f"{host['username']}; its password is left as it is.")
             elastic['hosts'] = hosts
 
+        # Category lookups
+        if self.lookup_mode:
+            index = section(config_data, 'processor', 'domain_index')
+            if index.get('mode') != self.lookup_mode or not target_config.exists():
+                # Where the index comes from is settled when the mode is, so
+                # a node switched to it gets it. A rerun that leaves the mode
+                # alone leaves these alone too, since an operator may have set
+                # them for a worker this script does not know about.
+                if self.node_type == 'librarian':
+                    index['publish'] = True
+                elif self.node_type == 'worker':
+                    index['source'] = 'valkey'
+            index['mode'] = self.lookup_mode
+        if self.use_resolvers is not None:
+            section(config_data, 'processor', 'evidence', 'resolvers')['enable'] = self.use_resolvers
+
         # Syslog
         syslog = section(config_data, 'processor', 'syslog')
         syslog['enable'] = self.use_syslog
@@ -373,6 +393,12 @@ class TurkeyBiteSetup:
         self.print_step("Configuration Summary:")
         print(f"  DNS Lookups: {'Enabled' if self.enable_dns_lookups else 'Disabled'}")
         print(f"  OpenSearch Output: {'Enabled' if self.use_opensearch else 'Disabled'}")
+        processor = config_data.get('processor') or {}
+        mode = (processor.get('domain_index') or {}).get('mode', 'valkey')
+        print(f"  Category Lookups: {mode}")
+        if 'worker' in self.components:
+            resolvers = ((processor.get('evidence') or {}).get('resolvers') or {}).get('enable')
+            print(f"  Second Opinion on Threats: {'Enabled' if resolvers else 'Disabled'}")
         print(f"  Syslog Output: {'Enabled' if self.use_syslog else 'Disabled'}")
         if self.use_syslog:
             print(f"    Syslog Host: {self.syslog_host}:{self.syslog_port}")
@@ -935,6 +961,50 @@ class TurkeyBiteSetup:
             self.print_success(f"Indices will be deleted {self.retention_days} days after "
                                "they are created.")
 
+    def setup_categorisation(self):
+        """Ask how events are categorised.
+
+        A new config.yaml looks categories up in the index, which weighs each
+        list's evidence before believing it. An existing one still on the
+        older valkey lookups, which believe whatever any list says, is offered
+        the switch. A node running workers is also asked whether Quad9 and
+        Cloudflare may give a second opinion on threats, which only the index
+        asks for. Nothing is asked when config.yaml is not to be updated.
+        """
+        if not self.runs_app():
+            return
+        target_config = self.base_dir / self.config_file
+        existing = None
+        if target_config.exists():
+            if not self.update_config:
+                return
+            existing = self.load_yaml(target_config) or {}
+        processor = (existing or {}).get('processor') or {}
+        self.print_step("Categories")
+        mode = (processor.get('domain_index') or {}).get('mode', 'valkey')
+        if existing is None or mode == 'index':
+            self.lookup_mode = 'index'
+        else:
+            self.print_info(f"Categories are looked up in {mode} mode, which believes whatever "
+                            "any list says: on the 10,000 most popular domains that called 291 "
+                            "of them malicious. The index believes a category only on enough "
+                            "evidence and needs no Valkey round trip per event. See 'How "
+                            "traffic is categorised' in the README.")
+            if self.prompt_yes_no("Switch category lookups to the index?", default=True):
+                self.lookup_mode = 'index'
+        if 'worker' not in self.components or self.lookup_mode != 'index':
+            return
+        resolvers = (processor.get('evidence') or {}).get('resolvers') or {}
+        self.print_info("Most real threats are named by only one list, which is not enough "
+                        "evidence on its own. Quad9 and Cloudflare can give a second opinion "
+                        "on those names. They are sent the domain name only, never who looked "
+                        "it up, and the workers need outbound port 53 to 9.9.9.9, 9.9.9.10, "
+                        "1.1.1.1 and 1.1.1.2. See 'Asking public resolvers for a second "
+                        "opinion' in the README.")
+        self.use_resolvers = self.prompt_yes_no(
+            "Ask Quad9 and Cloudflare about threats one list names?",
+            default=bool(resolvers.get('enable', True)) if existing is not None else True)
+
     def prompt_for_client_lookups(self):
         """Ask if client IP lookups should be enabled"""
         self.print_step("Client IP Lookups Configuration")
@@ -1120,6 +1190,7 @@ class TurkeyBiteSetup:
         # a new password
         self.decide_updates()
         password_changed = self.keep_password_in_step(previous_password)
+        self.setup_categorisation()
         self.setup_config()
         self.setup_env()
         if password_changed:
