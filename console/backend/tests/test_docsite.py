@@ -22,9 +22,11 @@ class Body(httpx.AsyncByteStream):
     """A body that arrives as it would over the network, unread."""
 
     def __init__(self, data: bytes):
+        """A body of `data`."""
         self.data = data
 
     async def __aiter__(self):
+        """The whole body, in one piece."""
         yield self.data
 
 
@@ -32,6 +34,7 @@ class FakeDocs:
     """The docs container: answers each request and records it."""
 
     def __init__(self):
+        """Up, and asked nothing yet."""
         self.requests = []
         self.down = False
 

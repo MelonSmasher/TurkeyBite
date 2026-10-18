@@ -54,6 +54,11 @@
   transition: width 200ms ease;
 }
 
+.tb-modules > ol > li,
+.tb-modules > ul > li {
+  margin-bottom: 1rem;
+}
+
 .tb-quiz {
   border: 1px dashed var(--md-default-fg-color--lighter);
   border-radius: 6px;
@@ -110,9 +115,4 @@
 
 a.tb-try::after {
   content: ' ↗';
-}
-
-.tb-modules > ol > li,
-.tb-modules > ul > li {
-  margin-bottom: 1rem;
 }

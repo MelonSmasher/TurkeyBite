@@ -48,6 +48,7 @@ def _prose(text):
 
 
 def taxonomy():
+    """Every category, and the purpose, service and risk it means."""
     module = _module('tb_taxonomy', 'src/libtb/taxonomy/__init__.py')
     rows = ['| Category | Purpose | Service | Risk | Severity |', '|---|---|---|---|---|']
     for category in sorted(module.TAXONOMY):
@@ -63,6 +64,7 @@ def taxonomy():
 
 
 def rules():
+    """The console's built-in rules."""
     module = _module('tb_rule_defaults', 'console/backend/tbconsole/analysis/defaults.py')
     rows = ['| Rule | Type | Severity | On at install | Looks for |', '|---|---|---|---|---|']
     for rule in module.DEFAULT_RULES:
@@ -73,6 +75,7 @@ def rules():
 
 
 def lists():
+    """Every list a new install downloads, with its trust."""
     with open(ROOT / 'vols/lists/host_files.example.json', encoding='utf-8') as handle:
         sources = json.load(handle)
     rows = ['| List | Categories | Publisher | Trust | Covers subdomains | Copies |',
@@ -191,8 +194,10 @@ TABLES = {'taxonomy': taxonomy, 'rules': rules, 'lists': lists,
           'pipeline-cli': pipeline_cli, 'console-cli': console_cli}
 
 
-def on_page_markdown(markdown, page, **kwargs):
+def on_page_markdown(markdown, page, **_kwargs):
+    """A page with each of its markers replaced by its table."""
     def table(match):
+        """The table a marker asks for."""
         name = match.group(1)
         if name not in TABLES:
             raise ValueError(f'{page.file.src_path} asks for an unknown table, {name}')
@@ -232,7 +237,7 @@ def inline_hashes(html):
 CANONICAL = re.compile(r'\s*<link rel="canonical"[^>]*>')
 
 
-def on_post_build(config, **kwargs):
+def on_post_build(config, **_kwargs):
     """Writes the policy to TBDOCS_CSP_FILE, for nginx, when the image is built.
 
     A page with an inline event handler or a javascript: link fails the
