@@ -36,7 +36,7 @@ needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
 |---|---|
 | `test_index_builder.py` | Which files the domain index reads, which lines survive the host grammar, and that a worker remembers what a key matched only for the file it read it from |
 | `test_index_transport.py` | Shipping the index to remote workers: chunks before the manifest, the old generation deleted only after the flip, and a fetch that fails, including one whose generation a publish deleted mid-download, leaving the worker's copy and marker as they were for the next sync |
-| `test_host_list_keyspace.py` | Retiring the Valkey host list without taking the published index with it |
+| `test_host_list_keyspace.py` | Reading the Valkey host list in valkey mode, on one connection a process and in two round trips an event, and retiring it without taking the published index with it |
 | `test_ptr_cache.py` | Reverse DNS caching, and which outcomes are safe to remember |
 | `test_list_scope.py` | How far a list entry reaches: one host or a whole domain, and never past the registrable domain |
 | `test_evidence.py` | Which claimed categories an event asserts, and what counts as independent agreement |
@@ -46,7 +46,7 @@ needs it: the suites replace resolvers, Valkey, OpenSearch and curl with fakes.
 | `test_resolvers.py` | Public filtering resolvers as a second opinion: when they are asked, what their answers mean, what is remembered, and that they never assert alone |
 | `test_incidental.py` | Hosts looked up on someone else's behalf: what is demoted, what stays, and the CNAME chain that could undo it |
 | `test_end_to_end.py` | A recorded Packetbeat DNS event and Browserbeat history event, from `fixtures/`, run through `read_config`, the sieve and the processor with the shipped example config and an index built as the librarian builds it, checked at the document OpenSearch is sent |
-| `test_queue.py` | The durable queue: claiming, acknowledging only what was indexed, requeueing in order, and the recovery sweep taking only the consumer names its own host generates, moving items one at a time so none is deleted unrequeued, and counting a list SCAN repeats once |
+| `test_queue.py` | The durable queue: claiming, in two round trips a batch, acknowledging only what was indexed, requeueing in order, and the recovery sweep taking only the consumer names its own host generates, moving items one at a time so none is deleted unrequeued, and counting a list SCAN repeats once. With `TB_TEST_VALKEY` set, as CI sets it, the queue's Lua against a real Valkey |
 | `test_consumer.py` | The consumer's claim, sieve, enrich, flush, acknowledge cycle: nothing acknowledged before the flush, and a batch OpenSearch did not take, or refused for a reason that may clear, requeued under every bulk setting, a rest after each, and Valkey going away waited out, with buffering off, full or due to flush, and one bad packet costing only itself |
 | `test_event_logging.py` | DNS and browser-history log descriptions, including malformed fields |
 | `test_syslog.py` | The syslog client's priority arithmetic and UDP send, and a syslog failure costing only the syslog copy of an event |

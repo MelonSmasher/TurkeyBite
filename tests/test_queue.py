@@ -8,7 +8,9 @@ in-flight work. Each of those is tested from the Redis lists themselves, not
 from what the queue object reports.
 
 No test touches the network. Redis is tests/fakes.py, which is checked here
-against the Redis behaviour the queue relies on.
+against the Redis behaviour the queue relies on; RealValkeyTest runs the
+queue's Lua in a real Valkey, when TB_TEST_VALKEY names one, to hold the two
+together.
 """
 
 import importlib.machinery
@@ -89,6 +91,19 @@ class FakeRedisTest(unittest.TestCase):
         redis.rpush('l', 'x')
         self.assertEqual((redis.get('k'), redis.lrange('l', 0, 0)), (b'v', [b'x']))
         self.assertEqual(list(redis.scan_iter(match='*')), [b'k', b'l'])
+
+    def test_a_pipeline_answers_each_command_in_order_when_it_runs(self):
+        redis = FakeRedis()
+        redis.set('a', '1')
+        redis.set('b', '2')
+        pipe = redis.pipeline(transaction=False)
+        pipe.get('b')
+        pipe.unlink('a')
+        pipe.get('missing')
+        pipe.get('a')
+        self.assertIn('a', redis.data)
+        self.assertEqual(pipe.execute(), [b'2', 1, None, None])
+        self.assertEqual(redis.executions, [4])
 
 
 class ListQueueTest(unittest.TestCase):
@@ -432,3 +447,37 @@ class OwnershipTest(unittest.TestCase):
         swept, requeued = recover_orphans(self.redis, KEY, prefix='host')
         self.assertEqual((swept, requeued), (1, 1))
         self.assertEqual(running.in_flight(), 1)
+
+
+@unittest.skipUnless(os.environ.get('TB_TEST_VALKEY'), 'set TB_TEST_VALKEY to run against a real Valkey')
+class RealValkeyTest(unittest.TestCase):
+    """The queue's Lua in a real Valkey, as the fake does it in Python.
+
+    Set TB_TEST_VALKEY=redis://host:port/db to run it, on a database it may empty.
+    """
+
+    def setUp(self):
+        from redis import Redis  # pylint: disable=import-outside-toplevel
+        self.redis = Redis.from_url(os.environ['TB_TEST_VALKEY'])
+        self.redis.flushdb()
+        self.addCleanup(self.redis.flushdb)
+
+    @staticmethod
+    def story(redis):
+        """Claims of every size, an acknowledgement and a requeue; what each gave, and both lists."""
+        queue = ListQueue(redis, KEY, 'worker1-01')
+        queue.reserve()
+        for name in 'abcdefgh':
+            queue.push(name)
+        seen = [queue.claim(3), queue.claim(1)]
+        queue.ack(2)
+        seen.append(queue.claim(10))
+        seen.append(queue.requeue([b'f', b'g', b'h']))
+        queue.release()
+        return seen, redis.lrange(KEY, 0, -1), redis.lrange(queue.processing_key, 0, -1)
+
+    def test_the_lua_does_what_the_fake_does(self):
+        real = self.story(self.redis)
+        self.assertEqual(real, self.story(FakeRedis()))
+        self.assertEqual(real, ([items('a', 'b', 'c'), items('d'), items(*'efgh'), 3],
+                                items('f', 'g', 'h'), items('c', 'd', 'e')))
