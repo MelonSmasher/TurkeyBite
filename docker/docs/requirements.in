@@ -1,0 +1,3 @@
+# What builds the documentation site. Pinned, with hashes, in requirements.txt:
+#   uv pip compile -p 3.13 --generate-hashes docker/docs/requirements.in -o docker/docs/requirements.txt
+mkdocs-material==9.7.7

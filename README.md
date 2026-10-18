@@ -30,6 +30,10 @@ The ingestion path is:
 The librarian refreshes classification lists and publishes the domain index to workers. The separately deployed Console reads OpenSearch; it does not connect to the ingestion workers or queue.
 
 
+### Documentation
+
+The full documentation, with a tutorial for the console, is in [`docs/`](docs/index.md). The console serves it at `/docs/` to people who are signed in, from its own container, and links it under **Help** in the account menu; see [the console's README](console/README.md#deploying). To read it locally, install `docker/docs/requirements.txt` and run `mkdocs serve` from the repository root.
+
 ### What DNS servers does this work with
 
 As of right now I have tested this with a Microsoft DNS server and I am running this in production with multiple Bind9 servers. Since Packetbeat is used to grab and send packets to Redis this should work with any DNS server that can also run Packetbeat.
@@ -177,7 +181,7 @@ Long answer: TB is an analysis tool not a blocking tool. For something like that
 
 ### Published images
 
-Every push to `master` runs the Python and console CI suites before publishing three separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, and `ghcr.io/melonsmasher/turkeybite-console`. Master commits get `sha-<full-master-commit-sha>` tags. Valid semantic release and release-candidate tags on master publish that same version on all three images. The tagged commit must contain `.github/workflows/images.yml`; invalid tags and tags outside master history fail validation without publishing. No moving `latest`, major or minor tags are published. Pin image digests for byte-exact deployments because registry tags are mutable.
+Every push to `master` runs the Python and console CI suites before publishing four separate images to GitHub Container Registry: `ghcr.io/melonsmasher/turkeybite-worker`, `ghcr.io/melonsmasher/turkeybite-librarian`, `ghcr.io/melonsmasher/turkeybite-console`, and `ghcr.io/melonsmasher/turkeybite-docs`, the documentation site the console serves at `/docs/`. Master commits get `sha-<full-master-commit-sha>` tags. Valid semantic release and release-candidate tags on master publish that same version on all four images. The tagged commit must contain `.github/workflows/images.yml`; invalid tags and tags outside master history fail validation without publishing. No moving `latest`, major or minor tags are published. Pin image digests for byte-exact deployments because registry tags are mutable.
 
 For a generated application-node compose file, add the appropriate image variables to `.env` (only the roles present on that node):
 
@@ -190,7 +194,7 @@ Use `docker compose pull turkeybite-worker turkeybite-librarian` (omit absent ro
 
 To release, first merge the changes to `master` and choose the next version from the existing release tags. Tag a master commit containing the image workflow; tagging an older commit without it cannot start CI. Increment MAJOR for an incompatible change, MINOR for a backward-compatible feature, or PATCH for a backward-compatible fix. Never move or reuse a released tag. For example, after deciding that `v1.2.3` is the correct next version:
 
-Release candidates use `vMAJOR.MINOR.PATCH-rcN` (starting at `rc1`) and publish the same tag on all three images after release CI passes. Create them as GitHub prereleases, not stable releases.
+Release candidates use `vMAJOR.MINOR.PATCH-rcN` (starting at `rc1`) and publish the same tag on all four images after release CI passes. Create them as GitHub prereleases, not stable releases.
 
 ```bash
 git switch master
@@ -199,7 +203,7 @@ git tag -a v1.2.3 -m 'TurkeyBite v1.2.3'
 git push origin v1.2.3
 ```
 
-Wait for the tag's **Publish images** workflow to succeed before pulling `ghcr.io/melonsmasher/turkeybite-{worker,librarian,console}:v1.2.3` (replace the braces with one role per image). Set each image override to the same release, including `TURKEYBITE_CONSOLE_IMAGE` on the console host. Tag pushes identify an existing commit; this workflow never creates or pushes Git tags.
+Wait for the tag's **Publish images** workflow to succeed before pulling `ghcr.io/melonsmasher/turkeybite-{worker,librarian,console,docs}:v1.2.3` (replace the braces with one role per image). Set each image override to the same release, including `TURKEYBITE_CONSOLE_IMAGE` and `TURKEYBITE_DOCS_IMAGE` on the console host. Tag pushes identify an existing commit; this workflow never creates or pushes Git tags.
 
 On existing installations, regenerate the compose file with `setup.sh` (or remove the `opensearch-dashboards` service manually from your generated file) and run `docker compose up -d --remove-orphans`; Compose otherwise leaves the old Dashboards container running. This does not remove its image or any OpenSearch indices.
 

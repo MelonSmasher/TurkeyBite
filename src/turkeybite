@@ -153,11 +153,22 @@ def queue_recover(prefix, consumers, sweep_all):
 
 @cli.command('hosts')
 def hosts():
+    """Download the domain lists, then build the index from them.
+
+    In valkey and compare modes the lists are loaded into Valkey as well. The
+    librarian runs this every TURKEYBITE_HOSTS_INTERVAL_MIN minutes.
+    """
     pull_host_lists()
 
 
 @cli.command('ignorelist')
 def ignorelist():
+    """Apply lists/ignorelist.json to the categories loaded into Valkey.
+
+    Only valkey and compare modes need it: the index applies the ignorelist
+    when it is built. The librarian runs this every
+    TURKEYBITE_IGNORELIST_INTERVAL_MIN minutes.
+    """
     process_ignorelist()
 
 

@@ -1,0 +1,152 @@
+# The documentation site, served by the docs container at /docs/ behind the
+# console's sign-in. Build it as the image does, from the repository root:
+#
+#   pip install --require-hashes -r docker/docs/requirements.txt
+#   mkdocs build --strict      # or `mkdocs serve` while writing
+#
+# Pages live in docs/. A few tables are made from the code when the site is
+# built, by docker/docs/hooks.py, so they cannot fall behind it.
+site_name: TurkeyBite
+site_description: Documentation and tutorial for TurkeyBite and its console
+site_url: !ENV [TBDOCS_SITE_URL, 'http://localhost/docs/']
+docs_dir: docs
+strict: true
+
+theme:
+  name: material
+  # The site is served behind a strict Content-Security-Policy with no
+  # outside requests, so it uses the system's fonts rather than Google's
+  font: false
+  logo: img/turkey_bite_spy.png
+  favicon: img/turkey_bite_spy.png
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Dark theme
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Light theme
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+hooks:
+  - docker/docs/hooks.py
+
+# A plain link to the source. Material's repository widget would ask GitHub's
+# API for stars and the latest release from every reader's browser, which
+# the site's Content-Security-Policy rightly forbids
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/MelonSmasher/TurkeyBite
+      name: TurkeyBite on GitHub
+  generator: false
+
+extra_css:
+  - assets/stylesheets/tutorial.css
+extra_javascript:
+  - assets/javascripts/tutorial.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.snippets:
+      # Example files are included from where they live, so the site shows
+      # what ships rather than a copy that drifts
+      base_path: ['.']
+      check_paths: true
+
+validation:
+  omitted_files: warn
+  absolute_links: info
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Tutorial:
+      - tutorial/index.md
+      - 1. Find your way around: tutorial/1-tour.md
+      - 2. Search every lookup: tutorial/2-search.md
+      - 3. Why a site has its category: tutorial/3-categories.md
+      - 4. Triage a finding: tutorial/4-findings.md
+      - 5. Tune a rule: tutorial/5-rules.md
+      - 6. People, devices and privacy: tutorial/6-people.md
+      - 7. For administrators: tutorial/7-admin.md
+  - Console:
+      - console/index.md
+      - Overview and dashboards: console/overview.md
+      - Explore and TBQL: console/explore.md
+      - Analytics and trends: console/analytics.md
+      - People, machines and domains: console/entities.md
+      - Findings: console/findings.md
+      - Rules: console/rules.md
+      - Webhooks and SAC: console/webhooks.md
+      - Device lookup: console/device-lookup.md
+      - Privacy mode and the audit log: console/privacy.md
+      - Accounts, sign-in and roles: console/access.md
+      - The API: console/api.md
+      - Deploying the console: console/deploying.md
+  - Categories:
+      - categories/index.md
+      - Lists and trust: categories/lists.md
+      - Incidental lookups: categories/incidental.md
+      - A second opinion from resolvers: categories/resolvers.md
+      - Finding false positives: categories/false-positives.md
+      - Labelling uncategorised domains: categories/labelling.md
+      - Relabelling stored events: categories/relabelling.md
+      - Taxonomy: categories/taxonomy.md
+  - Pipeline:
+      - pipeline/index.md
+      - Installation: pipeline/installation.md
+      - Upgrading: pipeline/upgrading.md
+      - Published images: pipeline/images.md
+      - Collecting DNS and browsing: pipeline/collection.md
+      - People behind phones (RADIUS): pipeline/radius.md
+      - Bind9: bind9.md
+      - Running and troubleshooting: pipeline/operations.md
+  - Security and privacy:
+      - security/index.md
+      - Data retention: security/retention.md
+      - URLs and the raw packet: security/urls.md
+      - OpenSearch password: security/opensearch-password.md
+      - OpenSearch certificates: security/opensearch-certificates.md
+  - Reference:
+      - reference/index.md
+      - config.yaml: reference/config.md
+      - console.env: reference/console-env.md
+      - Command line: reference/cli.md
+      - List sources: reference/lists.md
+      - Built-in rules: reference/rules.md
