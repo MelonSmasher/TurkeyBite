@@ -78,6 +78,15 @@
         "trust": "medium",
         "match": "subtree"
     },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/warez/domains",
+        "categories": ["piracy"],
+        "file": "lists/piracy/olbat-warez",
+        "name": "olbat-warez",
+        "publisher": "ut1",
+        "trust": "medium",
+        "match": "subtree"
+    },
 
     {
         "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/social_networks/domains",
@@ -254,6 +263,15 @@
         "name": "dancharlton9-non-gamstop",
         "publisher": "dancharlton9",
         "trust": "medium"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/gambling/domains",
+        "categories": ["gambling"],
+        "file": "lists/gambling/olbat-gambling",
+        "name": "olbat-gambling",
+        "publisher": "ut1",
+        "trust": "medium",
+        "match": "subtree"
     },
 
     {
@@ -506,6 +524,24 @@
         "trust": "medium",
         "match": "subtree"
     },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/audio-video/domains",
+        "categories": ["streaming"],
+        "file": "lists/streaming/olbat-audio-video",
+        "name": "olbat-audio-video",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/radio/domains",
+        "categories": ["streaming-audio"],
+        "file": "lists/streaming/olbat-radio",
+        "name": "olbat-radio",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
 
     {
         "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/fake.txt",
@@ -522,7 +558,7 @@
         "file": "lists/malicious/hagezi-tif-medium",
         "name": "hagezi-tif-medium",
         "publisher": "hagezi",
-        "derived_from": ["phishing.army", "DandelionSprout", "ut1", "ShadowWhisperer", "bigdargon"],
+        "derived_from": ["phishing.army", "DandelionSprout", "ut1", "ShadowWhisperer", "bigdargon", "abuse.ch"],
         "trust": "medium"
     },
     {
@@ -571,7 +607,7 @@
         "file": "lists/malicious/RPiList-Malware",
         "name": "RPiList-malicious",
         "publisher": "RPiList",
-        "derived_from": ["phishing.army", "ut1"],
+        "derived_from": ["phishing.army", "ut1", "abuse.ch"],
         "trust": "medium"
     },
     {
@@ -580,6 +616,22 @@
         "file": "lists/malicious/cyberhostuk-malware",
         "name": "cyberhostuk-malicious",
         "publisher": "cyberhost",
+        "trust": "medium"
+    },
+    {
+        "url": "https://threatfox.abuse.ch/downloads/hostfile/",
+        "categories": ["malicious", "malware"],
+        "file": "lists/malicious/abusech-threatfox",
+        "name": "abusech-threatfox",
+        "publisher": "abuse.ch",
+        "trust": "medium"
+    },
+    {
+        "url": "https://urlhaus.abuse.ch/downloads/hostfile/",
+        "categories": ["malicious", "malware"],
+        "file": "lists/malicious/abusech-urlhaus",
+        "name": "abusech-urlhaus",
+        "publisher": "abuse.ch",
         "trust": "medium"
     },
 
@@ -842,6 +894,15 @@
         "publisher": "nickoppen",
         "trust": "high"
     },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/vpn/domains",
+        "categories": ["vpn"],
+        "file": "lists/vpn/olbat-vpn",
+        "name": "olbat-vpn",
+        "publisher": "ut1",
+        "trust": "medium",
+        "match": "subtree"
+    },
 
     {
         "url": "https://raw.githubusercontent.com/nextdns/piracy-blocklists/master/proxies",
@@ -849,6 +910,98 @@
         "file": "lists/proxy/nextdns-proxy",
         "name": "nextdns-proxy",
         "publisher": "nextdns",
+        "trust": "high",
+        "match": "subtree"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/press/domains",
+        "categories": ["news"],
+        "file": "lists/news/olbat-press",
+        "name": "olbat-press",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/shopping/domains",
+        "categories": ["shopping"],
+        "file": "lists/shopping/olbat-shopping",
+        "name": "olbat-shopping",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/sports/domains",
+        "categories": ["sports"],
+        "file": "lists/sports/olbat-sports",
+        "name": "olbat-sports",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/webmail/domains",
+        "categories": ["mail"],
+        "file": "lists/mail/olbat-webmail",
+        "name": "olbat-webmail",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/filehosting/domains",
+        "categories": ["filehosting"],
+        "file": "lists/filehosting/olbat-filehosting",
+        "name": "olbat-filehosting",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/remote-control/domains",
+        "categories": ["remote-access"],
+        "file": "lists/remote-access/olbat-remote-control",
+        "name": "olbat-remote-control",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/doh/domains",
+        "categories": ["doh"],
+        "file": "lists/doh/olbat-doh",
+        "name": "olbat-doh",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/residential-proxies/domains",
+        "categories": ["proxyware"],
+        "file": "lists/proxyware/olbat-residential-proxies",
+        "name": "olbat-residential-proxies",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/ddos/domains",
+        "categories": ["ddos"],
+        "file": "lists/ddos/olbat-ddos",
+        "name": "olbat-ddos",
+        "publisher": "ut1",
+        "trust": "high",
+        "match": "subtree"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/generated/hosts",
+        "categories": ["stalkerware"],
+        "file": "lists/stalkerware/AssoEchap-stalkerware",
+        "name": "AssoEchap-stalkerware",
+        "publisher": "AssoEchap",
         "trust": "high",
         "match": "subtree"
     }

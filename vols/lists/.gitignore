@@ -30,6 +30,13 @@
 !mail/
 !search/
 !incidental/
+!sports/
+!filehosting/
+!remote-access/
+!doh/
+!proxyware/
+!ddos/
+!stalkerware/
 !whitelist.example.json
 !whitelist.md
 !ignorelist.example.json

@@ -166,6 +166,26 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(got['purpose'], sorted(got['purpose']))
 
 
+class ShippedListsTest(unittest.TestCase):
+    """Every category a shipped list names lands somewhere."""
+
+    LISTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'vols', 'lists')
+
+    def test_every_downloaded_list_category_has_a_row(self):
+        import json
+        with open(os.path.join(self.LISTS, 'host_files.example.json')) as fh:
+            sources = json.load(fh)
+        for source in sources:
+            for category in source['categories']:
+                self.assertIn(category, TAXONOMY, source['name'])
+
+    def test_every_folder_with_a_local_list_has_a_row(self):
+        # A local list's category is the name of its folder
+        for name in sorted(os.listdir(self.LISTS)):
+            if os.path.isfile(os.path.join(self.LISTS, name, 'turkeybite')) and name != 'incidental':
+                self.assertIn(name, TAXONOMY, name)
+
+
 class TaxonomyFieldsTest(unittest.TestCase):
     """The bite-facing shape."""
 
