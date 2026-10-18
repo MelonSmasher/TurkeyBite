@@ -570,22 +570,41 @@ class Processor(object):
         """
         return self._evidence[1]
 
+    def host_lists(self):
+        """The Valkey connection valkey mode reads the host lists through.
+
+        One per process, made when first needed, as for radius_sessions: a
+        new one for every event cost a connection, and the commands redis-py
+        sends on each, before the lookups themselves. A socket must not be
+        shared across a fork, so a forked child makes its own.
+        """
+        held = getattr(self, '_host_lists', None)
+        if held is None or held[0] != os.getpid():
+            r = Redis(
+                host=self.redis_conf['host'],
+                port=self.redis_conf['port'],
+                password=self.redis_conf['password'],
+                db=self.redis_conf['host_list_db']
+            )
+            held = (os.getpid(), r)
+            self._host_lists = held
+        return held[1]
+
     def valkey_contexts(self, searches):
-        """The original lookup: one Valkey GET per synthesised key."""
+        """The original lookup: one Valkey GET per synthesised key, sent together."""
         contexts = []
-        r = Redis(
-            host=self.redis_conf['host'],
-            port=self.redis_conf['port'],
-            password=self.redis_conf['password'],
-            db=self.redis_conf['host_list_db']
-        )
+        r = self.host_lists()
         tag = r.get('turkey-bite:current-tag')
         if not tag:
             return contexts
         tag = tag.decode('utf-8')
-        for entry in searches:
-            key = 'turkey-bite:' + tag + ':' + entry
-            result = r.get(key)
+        keys = ['turkey-bite:' + tag + ':' + entry for entry in searches]
+        # In one round trip rather than one each. Not a transaction, so each
+        # GET is answered just as it was on its own
+        pipe = r.pipeline(transaction=False)
+        for key in keys:
+            pipe.get(key)
+        for key, result in zip(keys, pipe.execute()):
             if not result:
                 continue
             try:

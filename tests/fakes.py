@@ -516,19 +516,23 @@ class FakeRedis(object):
 
 
 class FakePipeline(object):
-    """Queues UNLINKs and runs them on execute, recording how many each time."""
+    """Queues UNLINKs and GETs and runs them on execute, recording how many each time."""
 
     def __init__(self, redis):
         self.redis = redis
         self.queued = []
 
     def unlink(self, *keys):
-        self.queued.extend(_key(key) for key in keys)
+        for key in keys:
+            self.queued.append(lambda key=_key(key): int(self.redis.data.pop(key, None) is not None))
+        return self
+
+    def get(self, key):
+        self.queued.append(lambda: self.redis.get(key))
         return self
 
     def execute(self):
-        results = [1 if self.redis.data.pop(key, None) is not None else 0
-                   for key in self.queued]
+        results = [command() for command in self.queued]
         self.redis.executions.append(len(self.queued))
         self.queued = []
         return results
