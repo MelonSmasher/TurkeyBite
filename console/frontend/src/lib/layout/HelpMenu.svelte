@@ -24,9 +24,11 @@
     button?.focus();
   }
 
-  function onclick() {
+  // Focus goes into it only from the keyboard, whose Enter or Space clicks
+  // with no pointer behind it, so the pointer passing on still closes it
+  function onclick(event: MouseEvent) {
     if (open && !hovered) hide();
-    else show(true);
+    else show(event.detail === 0);
     hovered = false;
   }
 

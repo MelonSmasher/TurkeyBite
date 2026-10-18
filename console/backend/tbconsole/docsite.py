@@ -111,13 +111,22 @@ async def serve(request: Request) -> Response:
     returned['cache-control'] = ', '.join(
         ['private'] + [part for part in cache if part and part not in ('public', 'private')])
     returned.setdefault('content-security-policy', CSP)
-    return StreamingResponse(_relay(upstream), status_code=upstream.status_code, headers=returned)
+    return _Relay(upstream, status_code=upstream.status_code, headers=returned)
 
 
-async def _relay(upstream: httpx.Response):
-    """The answer's body as it came, its connection let go however the stream ends."""
-    try:
-        async for chunk in upstream.aiter_raw():
-            yield chunk
-    finally:
-        await upstream.aclose()
+class _Relay(StreamingResponse):
+    """The answer's body as it came, its connection let go however sending it ends.
+
+    Closed here rather than when the body's generator is collected, which
+    for a reader who went away can be much later.
+    """
+
+    def __init__(self, upstream: httpx.Response, **kwargs):
+        super().__init__(upstream.aiter_raw(), **kwargs)
+        self.upstream = upstream
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.upstream.aclose()

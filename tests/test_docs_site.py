@@ -106,6 +106,10 @@ class SitePolicyTest(unittest.TestCase):
         # The placeholder address goes with the canonical link
         self.assertNotIn('canonical', page)
 
+    def test_prose_that_mentions_a_handler_is_not_one(self):
+        self.build('<p>set onboarding=true, or use a javascript: link</p>'
+                   '<pre><code>&lt;a onclick="x"&gt;</code></pre>')
+
     def test_an_inline_handler_fails_the_build(self):
         with self.assertRaises(ValueError):
             self.build('<a href="#" onclick="go()">x</a>')

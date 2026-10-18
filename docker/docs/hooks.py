@@ -209,7 +209,8 @@ POLICY = ("default-src 'self'; script-src 'self' {hashes}; style-src 'self' 'uns
           "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; "
           "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
 SCRIPT = re.compile(r'<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>', re.S)
-HANDLER = re.compile(r'\son[a-z]+\s*=|href\s*=\s*["\']?\s*javascript:', re.I)
+# Inside a tag only, so prose that mentions one= or javascript: is not one
+HANDLER = re.compile(r'<[a-z][^>]*?(\son[a-z]+\s*=|\shref\s*=\s*["\']?\s*javascript:)', re.I)
 RUNNABLE = ('', 'text/javascript', 'module')
 
 
