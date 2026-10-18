@@ -349,7 +349,11 @@ async def export(body: ExportBody, request: Request,
             result = await search.search({
                 'size': min(page, body.limit - sent), 'from': sent,
                 'query': query, 'sort': [{'@timestamp': {'order': 'desc'}}],
-                '_source': {'excludes': ['packet']} if body.format == 'csv' else True})
+                # A CSV has its columns and nothing else: the rest of each
+                # event would be sent, read and dropped, twice the columns
+                # or more
+                '_source': {'includes': columns, 'excludes': ['packet']} if body.format == 'csv'
+                else True})
             hits = result.get('hits', {}).get('hits', [])
             if not hits:
                 break

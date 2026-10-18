@@ -286,8 +286,17 @@ async def test_exports_neutralise_spreadsheet_formulas_and_are_audited(client, s
     rows = response.text.splitlines()
     assert rows[0] == 'bite.requested,bite.client_user'  # nosec B101
     assert rows[1].startswith('"\'=HYPERLINK') and rows[1].endswith("'+cmd")  # nosec B101
+    # Only the columns are asked for, and never the raw packet
+    assert search.bodies[0]['_source'] == {'includes': ['bite.requested', 'bite.client_user'],  # nosec B101
+                                           'excludes': ['packet']}
     async with db.sessionmaker()() as session:
         assert (await session.execute(select(AuditEvent).where(AuditEvent.action == 'events.export'))).scalar_one()  # nosec B101
+    # NDJSON is the events whole
+    answers = iter([{'hits': {'total': {'value': 1}, 'hits': hits}}, {'hits': {'total': {'value': 1}, 'hits': []}}])
+    response = await client.post('/api/v1/events/export', headers=headers,
+                                 json={'query': '', 'format': 'ndjson', 'columns': ['domain'], 'limit': 10})
+    assert response.json() == {'_id': '1', '_index': 'tb-index-2026-10-05', **hits[0]['_source']}  # nosec B101
+    assert search.bodies[-1]['_source'] is True  # nosec B101
 
 
 async def test_viewers_cannot_export(client):
