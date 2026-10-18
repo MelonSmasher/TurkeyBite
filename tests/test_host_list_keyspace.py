@@ -175,7 +175,7 @@ class ValkeyLookupTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.processor = Processor({'domain_index': {'mode': 'valkey'}},
-                                   {'host': 'valkey', 'port': 6379, 'password': 'x', 'host_list_db': 1})
+                                   {'host': 'valkey', 'port': 6379, 'password': 'x', 'host_list_db': 1})  # nosec B105
 
     def connect(self, **kwargs):
         self.made.append(kwargs)
@@ -197,7 +197,7 @@ class ValkeyLookupTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             for _ in range(3):
                 self.processor.valkey_contexts(self.SEARCHES)
-        self.assertEqual(self.made, [{'host': 'valkey', 'port': 6379, 'password': 'x', 'db': 1}])
+        self.assertEqual(self.made, [{'host': 'valkey', 'port': 6379, 'password': 'x', 'db': 1}])  # nosec B105
         # The tag, then the four keys in one round trip, for each event
         self.assertEqual(self.redis.executions, [4, 4, 4])
 

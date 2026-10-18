@@ -453,7 +453,7 @@ class ConsumerClientTest(unittest.TestCase):
 
     def test_the_consumers_client_never_sends_a_command_again(self):
         made = {}
-        consumer_client({'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'pw'},
+        consumer_client({'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'pw'},  # nosec B105
                         connect=lambda **kwargs: made.update(kwargs))
         self.assertEqual((made['host'], made['port'], made['db'], made['password']),
                          ('valkey', 6379, 0, 'pw'))
@@ -509,7 +509,7 @@ class RealValkeyTest(unittest.TestCase):
         # With a timeout, so a proxy that fails to drop the connection fails
         # the test rather than hanging it
         client = consumer_client({'host': '127.0.0.1', 'port': proxy.port,
-                                  'db': int(url.path.strip('/') or 0), 'password': None},
+                                  'db': int(url.path.strip('/') or 0), 'password': None},  # nosec B105
                                  connect=lambda **kwargs: Redis(socket_timeout=10, **kwargs))
         queue = ListQueue(client, KEY, 'worker1-01')
         for n in range(20):
@@ -524,10 +524,13 @@ class RealValkeyTest(unittest.TestCase):
 
 
 class DroppingProxy:
-    """A TCP proxy to Valkey that closes the connection instead of passing on
-    the reply to the first command containing `marker`."""
+    """A TCP proxy to Valkey that loses one reply, and its connection.
+
+    The reply lost is the one to the first command containing `marker`.
+    """
 
     def __init__(self, host, port, marker):
+        """Listens on a free local port, passing on to Valkey at host:port."""
         import socket
         import threading
         self.upstream = (host, port)
@@ -578,8 +581,11 @@ class DroppingProxy:
 
     @staticmethod
     def drop(sock):
-        """Ends the connection. On Linux close() alone does not while another
-        thread waits on the socket, so the far end would never hear of it."""
+        """Ends the connection.
+
+        On Linux close() alone does not while another thread waits on the
+        socket, so the far end would never hear of it.
+        """
         import socket
         try:
             sock.shutdown(socket.SHUT_RDWR)

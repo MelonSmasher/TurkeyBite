@@ -381,8 +381,8 @@ class ClaimsMemoTest(unittest.TestCase):
             self.index.match('x.evil.example.com')
 
     def test_it_holds_at_most_so_many(self):
-        from libtb import index as I
-        with unittest.mock.patch.object(I, 'CLAIMS_MEMO_MAX', 3):
+        from libtb import index as index_module
+        with unittest.mock.patch.object(index_module, 'CLAIMS_MEMO_MAX', 3):
             for i in range(10):
                 self.index.match(f'host{i}.example.org')
                 self.assertLessEqual(len(self.index._claims_memo), 3)
