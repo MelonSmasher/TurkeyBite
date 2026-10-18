@@ -625,3 +625,16 @@ async def test_trends_put_each_days_counts_in_their_series(client):
     assert trend['nxdomain'][-1] == 9  # nosec B101
     assert trend['coverage']['days_counted'] == 2  # nosec B101
     assert trend['coverage']['first_counted_day'] == (today - timedelta(days=2)).isoformat()  # nosec B101
+
+
+async def test_the_audit_logs_actions_are_each_listed_once_in_order(client):
+    await make_user('root', role='admin')
+    await login(client, 'root')
+    async with db.sessionmaker()() as session:
+        for action in ('rule.update', 'entity.view', 'auth.login', 'entity.view', 'rule.update',
+                       'entity.view', 'domain.view'):
+            session.add(AuditEvent(actor_type='session', actor_name='root', action=action, details={}))
+        await session.commit()
+    actions = (await client.get('/api/v1/audit/actions')).json()
+    # The sign-in just made is in the log too
+    assert actions == ['auth.login', 'domain.view', 'entity.view', 'rule.update']  # nosec B101

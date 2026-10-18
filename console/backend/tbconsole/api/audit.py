@@ -53,5 +53,12 @@ async def list_events(*, action: str | None = None, actor: str | None = None,  #
 async def actions(_: Principal = Depends(require(rbac.AUDIT_READ)),
                   db: AsyncSession = Depends(get_session)) -> list[str]:
     """Every action the log has recorded, to filter by."""
-    return list((await db.execute(select(AuditEvent.action).distinct()
-                                  .order_by(AuditEvent.action))).scalars())
+    # The first action, then each the next one up, every one a step through
+    # the index on action: a few dozen steps, where DISTINCT read the whole
+    # index, a row for every event the log keeps
+    first = select(func.min(AuditEvent.action).label('action')).cte('actions', recursive=True)
+    following = select(select(func.min(AuditEvent.action)).where(AuditEvent.action > first.c.action)
+                       .scalar_subquery()).where(first.c.action.is_not(None))
+    found = first.union_all(following)
+    return list((await db.execute(select(found.c.action).where(found.c.action.is_not(None))
+                                  .order_by(found.c.action))).scalars())
