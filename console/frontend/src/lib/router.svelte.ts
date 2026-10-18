@@ -64,6 +64,8 @@ class Router {
       if (!anchor || anchor.target || anchor.hasAttribute('download')) return;
       const href = anchor.getAttribute('href');
       if (!href || !href.startsWith('/') || href.startsWith('/api/') || href.startsWith('//')) return;
+      // The documentation is its own site, served beside the app
+      if (href === '/docs' || href.startsWith('/docs/') || href.startsWith('/docs?')) return;
       event.preventDefault();
       this.navigate(href);
     });

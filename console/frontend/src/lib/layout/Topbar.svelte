@@ -2,6 +2,7 @@
   import { Bell, Check, Eye, EyeOff, LogOut, Monitor, Moon, Palette, Search, Settings2, Sun, UserRound } from '@lucide/svelte';
   import { api } from '../api';
   import Avatar from '../components/Avatar.svelte';
+  import HelpMenu from './HelpMenu.svelte';
   import Menu from '../components/Menu.svelte';
   import SeverityBadge from '../components/SeverityBadge.svelte';
   import { tip } from '../components/tooltip';
@@ -136,6 +137,7 @@
       <div class="menu-sep"></div>
       <a class="menu-item" href="/account" onclick={close}><UserRound size={15} /> Your account</a>
       {#if session.can('settings:admin')}<a class="menu-item" href="/admin/system" onclick={close}><Settings2 size={15} /> System</a>{/if}
+      {#if session.me?.docs}<HelpMenu onchoose={close} />{/if}
       <div class="menu-sep"></div>
       <button class="menu-item" onclick={() => session.logout()}><LogOut size={15} /> Sign out</button>
     {/snippet}

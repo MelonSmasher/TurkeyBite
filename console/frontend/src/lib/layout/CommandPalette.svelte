@@ -1,9 +1,10 @@
 <script lang="ts">
   // ⌘K: jump to any page, a person, a domain, a finding, or straight into a
   // search, and flip the switches people reach for most.
-  import { ArrowRight, CornerDownLeft, Eye, Globe, Moon, ScanSearch, ShieldAlert, Sun, User, Wand2 } from '@lucide/svelte';
+  import { ArrowRight, BookOpen, CornerDownLeft, Eye, Globe, GraduationCap, Moon, ScanSearch, ShieldAlert, Sun, User, Wand2 } from '@lucide/svelte';
   import type { Component } from 'svelte';
   import { api } from '../api';
+  import { openDocs } from '../docs';
   import { trap } from '../components/focus';
   import { NAV } from '../nav';
   import { entitySegment, exploreLink, findingText } from '../privacy';
@@ -73,6 +74,13 @@
     ];
     if (session.can('rules:write')) {
       actions.push({ id: 'new-rule', label: 'Create a rule', group: 'Actions', icon: Wand2, run: () => navigate('/rules/new') });
+    }
+    if (session.me?.docs) {
+      actions.push(
+        { id: 'docs', label: 'Open the documentation', group: 'Actions', icon: BookOpen,
+          run: () => openDocs('/docs/') },
+        { id: 'tutorial', label: 'Open the tutorial', group: 'Actions', icon: GraduationCap,
+          run: () => openDocs('/docs/tutorial/') });
     }
     out.push(...actions.filter((a) => !q || a.label.toLowerCase().includes(q)));
     return out.slice(0, 40);
