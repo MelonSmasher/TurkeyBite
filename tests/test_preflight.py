@@ -184,6 +184,9 @@ class ShipTimeTest(Workdir):
         super().setUp()
         # Reverse DNS would query a resolver
         self.config['processor']['dns']['lookup_ips'] = False
+        # A request an event, so each meets the fault as it is shipped; with
+        # bulk on, see the last test
+        self.config['processor']['elastic']['bulk'] = {'enable': False}
 
     def processor(self):
         """A processor checked at start, whose CA file is then lost."""

@@ -12,6 +12,7 @@ only be sent again by hand.
 import asyncio
 import json
 import logging
+import os
 import ssl
 import time
 from datetime import datetime, timedelta, timezone
@@ -68,17 +69,35 @@ MAX_ADDRESSES = 4
 MIN_CONNECT = 2.0
 
 
-def _trust() -> ssl.SSLContext | bool:
+# The context _trust last made, with what it was made from. Reading the
+# certificates takes the event loop a good ten milliseconds, which every
+# delivery spent before, a batch of them a quarter of a second, holding up
+# every request the process was serving
+_trusted: tuple[tuple | None, ssl.SSLContext] | None = None
+
+
+def _trust() -> ssl.SSLContext:
     """The certificates a receiver's may be signed by.
 
     The usual public ones, and those in TBCONSOLE_WEBHOOK_CA_CERTS, for a
-    receiver on the LAN with an internal CA.
+    receiver on the LAN with an internal CA. Read once and shared by every
+    delivery, which still has a connection of its own; read again when the
+    file of extra certificates changes.
     """
+    global _trusted
     extra = get_settings().webhook_ca_certs
-    if not extra:
-        return True
+    seen = None
+    if extra:
+        found = os.stat(extra)
+        seen = (str(extra), found.st_ino, found.st_size, found.st_mtime_ns)
+    if _trusted is not None and _trusted[0] == seen:
+        return _trusted[1]
+    # As httpx makes it when told to verify, without SSL_CERT_FILE and the
+    # like from the environment
     context = ssl.create_default_context(cafile=certifi.where())
-    context.load_verify_locations(cafile=str(extra))
+    if extra:
+        context.load_verify_locations(cafile=str(extra))
+    _trusted = (seen, context)
     return context
 
 

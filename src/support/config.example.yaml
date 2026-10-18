@@ -196,9 +196,11 @@ processor:
     enable: true
     index_prefix: tb-index
     # Consumers acknowledge batches only after OpenSearch accepts them and
-    # requeue failed batches, whether bulk indexing is enabled or not.
+    # requeue failed batches, whether bulk indexing is enabled or not. On, each
+    # batch goes to OpenSearch as one request rather than one per event, which
+    # is several times faster.
     bulk:
-      enable: false
+      enable: true
       size: 500
       interval_sec: 2
     # verify_certs checks the host's certificate against ca_certs, a CA file

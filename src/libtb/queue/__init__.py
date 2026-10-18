@@ -36,6 +36,10 @@ import re
 import socket
 import uuid
 
+from redis import Redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
+
 PROCESSING_PREFIX = 'processing:'
 
 # A consumer that requeues a stranded list moves one item at a time, so it
@@ -134,6 +138,21 @@ return 0
 """
 
 
+# The rest of a batch, after its first item: up to ARGV[1] items moved one at
+# a time, as LMOVE would move them, stopping when the queue is empty
+CLAIM_SCRIPT = """
+local claimed = {}
+for _ = 1, tonumber(ARGV[1]) do
+    local item = redis.call('LMOVE', KEYS[1], KEYS[2], 'LEFT', 'RIGHT')
+    if not item then
+        break
+    end
+    claimed[#claimed + 1] = item
+end
+return claimed
+"""
+
+
 # Settling a batch, for a consumer that holds its name: done only while it
 # still does, checked in the same step, so one that stalled past its
 # reservation cannot trim or requeue its successor's items. -1 when not.
@@ -157,6 +176,21 @@ for _ = 1, tonumber(ARGV[2]) do
 end
 return moved
 """
+
+
+def consumer_client(queue_conf, connect=Redis):
+    """The Valkey client a consumer claims, acknowledges and requeues with.
+
+    It never sends a command again by itself, as redis-py otherwise does when
+    a reply is lost. A claim whose reply was lost has still happened in
+    Valkey, so sending it again moves a second run of items and the reply
+    names only those: acknowledging them then trims the first run, which was
+    never indexed, up to a whole batch of it. The lost reply is raised
+    instead, and Consumer.run handles everything in the processing list again
+    before it claims more.
+    """
+    return connect(host=queue_conf['host'], port=queue_conf['port'], db=queue_conf['db'],
+                   password=queue_conf['password'], retry=Retry(NoBackoff(), 0))
 
 
 class NotOwner(Exception):
@@ -243,17 +277,18 @@ class ListQueue(object):
 
         Blocks up to block_seconds waiting for the first item, then takes the
         rest without blocking so a partial batch is not delayed by a quiet queue.
+        The rest are moved by one script rather than an LMOVE each, which cost
+        a round trip to Valkey for every event. The script is one atomic step,
+        so each item is in one list or the other, never both or neither.
         """
         claimed = []
         first = self.redis.blmove(self.key, self.processing_key, block_seconds, 'LEFT', 'RIGHT')
         if first is None:
             return claimed
         claimed.append(first)
-        while len(claimed) < max_items:
-            item = self.redis.lmove(self.key, self.processing_key, 'LEFT', 'RIGHT')
-            if item is None:
-                break
-            claimed.append(item)
+        if max_items > 1:
+            claimed.extend(self.redis.eval(CLAIM_SCRIPT, 2, self.key, self.processing_key,
+                                           max_items - 1))
         return claimed
 
     def ack(self, count):

@@ -1,20 +1,26 @@
-"""Tests for retiring the Valkey host list keyspace.
+"""Tests for the Valkey host list keyspace: reading it, and retiring it.
 
-Two things can go wrong here and both are quiet. Sweeping too widely takes the
-domain index manifest and chunks with it, because they share the turkey-bite:
-prefix. Gating too widely stops populating the keyspace that `compare` mode
-reads as authoritative, which turns a comparison into a false agreement.
+Two things can go wrong in retiring it and both are quiet. Sweeping too widely
+takes the domain index manifest and chunks with it, because they share the
+turkey-bite: prefix. Gating too widely stops populating the keyspace that
+`compare` mode reads as authoritative, which turns a comparison into a false
+agreement.
 """
 
+import io
 import os
 import sys
 import unittest
+from contextlib import redirect_stderr
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from fakes import FakeRedis
+from libtb import processor as P
+from libtb.processor import Processor
 from libtb.util import (TAGGED_KEY, VALKEY_BACKED_MODES, purge_tagged_keyspace,
                         unlink_matching)
 
@@ -151,6 +157,62 @@ class ModeGateTest(unittest.TestCase):
 
     def test_index_mode_does_not_populate(self):
         self.assertNotIn('index', VALKEY_BACKED_MODES)
+
+
+class ValkeyLookupTest(unittest.TestCase):
+    """What valkey mode reads for an event, and how many times it asks."""
+
+    SEARCHES = ['ads.example.com', 'example.com', '*.example.com', '*.com']
+
+    def setUp(self):
+        self.redis = FakeRedis()
+        self.redis.set('turkey-bite:current-tag', '1787333025')
+        self.redis.set('turkey-bite:1787333025:example.com', '{"categories": ["news", "ads"]}')
+        self.redis.set('turkey-bite:1787333025:*.example.com', '{"categories": ["ads", "tracking"]}')
+        self.redis.set('turkey-bite:1787333025:*.com', 'not json')
+        self.made = []
+        patcher = mock.patch.object(P, 'Redis', side_effect=self.connect)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.processor = Processor({'domain_index': {'mode': 'valkey'}},
+                                   {'host': 'valkey', 'port': 6379, 'password': 'x', 'host_list_db': 1})  # nosec B105
+
+    def connect(self, **kwargs):
+        self.made.append(kwargs)
+        return self.redis
+
+    def test_every_key_is_read_and_merged_in_order(self):
+        with redirect_stderr(io.StringIO()) as err:
+            contexts = self.processor.valkey_contexts(self.SEARCHES)
+        self.assertEqual(sorted(contexts[:2]), ['ads', 'news'])
+        self.assertEqual(contexts[2:], ['tracking'])
+        self.assertIn('Malformed host list entry at turkey-bite:1787333025:*.com', err.getvalue())
+        self.assertEqual([key for command, key in self.redis.calls if command == 'get'],
+                         ['turkey-bite:current-tag']
+                         + [f'turkey-bite:1787333025:{search}' for search in self.SEARCHES])
+
+    def test_the_keys_go_together_on_one_connection_for_the_process(self):
+        # A new connection for every event cost the connection, and the
+        # commands redis-py sends on each, before a key was read
+        with redirect_stderr(io.StringIO()):
+            for _ in range(3):
+                self.processor.valkey_contexts(self.SEARCHES)
+        self.assertEqual(self.made, [{'host': 'valkey', 'port': 6379, 'password': 'x', 'db': 1}])  # nosec B105
+        # The tag, then the four keys in one round trip, for each event
+        self.assertEqual(self.redis.executions, [4, 4, 4])
+
+    def test_a_forked_child_makes_its_own(self):
+        # A socket must not be shared across a fork
+        with redirect_stderr(io.StringIO()):
+            self.processor.valkey_contexts(self.SEARCHES)
+            with mock.patch.object(P.os, 'getpid', return_value=os.getpid() + 1):
+                self.processor.valkey_contexts(self.SEARCHES)
+        self.assertEqual(len(self.made), 2)
+
+    def test_without_a_current_tag_nothing_else_is_read(self):
+        self.redis.delete('turkey-bite:current-tag')
+        self.assertEqual(self.processor.valkey_contexts(self.SEARCHES), [])
+        self.assertEqual(self.redis.executions, [])
 
 
 if __name__ == '__main__':

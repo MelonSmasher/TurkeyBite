@@ -223,6 +223,12 @@ class Finding(TimestampMixin, Base):
         Index('ix_findings_status_severity', 'status', 'severity'),
         Index('ix_findings_entity', 'entity_value'),
         Index('ix_findings_last_seen', 'last_seen'),
+        # Findings raised in a range, which the overview, the findings page
+        # and the rules page count every time they load, and those closed in
+        # one, which the time to resolve and pruning read: without these,
+        # each reads every finding kept
+        Index('ix_findings_created_at', 'created_at'),
+        Index('ix_findings_resolved_at', 'resolved_at'),
         # One open finding per rule and entity: a rule that keeps matching
         # adds occurrences to it rather than raising another
         Index('uq_findings_open_dedup', 'dedup_key', unique=True,
@@ -319,6 +325,8 @@ class WebhookDelivery(Base):
         Index('ix_webhook_deliveries_webhook_created', 'webhook_id', 'created_at'),
         # A finding's deliveries, and pruning findings, which sets these to null
         Index('ix_webhook_deliveries_finding_id', 'finding_id'),
+        # Every webhook's latest deliveries, the last day's counts and pruning
+        Index('ix_webhook_deliveries_created_at', 'created_at'),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)

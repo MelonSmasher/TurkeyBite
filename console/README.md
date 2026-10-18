@@ -63,7 +63,8 @@ published image instead of building it.
 Then sign in as the bootstrap admin from `console.env`, change its password,
 turn on its second factor, and remove `TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD`. Put
 TLS in front of port 8710 with your usual reverse proxy; the console sets Secure
-cookies and HSTS and expects https. Behind a proxy, set
+cookies and HSTS and expects https, and compresses its answers itself. Behind a
+proxy, set
 `TBCONSOLE_FORWARDED_ALLOW_IPS` to the proxy's own address, so the audit log and
 the sign-in limits see people's addresses rather than the proxy's. Trust
 nothing wider: any address listed there may claim to be anyone. With

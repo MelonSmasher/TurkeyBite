@@ -8,7 +8,9 @@ in-flight work. Each of those is tested from the Redis lists themselves, not
 from what the queue object reports.
 
 No test touches the network. Redis is tests/fakes.py, which is checked here
-against the Redis behaviour the queue relies on.
+against the Redis behaviour the queue relies on; RealValkeyTest runs the
+queue's Lua in a real Valkey, when TB_TEST_VALKEY names one, to hold the two
+together.
 """
 
 import importlib.machinery
@@ -23,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from fakes import Blocked, FakeRedis
-from libtb.queue import ListQueue, NotOwner, recover_orphans
+from libtb.queue import ListQueue, NotOwner, consumer_client, recover_orphans
 
 KEY = 'turkeybite'
 
@@ -90,6 +92,19 @@ class FakeRedisTest(unittest.TestCase):
         self.assertEqual((redis.get('k'), redis.lrange('l', 0, 0)), (b'v', [b'x']))
         self.assertEqual(list(redis.scan_iter(match='*')), [b'k', b'l'])
 
+    def test_a_pipeline_answers_each_command_in_order_when_it_runs(self):
+        redis = FakeRedis()
+        redis.set('a', '1')
+        redis.set('b', '2')
+        pipe = redis.pipeline(transaction=False)
+        pipe.get('b')
+        pipe.unlink('a')
+        pipe.get('missing')
+        pipe.get('a')
+        self.assertIn('a', redis.data)
+        self.assertEqual(pipe.execute(), [b'2', 1, None, None])
+        self.assertEqual(redis.executions, [4])
+
 
 class ListQueueTest(unittest.TestCase):
 
@@ -135,6 +150,31 @@ class ListQueueTest(unittest.TestCase):
         self.push(*'abcdef')
         self.assertEqual(len(self.queue.claim(4)), 4)
         self.assertEqual(self.queue.depth(), 2)
+
+    def test_a_batch_is_two_round_trips_however_large(self):
+        # The first item waited for, then the rest in one script, rather
+        # than a round trip to Valkey for every event
+        self.push(*'abcdefgh')
+        asked = []
+        redis = self.redis
+
+        class Counting(object):
+            def __getattr__(self, name):
+                asked.append(name)
+                return getattr(redis, name)
+        self.queue.redis = Counting()
+        self.assertEqual(self.queue.claim(6), items(*'abcdef'))
+        self.assertEqual(asked, ['blmove', 'eval'])
+        self.assertEqual((self.waiting(), self.in_flight()), (items('g', 'h'), items(*'abcdef')))
+        # A batch of one is the first item alone
+        asked.clear()
+        self.assertEqual(self.queue.claim(1), items('g'))
+        self.assertEqual(asked, ['blmove'])
+        # And a queue that runs out part way gives what it had
+        asked.clear()
+        self.assertEqual(self.queue.claim(10), items('h'))
+        self.assertEqual(asked, ['blmove', 'eval'])
+        self.assertEqual(self.waiting(), [])
 
     # -- acknowledging ----------------------------------------------------
 
@@ -407,3 +447,152 @@ class OwnershipTest(unittest.TestCase):
         swept, requeued = recover_orphans(self.redis, KEY, prefix='host')
         self.assertEqual((swept, requeued), (1, 1))
         self.assertEqual(running.in_flight(), 1)
+
+
+class ConsumerClientTest(unittest.TestCase):
+
+    def test_the_consumers_client_never_sends_a_command_again(self):
+        made = {}
+        consumer_client({'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'pw'},  # nosec B105
+                        connect=lambda **kwargs: made.update(kwargs))
+        self.assertEqual((made['host'], made['port'], made['db'], made['password']),
+                         ('valkey', 6379, 0, 'pw'))
+        self.assertEqual(made['retry'].get_retries(), 0)
+
+
+@unittest.skipUnless(os.environ.get('TB_TEST_VALKEY'), 'set TB_TEST_VALKEY to run against a real Valkey')
+class RealValkeyTest(unittest.TestCase):
+    """The queue's Lua in a real Valkey, as the fake does it in Python.
+
+    Set TB_TEST_VALKEY=redis://host:port/db to run it, on a database it may empty.
+    """
+
+    def setUp(self):
+        from redis import Redis  # pylint: disable=import-outside-toplevel
+        self.redis = Redis.from_url(os.environ['TB_TEST_VALKEY'])
+        self.redis.flushdb()
+        self.addCleanup(self.redis.flushdb)
+
+    @staticmethod
+    def story(redis):
+        """Claims of every size, an acknowledgement and a requeue; what each gave, and both lists."""
+        queue = ListQueue(redis, KEY, 'worker1-01')
+        queue.reserve()
+        for name in 'abcdefgh':
+            queue.push(name)
+        seen = [queue.claim(3), queue.claim(1)]
+        queue.ack(2)
+        seen.append(queue.claim(10))
+        seen.append(queue.requeue([b'f', b'g', b'h']))
+        queue.release()
+        return seen, redis.lrange(KEY, 0, -1), redis.lrange(queue.processing_key, 0, -1)
+
+    def test_the_lua_does_what_the_fake_does(self):
+        real = self.story(self.redis)
+        self.assertEqual(real, self.story(FakeRedis()))
+        self.assertEqual(real, ([items('a', 'b', 'c'), items('d'), items(*'efgh'), 3],
+                                items('f', 'g', 'h'), items('c', 'd', 'e')))
+
+    def test_a_claim_whose_reply_is_lost_is_raised_and_nothing_is_lost(self):
+        """A reply lost on the way back is an error, not a claim sent again.
+
+        A claim sent again moves a second run of items, and the reply names
+        only those, so acknowledging them would trim the first run unindexed.
+        Here a proxy drops the claim script's reply.
+        """
+        from urllib.parse import urlsplit
+        from redis import Redis
+        from redis.exceptions import ConnectionError as ValkeyConnectionError
+        url = urlsplit(os.environ['TB_TEST_VALKEY'])
+        proxy = DroppingProxy(url.hostname, url.port or 6379, b'EVAL')
+        self.addCleanup(proxy.close)
+        # With a timeout, so a proxy that fails to drop the connection fails
+        # the test rather than hanging it
+        client = consumer_client({'host': '127.0.0.1', 'port': proxy.port,
+                                  'db': int(url.path.strip('/') or 0), 'password': None},  # nosec B105
+                                 connect=lambda **kwargs: Redis(socket_timeout=10, **kwargs))
+        queue = ListQueue(client, KEY, 'worker1-01')
+        for n in range(20):
+            self.redis.rpush(KEY, f'e{n}')
+        with self.assertRaises(ValkeyConnectionError):
+            queue.claim(5)
+        # Each item moved is in the processing list, for recovery to handle,
+        # and none was moved twice
+        recovered = ListQueue(self.redis, KEY, 'worker1-01').recover()
+        self.assertEqual(recovered, items(*[f'e{n}' for n in range(5)]))
+        self.assertEqual(self.redis.llen(KEY), 15)
+
+
+class DroppingProxy:
+    """A TCP proxy to Valkey that loses one reply, and its connection.
+
+    The reply lost is the one to the first command containing `marker`.
+    """
+
+    def __init__(self, host, port, marker):
+        """Listens on a free local port, passing on to Valkey at host:port."""
+        import socket
+        import threading
+        self.upstream = (host, port)
+        self.marker = marker
+        self.dropped = False
+        self.server = socket.socket()
+        self.server.bind(('127.0.0.1', 0))
+        self.server.listen()
+        self.port = self.server.getsockname()[1]
+        self.sockets = [self.server]
+        threading.Thread(target=self.accept, daemon=True).start()
+
+    def accept(self):
+        import socket
+        import threading
+        while True:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            upstream = socket.create_connection(self.upstream)
+            self.sockets += [client, upstream]
+            pending = []
+            threading.Thread(target=self.forward, args=(client, upstream, pending, True), daemon=True).start()
+            threading.Thread(target=self.forward, args=(upstream, client, pending, False), daemon=True).start()
+
+    def forward(self, source, target, pending, asking):
+        while True:
+            try:
+                data = source.recv(65536)
+            except OSError:
+                return
+            if not data:
+                return
+            if asking and not self.dropped and self.marker in data:
+                pending.append(True)
+            elif not asking and pending:
+                # The reply to the marked command: lose it, and the connection
+                pending.clear()
+                self.dropped = True
+                for sock in (source, target):
+                    self.drop(sock)
+                return
+            try:
+                target.sendall(data)
+            except OSError:
+                return
+
+    @staticmethod
+    def drop(sock):
+        """Ends the connection.
+
+        On Linux close() alone does not while another thread waits on the
+        socket, so the far end would never hear of it.
+        """
+        import socket
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        sock.close()
+
+    def close(self):
+        for sock in self.sockets:
+            self.drop(sock)

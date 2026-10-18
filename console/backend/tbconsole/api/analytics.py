@@ -345,7 +345,7 @@ async def pivot(body: PivotBody, request: Request,  # pylint: disable=too-many-l
 
 
 @router.get('/trends')
-async def trends(days: int = 90, _: Principal = Depends(require(rbac.EVENTS_READ)),
+async def trends(days: int = 90, _: Principal = Depends(require(rbac.EVENTS_READ)),  # pylint: disable=too-many-locals  # a series per figure
                  db: AsyncSession = Depends(get_session),
                  search: SearchClient = Depends(search_client)) -> dict:
     """Daily counts from the rollups, which outlive the indices."""
@@ -353,11 +353,14 @@ async def trends(days: int = 90, _: Principal = Depends(require(rbac.EVENTS_READ
         raise HTTPException(status.HTTP_400_BAD_REQUEST, 'days is between 7 and 730')
     today = datetime.now(timezone.utc).date()
     first = today - timedelta(days=days - 1)
-    rows = (await db.execute(select(DailyStat).where(DailyStat.day >= first)
-                             .order_by(DailyStat.day))).scalars().all()
+    # The four columns, as plain rows rather than objects: two years of
+    # counts can be two hundred thousand rows, and making an object of each
+    # took most of a second
+    rows = (await db.execute(select(DailyStat.day, DailyStat.dimension, DailyStat.key, DailyStat.count)
+                             .where(DailyStat.day >= first).order_by(DailyStat.day))).all()
     by_day: dict = defaultdict(lambda: defaultdict(dict))
-    for row in rows:
-        by_day[row.day][row.dimension][row.key] = row.count
+    for day, dimension, key, count in rows:
+        by_day[day][dimension][key] = count
     dates = [first + timedelta(days=i) for i in range(days)]
 
     def series(dimension: str, key: str = '') -> list[int]:

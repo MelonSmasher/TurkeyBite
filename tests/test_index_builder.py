@@ -340,6 +340,54 @@ class RebuildStabilityTest(unittest.TestCase):
             index.close()
 
 
+class ClaimsMemoTest(unittest.TestCase):
+    """A worker remembers what a key's probe found, but only for the file it read it from."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='tb-memo-')
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = os.path.join(self.root, 'domains.tbidx')
+        build({'*.evil.example.com': {'list': {'malware'}},
+               'ads.example.net': {'list': {'ads'}}}, path=self.path, built_at=1000)
+        self.index = DomainIndex(self.path)
+        self.addCleanup(self.index.close)
+
+    def searches(self):
+        return unittest.mock.patch.object(self.index, '_find', wraps=self.index._find)
+
+    def test_a_key_probed_again_is_not_searched_for_again(self):
+        hosts = ('a.evil.example.com', 'b.evil.example.com', 'ads.example.net', 'nothing.example.org')
+        first = [self.index.match(host) for host in hosts]
+        with self.searches() as find:
+            again = [self.index.match(host) for host in hosts]
+        self.assertEqual(again, first)
+        self.assertEqual(find.call_count, 0)
+        # A key never probed is searched for as before: here the host, its www
+        # alias and its subtree, while its parents' subtrees were probed already
+        with self.searches() as find:
+            self.index.match('c.evil.example.com')
+        self.assertEqual(find.call_count, 3)
+
+    def test_a_rebuilt_index_is_answered_from_the_new_file(self):
+        self.assertEqual(self.index.lookup('x.evil.example.com')[0], ['malware'])
+        build({'*.evil.example.com': {'list': {'phishing'}}}, path=self.path, built_at=2000)
+        self.assertTrue(self.index.reload_if_changed())
+        self.assertEqual(self.index.lookup('x.evil.example.com')[0], ['phishing'])
+
+    def test_a_closed_index_answers_nothing_it_remembers(self):
+        self.index.match('x.evil.example.com')
+        self.index.close()
+        with self.assertRaises(TypeError):
+            self.index.match('x.evil.example.com')
+
+    def test_it_holds_at_most_so_many(self):
+        from libtb import index as index_module
+        with unittest.mock.patch.object(index_module, 'CLAIMS_MEMO_MAX', 3):
+            for i in range(10):
+                self.index.match(f'host{i}.example.org')
+                self.assertLessEqual(len(self.index._claims_memo), 3)
+
+
 class BuildLogTest(unittest.TestCase):
     """The librarian names the list files nobody configured, so they can go."""
 

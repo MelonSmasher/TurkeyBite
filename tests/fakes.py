@@ -24,7 +24,7 @@ publish is half done, say.
 import fnmatch
 import json
 
-from libtb.queue import ACK_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
+from libtb.queue import ACK_SCRIPT, CLAIM_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
 from libtb.radius import RECORD_SCRIPT
 
 
@@ -144,6 +144,14 @@ class FakeRedis(object):
         self._did('eval', keys[0])
         if script == RECORD_SCRIPT:
             return self._record(keys, *args)
+        if script == CLAIM_SCRIPT:
+            claimed = []
+            while len(claimed) < int(args[0]):
+                item = self.lmove(keys[0], keys[1], 'LEFT', 'RIGHT')
+                if item is None:
+                    break
+                claimed.append(item)
+            return claimed
         held = self.data.get(_key(keys[0]))
         mine = held == _bytes(args[0])
         if script == RENEW_SCRIPT:
@@ -508,19 +516,23 @@ class FakeRedis(object):
 
 
 class FakePipeline(object):
-    """Queues UNLINKs and runs them on execute, recording how many each time."""
+    """Queues UNLINKs and GETs and runs them on execute, recording how many each time."""
 
     def __init__(self, redis):
         self.redis = redis
         self.queued = []
 
     def unlink(self, *keys):
-        self.queued.extend(_key(key) for key in keys)
+        for key in keys:
+            self.queued.append(lambda key=_key(key): int(self.redis.data.pop(key, None) is not None))
+        return self
+
+    def get(self, key):
+        self.queued.append(lambda: self.redis.get(key))
         return self
 
     def execute(self):
-        results = [1 if self.redis.data.pop(key, None) is not None else 0
-                   for key in self.queued]
+        results = [command() for command in self.queued]
         self.redis.executions.append(len(self.queued))
         self.queued = []
         return results

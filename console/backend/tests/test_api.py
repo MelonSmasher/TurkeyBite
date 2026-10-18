@@ -5,12 +5,12 @@
 # is code that ships.
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from tbconsole import db
-from tbconsole.models import AuditEvent, Finding, Rule, Webhook
+from tbconsole.models import AuditEvent, DailyStat, Finding, Rule, Webhook
 
 from .conftest import login, make_user
 
@@ -286,8 +286,17 @@ async def test_exports_neutralise_spreadsheet_formulas_and_are_audited(client, s
     rows = response.text.splitlines()
     assert rows[0] == 'bite.requested,bite.client_user'  # nosec B101
     assert rows[1].startswith('"\'=HYPERLINK') and rows[1].endswith("'+cmd")  # nosec B101
+    # Only the columns are asked for, and never the raw packet
+    assert search.bodies[0]['_source'] == {'includes': ['bite.requested', 'bite.client_user'],  # nosec B101
+                                           'excludes': ['packet']}
     async with db.sessionmaker()() as session:
         assert (await session.execute(select(AuditEvent).where(AuditEvent.action == 'events.export'))).scalar_one()  # nosec B101
+    # NDJSON is the events whole
+    answers = iter([{'hits': {'total': {'value': 1}, 'hits': hits}}, {'hits': {'total': {'value': 1}, 'hits': []}}])
+    response = await client.post('/api/v1/events/export', headers=headers,
+                                 json={'query': '', 'format': 'ndjson', 'columns': ['domain'], 'limit': 10})
+    assert response.json() == {'_id': '1', '_index': 'tb-index-2026-10-05', **hits[0]['_source']}  # nosec B101
+    assert search.bodies[-1]['_source'] is True  # nosec B101
 
 
 async def test_viewers_cannot_export(client):
@@ -333,11 +342,64 @@ async def test_search_unavailability_is_a_503(client, search):
     assert response.status_code == 503 and response.json()['code'] == 'search_unavailable'  # nosec B101
 
 
-async def test_security_headers_are_set(client):
+async def test_security_headers_are_set(client, search):
     response = await client.get('/api/v1/auth/config')
     assert "default-src 'self'" in response.headers['content-security-policy']  # nosec B101
     assert response.headers['x-frame-options'] == 'DENY'  # nosec B101
     assert response.headers['cache-control'] == 'no-store'  # nosec B101
+    # On refusals, and on what is streamed, too
+    refused = await client.get('/api/v1/findings')
+    assert refused.status_code == 401 and refused.headers['x-content-type-options'] == 'nosniff'  # nosec B101
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    streamed = await client.post('/api/v1/events/export', headers=headers, json={'format': 'csv'})
+    assert streamed.headers['referrer-policy'] == 'same-origin'  # nosec B101
+    assert streamed.headers['cache-control'] == 'no-store'  # nosec B101
+    live = await client.get('/api/v1/events/live', params={'query': 'AND'})
+    assert live.status_code == 400 and live.headers['x-frame-options'] == 'DENY'  # nosec B101
+    # The caller's time zone decides where their day starts
+    days = {}
+    for zone in ('UTC', 'Pacific/Kiritimati'):
+        answer = await client.post('/api/v1/events/histogram', headers={**headers, 'X-Timezone': zone},
+                                   json={'from': 'now/d', 'to': 'now'})
+        days[zone] = answer.json()['range']['from'][10:]
+    assert days == {'UTC': 'T00:00:00.000Z', 'Pacific/Kiritimati': 'T10:00:00.000Z'}  # nosec B101
+
+
+async def test_answers_go_compressed_to_those_that_take_it(client, search):
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    packed = await client.get('/api/v1/fields', headers={'Accept-Encoding': 'gzip'})
+    plain = await client.get('/api/v1/fields', headers={'Accept-Encoding': 'identity'})
+    assert packed.headers['content-encoding'] == 'gzip' and 'content-encoding' not in plain.headers  # nosec B101
+    assert packed.json() == plain.json()  # nosec B101
+    assert packed.num_bytes_downloaded * 3 < len(plain.content)  # nosec B101
+    assert packed.headers['vary'] == 'Accept-Encoding'  # nosec B101
+    assert packed.headers['cache-control'] == 'no-store'  # nosec B101
+    # An export streams compressed, and arrives as it was
+    hits = [{'_id': str(i), '_index': 'tb-index-2026-10-05',
+             '_source': {'@timestamp': '2026-10-05T10:00:00Z', 'bite': {'client_user': f'user{i}'}}}
+            for i in range(200)]
+    for encoding in ('gzip', 'identity'):
+        answers = iter([{'hits': {'total': {'value': 200}, 'hits': hits}},
+                        {'hits': {'total': {'value': 200}, 'hits': []}}])
+        search.answer = lambda body, index=None: next(answers)
+        export = await client.post('/api/v1/events/export', json={'format': 'csv', 'columns': ['user']},
+                                   headers={**headers, 'Accept-Encoding': encoding})
+        assert export.text.splitlines() == ['bite.client_user', *[f'user{i}' for i in range(200)]]  # nosec B101
+        assert export.headers.get('content-encoding') == ('gzip' if encoding == 'gzip' else None)  # nosec B101
+
+
+async def test_server_sent_events_go_uncompressed(app, client):
+    # Compressed, a live tail's events would wait in the compressor rather
+    # than reach the page as they happen
+    from fastapi.responses import StreamingResponse
+
+    async def events():
+        yield 'event: hit\ndata: {}\n\n' * 100
+    app.add_api_route('/api/v1/test-stream', lambda: StreamingResponse(events(), media_type='text/event-stream'))
+    response = await client.get('/api/v1/test-stream', headers={'Accept-Encoding': 'gzip'})
+    assert response.status_code == 200 and 'content-encoding' not in response.headers  # nosec B101
 
 
 async def test_the_overview_puts_each_answer_where_it_belongs(client, search):
@@ -580,3 +642,61 @@ async def test_a_profile_gives_the_address_a_machine_was_last_seen_at(client, se
     search.answer = lambda body, index=None: {'hits': {'total': {'value': 0}, 'hits': []}, 'aggregations': {}}
     quiet = (await client.get('/api/v1/entities/profile', params={'field': 'user', 'value': 'ava'})).json()
     assert quiet['latest_address'] is None  # nosec B101
+
+
+async def test_the_times_pages_count_by_are_indexed():
+    # The overview, the findings page and the rules page count findings by
+    # when they were raised, the time to resolve and pruning read them by
+    # when they were closed, and the webhook pages and pruning read
+    # deliveries by when they were made: each would read every row kept
+    async with db.sessionmaker()() as session:
+        await session.execute(text('SET LOCAL enable_seqscan = off'))
+        for table, column in (('findings', 'created_at'), ('findings', 'resolved_at'),
+                              ('webhook_deliveries', 'created_at')):
+            plan = (await session.execute(text(
+                f'EXPLAIN SELECT count(*) FROM {table} WHERE {column} >= now()'))).scalars().all()
+            assert any(f'ix_{table}_{column}' in line for line in plan), plan  # nosec B101
+
+
+async def test_trends_put_each_days_counts_in_their_series(client):
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    today = datetime.now(timezone.utc).date()
+    rows = {0: [('total', '', 900), ('severity', 'high', 40), ('severity', 'medium', 60),
+                ('type', 'dns', 800), ('type', 'browser.history', 100), ('unique', 'clients', 12),
+                ('risk', 'threat.malware', 5), ('risk', 'privacy.tracking', 400),
+                ('purpose', 'social.media', 70), ('response_code', 'NXDOMAIN', 9)],
+            2: [('total', '', 500), ('severity', 'low', 7), ('risk', 'policy.vpn', 9),
+                ('unique', 'users', 3)]}
+    async with db.sessionmaker()() as session:
+        for ago, counts in rows.items():
+            for dimension, key, count in counts:
+                session.add(DailyStat(day=today - timedelta(days=ago), dimension=dimension, key=key,
+                                      count=count))
+        await session.commit()
+    trend = (await client.get('/api/v1/trends', params={'days': 7})).json()
+    assert trend['days'][-1] == today.isoformat() and len(trend['days']) == 7  # nosec B101
+    assert trend['total'] == [0, 0, 0, 0, 500, 0, 900]  # nosec B101
+    assert trend['notable'] == [0, 0, 0, 0, 0, 0, 100]  # nosec B101
+    assert trend['severity']['low'] == [0, 0, 0, 0, 7, 0, 0]  # nosec B101
+    assert list(trend['types']) == ['dns', 'browser.history']  # nosec B101
+    assert trend['clients'][-1] == 12 and trend['users'][-3] == 3  # nosec B101
+    # Tracking is noise, never a trend of its own
+    assert list(trend['risks']) == ['policy.vpn', 'threat.malware']  # nosec B101
+    assert trend['purposes'] == {'social.media': [0, 0, 0, 0, 0, 0, 70]}  # nosec B101
+    assert trend['nxdomain'][-1] == 9  # nosec B101
+    assert trend['coverage']['days_counted'] == 2  # nosec B101
+    assert trend['coverage']['first_counted_day'] == (today - timedelta(days=2)).isoformat()  # nosec B101
+
+
+async def test_the_audit_logs_actions_are_each_listed_once_in_order(client):
+    await make_user('root', role='admin')
+    await login(client, 'root')
+    async with db.sessionmaker()() as session:
+        for action in ('rule.update', 'entity.view', 'auth.login', 'entity.view', 'rule.update',
+                       'entity.view', 'domain.view'):
+            session.add(AuditEvent(actor_type='session', actor_name='root', action=action, details={}))
+        await session.commit()
+    actions = (await client.get('/api/v1/audit/actions')).json()
+    # The sign-in just made is in the log too
+    assert actions == ['auth.login', 'domain.view', 'entity.view', 'rule.update']  # nosec B101

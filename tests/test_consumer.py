@@ -59,7 +59,8 @@ HOSTS = [{'uri': 'http://search-1:9200', 'username': 'admin', 'password': 'Not-t
          {'uri': 'http://search-2:9200', 'username': 'admin', 'password': 'Not-the-default.1'}]
 BOTH_DOWN = {'http://search-1:9200': 'refuse', 'http://search-2:9200': 'refuse'}
 
-# The bulk settings delivery is tested under. None is the shipped default.
+# The bulk settings delivery is tested under. None, no bulk section, is off,
+# as for a config.yaml from before the setting; the shipped example has it on
 BULK_OFF = None
 BULK_FULL = {'enable': True, 'size': 2, 'interval_sec': 3600}    # flushes at 2
 BULK_DUE = {'enable': True, 'size': 500, 'interval_sec': 0}      # flushes every event

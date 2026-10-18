@@ -82,6 +82,13 @@ INCIDENTAL = 'incidental'
 # agreeing with its original is not a second opinion.
 Source = namedtuple('Source', 'name publisher trust local derived_from')
 
+# Keys whose claims each process remembers, per open file. Every .com host
+# probes *.com, and DNS traffic asks after the same names again and again, so
+# most probes are answered without a binary search. Forgotten all at once when
+# full, and whenever the file is reopened. Each is a name and a reference to a
+# shared tuple, so the most it holds is a few megabytes a process.
+CLAIMS_MEMO_MAX = 20000
+
 
 def reverse_labels(host):
     """www.example.com -> com.example.www"""
@@ -116,6 +123,9 @@ class DomainIndex(object):
         self._open()
 
     def _open(self):
+        # Claims by key, see CLAIMS_MEMO_MAX. They are this file's, so a
+        # reopened index, or a closed one, has none
+        self._claims_memo = {}
         self._fh = open(self.path, 'rb')
         st = os.fstat(self._fh.fileno())
         self._identity = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
@@ -178,6 +188,7 @@ class DomainIndex(object):
         return sources, pos
 
     def close(self):
+        self._claims_memo = {}
         if self._map is not None:
             self._map.close()
             self._map = None
@@ -247,11 +258,19 @@ class DomainIndex(object):
         return entry
 
     def _claims_for(self, key):
+        claims = self._claims_memo.get(key)
+        if claims is not None:
+            return claims
         found = self._find(reverse_labels(key))
         if found is None:
-            return ()
-        (attr_id,) = struct.unpack_from('<I', self._map, self._attr_index_at + 4 * found)
-        return self._decode_attr(attr_id)
+            claims = ()
+        else:
+            (attr_id,) = struct.unpack_from('<I', self._map, self._attr_index_at + 4 * found)
+            claims = self._decode_attr(attr_id)
+        if len(self._claims_memo) >= CLAIMS_MEMO_MAX:
+            self._claims_memo.clear()
+        self._claims_memo[key] = claims
+        return claims
 
     def _uint32s(self, at, count):
         """`count` little-endian uint32s from the file, compactly.
