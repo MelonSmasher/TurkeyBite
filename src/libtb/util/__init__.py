@@ -1,3 +1,11 @@
+"""What the librarian and the command line share.
+
+Reading config.yaml; downloading and cleaning the domain lists and the
+lists they are checked against, the TLDs and the Public Suffix List;
+loading them into Valkey for the older lookups; and building, publishing
+and fetching the domain index the workers categorise with.
+"""
+
 import fcntl
 import glob
 import sys
