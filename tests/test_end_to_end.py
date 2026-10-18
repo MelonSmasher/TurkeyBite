@@ -3,12 +3,12 @@
 Every other suite tests a piece. This one takes a Packetbeat DNS event and a
 Browserbeat history event shaped as the beats publish them, see
 tests/fixtures, and runs each through what a worker runs: config.yaml read by
-read_config, the sieve, the processor, and the OpenSearch client, which is the
-only thing replaced. The worker's directory is laid out as the containers lay
-it out, with list files, host_files.json, the Public Suffix List and an index
-built from them as the librarian builds it, and config.yaml is the shipped
-example with only what a test cannot have changed: no reverse DNS, and the
-index rather than Valkey.
+read_config, the sieve, the processor, and the OpenSearch client, which with
+the bulk request sent through it is the only thing replaced. The worker's
+directory is laid out as the containers lay it out, with list files,
+host_files.json, the Public Suffix List and an index built from them as the
+librarian builds it, and config.yaml is the shipped example with only what a
+test cannot have changed: no reverse DNS, and the index rather than Valkey.
 
 The fixtures' shapes come from what the code reads and from the beats
 themselves: Packetbeat 8's DNS output, which trims the trailing dot from
@@ -86,11 +86,21 @@ class EndToEndTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()) as err:
             self.processor = Processor(self.config['processor'], self.config['redis'])
         self.startup = err.getvalue()
-        # The OpenSearch client, the one thing replaced; it keeps what it is sent
+        # The OpenSearch client, the one thing replaced, with the bulk request
+        # the shipped example sends through it; they keep what they are sent
         self.client = mock.Mock()
         patcher = mock.patch.object(P, 'opensearch_client', return_value=self.client)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.sent = []
+        patcher = mock.patch.object(P.opensearch_helpers, 'bulk', side_effect=self.bulk)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def bulk(self, client, docs, **kwargs):
+        docs = list(docs)
+        self.sent.append(docs)
+        return len(docs), []
 
     def close_indexes(self):
         for index in P._index_handles.values():
@@ -130,16 +140,23 @@ class EndToEndTest(unittest.TestCase):
         return read_config('config.yaml')
 
     def ship(self, name):
-        """Runs one recorded event through the sieve and the processor."""
+        """Runs one recorded event through the sieve and the processor, and flushes it, as a consumer does."""
         packet = fixture(name)
+        # A consumer has the processor raise rather than drop, and flushes the
+        # batch before acknowledging it
+        self.processor.strict_delivery = True
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
             self.assertTrue(self.filters.should_process(packet))
             self.processor.process_packet(packet)
+            self.assertEqual(self.sent, [])
+            self.assertEqual(self.processor.flush_bulk(force=True), 1)
         self.assertEqual(err.getvalue(), '')
-        self.client.index.assert_called_once()
-        call = self.client.index.call_args.kwargs
-        self.assertRegex(call['index'], r'^tb-index-\d{4}-\d{2}-\d{2}$')
-        return call['body']
+        # One bulk request for the batch, not one an event
+        self.client.index.assert_not_called()
+        self.assertEqual(len(self.sent), 1)
+        [doc] = self.sent[0]
+        self.assertRegex(doc['_index'], r'^tb-index-\d{4}-\d{2}-\d{2}$')
+        return doc['_source']
 
     def test_the_shipped_example_starts_as_documented(self):
         # Unverified https is reported once at start, and nothing else is said

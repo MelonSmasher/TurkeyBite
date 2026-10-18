@@ -1097,10 +1097,13 @@ class Processor(object):
         self.ship_bite(bite)
 
     def bulk_settings(self):
-        """Bulk buffering settings. Off by default, deliberately.
+        """Bulk buffering settings. On in the shipped config.example.yaml, off when not set.
 
         Consumers acknowledge their processing lists only after flushing, so
-        buffered events remain recoverable if the worker stops uncleanly.
+        buffered events remain recoverable if the worker stops uncleanly, and
+        a batch as one request is several times the events a second of a
+        request each. Off when not set, so a config.yaml written before the
+        setting existed ships as it always has.
         """
         settings = (self.config['elastic'].get('bulk') or {})
         return (
