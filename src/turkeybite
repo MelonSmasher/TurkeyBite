@@ -405,5 +405,121 @@ def overlap(index_path, threshold, min_entries):
         print(line)
 
 
+@cli.command('uncategorised')
+@click.option('--days', default=7, show_default=True,
+              help='How far back to look, in days.')
+@click.option('--top', default=200, show_default=True,
+              help='How many domains to list.')
+@click.option('--by', 'order', type=click.Choice(['clients', 'lookups']), default='clients',
+              show_default=True,
+              help='Rank by distinct clients, which one busy device cannot inflate, or by lookups.')
+@click.option('--exclude', multiple=True,
+              help='A registrable domain to leave out, such as your own. Repeatable.')
+@click.option('--index', 'pattern', default=None,
+              help='Indices to read. Defaults to the daily indices workers write, '
+                   '<processor.elastic.index_prefix>-2*.')
+@click.option('--write', 'out', type=click.Path(dir_okay=False), default=None,
+              help='Write a file to fill in and give to `turkeybite label`, such as '
+                   'lists/to-label.txt, instead of printing the list.')
+@click.option('--suggest', 'use_claude', is_flag=True, default=False,
+              help='Ask Claude to suggest a category for each domain, filled in for you to '
+                   'check. Sends the domain names, and nothing else, to Anthropic. Needs '
+                   'ANTHROPIC_API_KEY.')
+def uncategorised(days, top, order, exclude, pattern, out, use_claude):
+    """List the domains no list names, most used first, to label them.
+
+    A few hundred domains are most of a deployment's lookups, so labelling the
+    top of this list covers more of its own traffic than any list it could
+    download. Write the list with --write, put a category after each domain
+    you know, then run `turkeybite label` on the file. Only domain names and
+    counts are read, never who looked a domain up.
+    """
+    from opensearchpy.exceptions import OpenSearchException
+    from libtb.retag import client_for, default_pattern
+    from libtb.uncategorised import offered, report, review_lines
+
+    config = read_config()
+    try:
+        pattern = pattern or default_pattern(config['processor']['elastic']['index_prefix'])
+        client = client_for(config['processor']['elastic'], pattern)
+    except (OSError, KeyError, IndexError, TypeError, ValueError) as e:
+        raise click.ClickException(f'configuration: {e}')
+    try:
+        rows = report(client, pattern, days, top, order, exclude)
+    except (OpenSearchException, OSError, KeyError) as e:
+        raise click.ClickException(f'OpenSearch: {e}')
+    finally:
+        client.close()
+    if not rows:
+        click.echo(f'Every DNS lookup in {pattern} over the last {days} days has a category.')
+        return
+    suggestions = {}
+    if use_claude:
+        from libtb.uncategorised.suggest import Unavailable, suggest
+        click.echo(f'Asking Claude about {len(rows)} domains', err=True)
+        try:
+            suggestions = suggest([row.domain for row in rows], offered(),
+                                  log=lambda m: click.echo(m, err=True))
+        except Unavailable as e:
+            raise click.ClickException(f'{e}. Set ANTHROPIC_API_KEY in the container, or run '
+                                       'without --suggest.')
+        click.echo(f'Claude suggested a category for {len(suggestions)} of them', err=True)
+    heading = (f'Uncategorised domains in {pattern}, the last {days} days, '
+               f'by {"distinct clients" if order == "clients" else "lookups"}.')
+    lines = review_lines(rows, heading, suggestions)
+    if out:
+        with open(out, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(lines) + '\n')
+        click.echo(f'Wrote {len(rows)} domains to {out}. Put a category after each one '
+                   f'you know, then run: turkeybite label {out}')
+    else:
+        for line in lines:
+            if not line.startswith('#'):
+                click.echo(line)
+
+
+@cli.command('label')
+@click.argument('path', type=click.Path(exists=True, dir_okay=False))
+@click.option('--apply', 'apply_now', is_flag=True, default=False,
+              help='Add the labels. Without it nothing is written and the report says '
+                   'what would be added.')
+def label(path, apply_now):
+    """Add the domains labelled in a file to your own lists.
+
+    PATH is a file `turkeybite uncategorised --write` made, with a category
+    put after each domain to label. Each goes in lists/<category>/custom,
+    which covers the domain and every name under it and is never overwritten
+    by a list refresh. With --apply the index is rebuilt, so workers use the
+    labels within minutes. Events already stored keep their old categories
+    until `turkeybite retag --apply`.
+    """
+    from libtb.uncategorised import apply, read_labels
+    from libtb.util import index_config
+
+    with open(path, encoding='utf-8') as handle:
+        labels, problems = read_labels(handle)
+    for problem in problems:
+        click.echo(problem, err=True)
+    if problems:
+        raise click.ClickException(f'{len(problems)} lines need fixing in {path}; nothing was added')
+    added = apply(labels, write=apply_now)
+    if not added:
+        click.echo('Nothing to add: no domain has a category after it, or every one is '
+                   'already labelled.')
+        return
+    for category, domains in sorted(added.items()):
+        click.echo(f'{category}: {len(domains)} {"added" if apply_now else "to add"}, '
+                   f'in lists/{category}/custom')
+        for domain in domains:
+            click.echo(f'  {domain}')
+    if not apply_now:
+        click.echo('Dry run: nothing written. Run again with --apply to add them.')
+        return
+    if index_config(read_config())['mode'] == 'index':
+        build_domain_index()
+    else:
+        click.echo('Valkey lookups read the lists when the librarian next refreshes them.')
+
+
 if __name__ == '__main__':
     cli()
