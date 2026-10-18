@@ -9,7 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from sqlalchemy import func, select, text
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__, db
 from .analysis import engine
@@ -42,26 +43,44 @@ DOCS_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.j
             "https://fastapi.tiangolo.com; connect-src 'self'; frame-ancestors 'none'")
 
 
-class SecurityHeaders(BaseHTTPMiddleware):
-    """Security headers on every response, and the caller's time zone for each request."""
+class SecurityHeaders:
+    """Security headers on every response, and the caller's time zone for each request.
 
-    async def dispatch(self, request: Request, call_next):
+    A plain ASGI middleware rather than a BaseHTTPMiddleware, which runs the
+    rest of the app in a task of its own and passes every response through a
+    stream to it: a fifth of a millisecond on each request.
+    """
+
+    def __init__(self, app: ASGIApp):
+        """Wraps `app`."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Takes the request's time zone, then adds the headers the response does not set itself."""
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
         use_zone(request.headers.get('x-timezone'))
-        response: Response = await call_next(request)
-        docs = get_settings().api_docs and request.url.path in ('/api/docs', '/api/docs/oauth2-redirect')
-        response.headers.setdefault('Content-Security-Policy', DOCS_CSP if docs else CSP)
-        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
-        response.headers.setdefault('X-Frame-Options', 'DENY')
-        response.headers.setdefault('Referrer-Policy', 'same-origin')
-        response.headers.setdefault('Permissions-Policy',
-                                    'camera=(), microphone=(), geolocation=(), payment=()')
-        if get_settings().cookie_secure:
-            response.headers.setdefault('Strict-Transport-Security',
-                                        'max-age=31536000; includeSubDomains')
-        if request.url.path.startswith('/api/'):
-            response.headers.setdefault('Cache-Control', 'no-store')
-        return response
+        path = request.url.path
+
+        async def send_with_headers(message: Message) -> None:
+            if message['type'] == 'http.response.start':
+                headers = MutableHeaders(scope=message)
+                docs = get_settings().api_docs and path in ('/api/docs', '/api/docs/oauth2-redirect')
+                headers.setdefault('Content-Security-Policy', DOCS_CSP if docs else CSP)
+                headers.setdefault('X-Content-Type-Options', 'nosniff')
+                headers.setdefault('X-Frame-Options', 'DENY')
+                headers.setdefault('Referrer-Policy', 'same-origin')
+                headers.setdefault('Permissions-Policy',
+                                   'camera=(), microphone=(), geolocation=(), payment=()')
+                if get_settings().cookie_secure:
+                    headers.setdefault('Strict-Transport-Security',
+                                       'max-age=31536000; includeSubDomains')
+                if path.startswith('/api/'):
+                    headers.setdefault('Cache-Control', 'no-store')
+            await send(message)
+        await self.app(scope, receive, send_with_headers)
 
 
 async def bootstrap_admin() -> None:

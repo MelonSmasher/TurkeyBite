@@ -342,11 +342,28 @@ async def test_search_unavailability_is_a_503(client, search):
     assert response.status_code == 503 and response.json()['code'] == 'search_unavailable'  # nosec B101
 
 
-async def test_security_headers_are_set(client):
+async def test_security_headers_are_set(client, search):
     response = await client.get('/api/v1/auth/config')
     assert "default-src 'self'" in response.headers['content-security-policy']  # nosec B101
     assert response.headers['x-frame-options'] == 'DENY'  # nosec B101
     assert response.headers['cache-control'] == 'no-store'  # nosec B101
+    # On refusals, and on what is streamed, too
+    refused = await client.get('/api/v1/findings')
+    assert refused.status_code == 401 and refused.headers['x-content-type-options'] == 'nosniff'  # nosec B101
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    streamed = await client.post('/api/v1/events/export', headers=headers, json={'format': 'csv'})
+    assert streamed.headers['referrer-policy'] == 'same-origin'  # nosec B101
+    assert streamed.headers['cache-control'] == 'no-store'  # nosec B101
+    live = await client.get('/api/v1/events/live', params={'query': 'AND'})
+    assert live.status_code == 400 and live.headers['x-frame-options'] == 'DENY'  # nosec B101
+    # The caller's time zone decides where their day starts
+    days = {}
+    for zone in ('UTC', 'Pacific/Kiritimati'):
+        answer = await client.post('/api/v1/events/histogram', headers={**headers, 'X-Timezone': zone},
+                                   json={'from': 'now/d', 'to': 'now'})
+        days[zone] = answer.json()['range']['from'][10:]
+    assert days == {'UTC': 'T00:00:00.000Z', 'Pacific/Kiritimati': 'T10:00:00.000Z'}  # nosec B101
 
 
 async def test_the_overview_puts_each_answer_where_it_belongs(client, search):
