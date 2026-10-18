@@ -37,6 +37,8 @@ export interface Me {
   mfa_required: boolean;
   version: string;
   api_docs: boolean;
+  /** Whether /docs/ serves the documentation site */
+  docs: boolean;
 }
 
 export interface Bucket {

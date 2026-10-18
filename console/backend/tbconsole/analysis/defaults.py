@@ -36,12 +36,14 @@ def _any(field: str, values) -> str:
 DEFAULT_RULES: list[dict] = [
     # -- threats ------------------------------------------------------------
     {
-        'key': 'threat-domain', 'version': 1, 'category': 'threat',
+        'key': 'threat-domain', 'version': 2, 'category': 'threat',
         'name': 'Known threat domain contacted',
         'description': 'A lookup or visit to a domain the threat lists agree is malware, '
-                       'ransomware, phishing or command and control. One event is enough.',
+                       'ransomware, phishing, stalkerware or command and control. One event '
+                       'is enough.',
         'type': 'threshold', 'query': 'risk:(threat.malware OR threat.ransomware OR '
-                                      'threat.phishing OR threat.malicious OR threat.c2)',
+                                      'threat.phishing OR threat.malicious OR threat.c2 OR '
+                                      'threat.stalkerware)',
         'params': {'threshold': 1}, 'group_by': ENTITY, 'severity': 'critical', 'enabled': True,
         'interval_seconds': 300, 'window_seconds': 900, 'dedup_seconds': 4 * 3600,
         'tags': ['threat'], 'title_template': 'Threat domain contacted by {entity}',

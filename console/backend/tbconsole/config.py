@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # styles from a CDN, on the console's own origin. /api/openapi.json and
     # the app's API page describe the API either way
     api_docs: bool = False
+    # The documentation site's container, such as http://docs:8080, which the
+    # console serves at /docs/ to people who are signed in. Unset, there is
+    # no /docs/ and the app leaves the documentation out of its menus.
+    docs_url: str | None = None
 
     # -- webhooks -------------------------------------------------------------
     # Webhook URLs may not point at private, loopback or link-local addresses
@@ -130,6 +134,17 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_slash(cls, value):
         return value.rstrip('/')
+
+    @field_validator('docs_url')
+    @classmethod
+    def _check_docs(cls, value):
+        if not value or not value.strip():
+            return None
+        parts = urlsplit(value.strip())
+        if parts.scheme not in ('http', 'https') or not parts.hostname or parts.path.strip('/'):
+            raise ValueError('TBCONSOLE_DOCS_URL is the docs container\'s http:// or https:// '
+                             'address with no path, such as http://docs:8080')
+        return value.strip().rstrip('/')
 
     @field_validator('webhook_proxy')
     @classmethod

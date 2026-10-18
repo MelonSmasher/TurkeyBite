@@ -47,6 +47,7 @@ TAXONOMY = {
     'games': ((PURPOSE, 'gaming.platforms'),),
     'shopping': ((PURPOSE, 'commerce.retail'),),
     'news': ((PURPOSE, 'information.news'),),
+    'sports': ((PURPOSE, 'information.sports'),),
     'education': ((PURPOSE, 'information.education'),),
     'government': ((PURPOSE, 'information.government'),),
     'search': ((PURPOSE, 'information.search'),),
@@ -55,6 +56,7 @@ TAXONOMY = {
     'it': ((PURPOSE, 'technology.it-services'),),
     'development': ((PURPOSE, 'technology.development'),),
     'ai': ((PURPOSE, 'technology.ai'),),
+    'filehosting': ((PURPOSE, 'technology.file-hosting'),),
     # Pornography, gambling and drugs are content types. Whether they are a
     # policy violation is a separate question and belongs to policy
     # configuration, not baked into the content label.
@@ -74,6 +76,10 @@ TAXONOMY = {
     # Named "crypto" by its sources, which in a blocklist means cryptojacking
     # rather than currency sites
     'crypto': ((RISK, 'threat.cryptomining'),),
+    'stalkerware': ((RISK, 'threat.stalkerware'),),
+    # Booter and stresser services, which sell attacks on someone else's
+    # connection, often a rival in an online game
+    'ddos': ((RISK, 'threat.ddos-for-hire'),),
     'tracking': ((RISK, 'privacy.tracking'),),
     'windows-tracking': ((RISK, 'privacy.tracking'),),
     'advertising': ((RISK, 'privacy.advertising'),),
@@ -82,6 +88,15 @@ TAXONOMY = {
     'url-shorteners': ((RISK, 'policy.url-shortener'),),
     'proxy': ((RISK, 'policy.anonymiser'),),
     'vpn': ((RISK, 'policy.anonymiser'),),
+    # A device that uses a public encrypted resolver looks up everything after
+    # that around the network's own, so TurkeyBite stops seeing it
+    'doh': ((RISK, 'policy.encrypted-dns'),),
+    # Apps that sell the device's connection for others to route traffic
+    # through. Not an anonymiser: it hides other people, not the user.
+    'proxyware': ((RISK, 'policy.proxyware'),),
+    # Remote control and RMM tools: ordinary support work, and also what a
+    # tech support scam or an intruder installs first
+    'remote-access': ((RISK, 'policy.remote-access'),),
     'fake-news': ((RISK, 'editorial.fakenews'),),
     'fakenews': ((RISK, 'editorial.fakenews'),),
     'fascist': ((RISK, 'editorial.fascist'),),
@@ -166,7 +181,12 @@ SEVERITY = {
     'threat.fraud': 'medium',
     'threat.scam': 'medium',
     'threat.cryptomining': 'medium',
+    'threat.stalkerware': 'high',
+    'threat.ddos-for-hire': 'medium',
     'policy.anonymiser': 'medium',
+    'policy.encrypted-dns': 'medium',
+    'policy.proxyware': 'medium',
+    'policy.remote-access': 'low',
     'policy.piracy': 'low',
     'policy.url-shortener': 'low',
     'privacy.tracking': 'low',

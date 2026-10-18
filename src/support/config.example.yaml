@@ -50,11 +50,13 @@ processor:
   #           be measured on live traffic before switching over
   #
   # Only the index weighs its evidence (see `evidence` below), so it is the
-  # mode to run if false positives matter. Valkey asserts anything any list
-  # says, and in compare mode most disagreements are the index declining
-  # something Valkey would have asserted.
+  # mode to run if false positives matter, and what a new install runs. Valkey
+  # asserts anything any list says, and in compare mode most disagreements are
+  # the index declining something Valkey would have asserted. A config.yaml
+  # without this key is read as valkey, so an old install keeps what it had
+  # until it is switched; setup.py offers that.
   domain_index:
-    mode: valkey
+    mode: index
     path: lists/index/domains.tbidx
     # Where a worker gets the index file.
     #   file    it is already on local disk, single-node deployments
@@ -104,11 +106,11 @@ processor:
   # threats, and with `adult` Cloudflare's family resolver (1.1.1.3) on porn. A
   # block counts as one more independent publisher agreeing, never as evidence
   # on its own, and only in the exact shape each provider was measured to use,
-  # confirmed against its unfiltered resolver. Off by default: it sends those
-  # domain names, never client addresses, to Quad9 and Cloudflare, and needs
-  # outbound UDP and TCP port 53 to every address below. Unknown keys or bad
-  # values stop the worker at start. See "Asking public resolvers" in the
-  # README for what it sends and how often.
+  # confirmed against its unfiltered resolver. Off unless you turn it on, which
+  # setup.py asks about: it sends those domain names, never client addresses,
+  # to Quad9 and Cloudflare, and needs outbound UDP and TCP port 53 to every
+  # address below. Unknown keys or bad values stop the worker at start. See
+  # "Asking public resolvers" in the README for what it sends and how often.
   #   resolvers:
   #     enable: true
   #     adult: false            # also ask 1.1.1.3 about porn; about 1 in 20 wrong

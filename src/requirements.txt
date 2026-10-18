@@ -7,3 +7,5 @@ dnspython~=2.7.0
 # transitive dependency of opensearch-py, so a rebuild could drop it.
 python-dateutil~=2.9.0
 setuptools~=80.3.0
+# Only for `turkeybite uncategorised --suggest`, imported when it is asked for
+anthropic~=1.15.0

@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from sqlalchemy import func, select, text
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import __version__, db
+from . import __version__, db, docsite
 from .analysis import engine
 from .analysis.engine import Scheduler
 from .analysis.ruletypes import RuleError
@@ -94,6 +94,7 @@ async def lifespan(app: FastAPI):
     """Brings the built-in rules and dashboards up to date and runs the workers while the app is up."""
     settings = get_settings()
     app.state.search = SearchClient(settings)
+    app.state.docs = docsite.client()
     async with db.sessionmaker()() as session:
         await session.execute(text('SELECT 1'))
         synced = await engine.sync_builtin_rules(session)
@@ -117,6 +118,8 @@ async def lifespan(app: FastAPI):
         for worker in workers:
             await worker.stop()
         await app.state.search.close()
+        if app.state.docs is not None:
+            await app.state.docs.aclose()
         await db.dispose()
 
 
@@ -194,6 +197,12 @@ def create_app() -> FastAPI:  # noqa: MC0001  # the error handlers and routes ar
             return JSONResponse({'ok': False, 'detail': 'the database is not answering'},
                                 status_code=503)
         return {'ok': True}
+
+    if settings.docs_url:
+        @app.api_route('/docs', methods=['GET', 'HEAD'], include_in_schema=False)
+        @app.api_route('/docs/{path:path}', methods=['GET', 'HEAD'], include_in_schema=False)
+        async def docs(request: Request):
+            return await docsite.serve(request)
 
     static = settings.static_dir
     if static and Path(static).is_dir() and (Path(static) / 'index.html').is_file():

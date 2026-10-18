@@ -1,0 +1,118 @@
+/* The tutorial's steps, questions and progress bars, in the theme's colours. */
+
+.tb-step {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-left: 4px solid var(--md-primary-fg-color);
+  border-radius: 6px;
+  padding: 0.2rem 1rem 0.9rem;
+  margin: 1.2rem 0;
+}
+
+.tb-step.tb-step-done {
+  border-left-color: #2e7d32;
+  background: color-mix(in srgb, #2e7d32 6%, transparent);
+}
+
+.tb-step-toggle.md-button {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  padding: 0.35em 1em;
+}
+
+.tb-step-done .tb-step-toggle.md-button {
+  border-color: #2e7d32;
+  color: #2e7d32;
+}
+
+.tb-progress,
+.tb-module-progress {
+  display: block;
+  margin: 0.6rem 0 1rem;
+}
+
+.tb-module-progress {
+  margin: 0.3rem 0 0;
+  max-width: 22rem;
+}
+
+.tb-progress-label {
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0.25rem;
+}
+
+.tb-progress-track {
+  height: 0.45rem;
+  border-radius: 1rem;
+  background: var(--md-default-fg-color--lightest);
+  overflow: hidden;
+}
+
+.tb-progress-fill {
+  height: 100%;
+  background: var(--md-primary-fg-color);
+  transition: width 200ms ease;
+}
+
+.tb-modules > ol > li,
+.tb-modules > ul > li {
+  margin-bottom: 1rem;
+}
+
+.tb-quiz {
+  border: 1px dashed var(--md-default-fg-color--lighter);
+  border-radius: 6px;
+  padding: 0.2rem 1rem 0.8rem;
+  margin: 1.2rem 0;
+}
+
+.tb-quiz ol.tb-options,
+.tb-quiz ul.tb-options {
+  list-style: none;
+  margin-left: 0;
+  padding-left: 0;
+}
+
+.tb-quiz .tb-options li {
+  margin: 0.35rem 0;
+}
+
+.tb-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 6px;
+  padding: 0.45rem 0.7rem;
+}
+
+.tb-option:hover,
+.tb-option:focus-visible {
+  border-color: var(--md-accent-fg-color);
+}
+
+.tb-option.tb-right {
+  border-color: #2e7d32;
+  background: color-mix(in srgb, #2e7d32 10%, transparent);
+}
+
+.tb-option.tb-wrong {
+  border-color: #c62828;
+  background: color-mix(in srgb, #c62828 8%, transparent);
+}
+
+.tb-verdict {
+  font-weight: 600;
+  min-height: 1.2em;
+}
+
+.tb-verdict.tb-right { color: #2e7d32; }
+.tb-verdict.tb-wrong { color: #c62828; }
+
+a.tb-try::after {
+  content: ' ↗';
+}

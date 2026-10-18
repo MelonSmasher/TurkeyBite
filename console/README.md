@@ -52,7 +52,13 @@ cp console.env.example console.env    # fill in the secret key, passwords and Op
 docker compose --env-file console.env up -d --build
 ```
 
-For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), then run `docker compose --env-file console.env pull console` and `docker compose --env-file console.env up -d --no-build`. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../README.md#published-images).
+For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), and `TURKEYBITE_DOCS_IMAGE=ghcr.io/melonsmasher/turkeybite-docs:v1.2.3` beside it, then run `docker compose --env-file console.env pull console docs` and `docker compose --env-file console.env up -d --no-build`. Without the docs image set, `--no-build` finds no `turkeybite-docs:local` image to start. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../README.md#published-images).
+
+`docker-compose.yml` also builds and starts `docs`, the documentation site and
+tutorial, which the console serves at `/docs/` to people who are signed in and
+links under **Help** in the account menu. It publishes no port; the console
+reaches it at `TBCONSOLE_DOCS_URL`. Set `TURKEYBITE_DOCS_IMAGE` to use a
+published image instead of building it.
 
 Then sign in as the bootstrap admin from `console.env`, change its password,
 turn on its second factor, and remove `TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD`. Put
@@ -75,9 +81,9 @@ nothing runs twice. Set `TBCONSOLE_RUN_WORKERS=false` on replicas that should
 only serve.
 
 Housekeeping runs hourly: it deletes ended sessions, sent or abandoned webhook
-deliveries after `TBCONSOLE_DELIVERY_RETENTION_DAYS`, findings closed for longer
-than `TBCONSOLE_FINDING_RETENTION_DAYS` and audit events older than
-`TBCONSOLE_AUDIT_RETENTION_DAYS` (a year each by default; 0 keeps them). It also
+deliveries after `TBCONSOLE_DELIVERY_RETENTION_DAYS` (30 by default), findings
+closed for longer than `TBCONSOLE_FINDING_RETENTION_DAYS` and audit events older
+than `TBCONSOLE_AUDIT_RETENTION_DAYS` (a year each by default; 0 keeps them). It also
 looks up, by its directory entry, every directory account that still has a
 session or an API key, so someone removed from the directory, from every group
 that grants a role, or no longer matched by the sign-in filter (a disabled
@@ -302,7 +308,8 @@ plain.
   query bar until you click into it, raw events, and the address bar. Exports,
   copied queries and the audit log keep the real values; they are records.
 - A strict Content-Security-Policy, `X-Frame-Options: DENY`, `no-store` on the
-  API, and no inline script anywhere in the app.
+  API, and no inline script anywhere in the app. The documentation at `/docs/`
+  allows the theme's few inline scripts by their hashes, and no others.
 - Sign-ins, failed ones included, every change, every export and every look at a
   person's profile go to the audit log.
 

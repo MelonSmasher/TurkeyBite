@@ -346,4 +346,6 @@ async def me(principal: Principal = Depends(current_principal),
                              and user.role == 'admin' and not user.totp_enabled),
         'version': __version__,
         'api_docs': get_settings().api_docs,
+        # Whether /docs/ serves the documentation site
+        'docs': bool(get_settings().docs_url),
     }

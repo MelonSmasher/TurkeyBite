@@ -238,6 +238,7 @@ class PasswordInStepTest(Rerun):
         setup.setup_valkey = lambda: None
         setup.setup_docker_compose = lambda: None
         setup.setup_retention = lambda: None
+        setup.setup_categorisation = lambda: None
         setup.use_opensearch = True
 
         def choose_new():
@@ -371,6 +372,133 @@ class ComposeServicesTest(Rerun):
                 if node == 'worker':
                     self.assertEqual(set(services), {'turkeybite-worker'})
                     self.assertNotIn('depends_on', services['turkeybite-worker'])
+
+
+class CategorisationPromptTest(Rerun):
+    """A new install looks categories up in the index; an old one is offered it."""
+
+    def run_setup(self, setup):
+        setup.opensearch_admin_password = NEW
+        with mock.patch('builtins.print'):
+            setup.setup_categorisation()
+            setup.setup_config()
+        return self.config()['processor']
+
+    def existing_mode(self, mode, resolvers=False):
+        self.existing_install()
+        config = self.config()
+        config['processor']['domain_index']['mode'] = mode
+        config['processor']['evidence']['resolvers'] = {'enable': resolvers, 'timeout_sec': 0.3}
+        with open(os.path.join(self.root, 'config.yaml'), 'w') as fh:
+            yaml.safe_dump(config, fh)
+
+    def test_a_new_install_uses_the_index_and_asks_about_resolvers(self):
+        processor = self.run_setup(self.setup(yes_no=[True]))
+        self.assertEqual(processor['domain_index']['mode'], 'index')
+        self.assertTrue(processor['evidence']['resolvers']['enable'])
+
+    def test_a_new_install_can_decline_the_resolvers(self):
+        processor = self.run_setup(self.setup(yes_no=[False]))
+        self.assertEqual(processor['domain_index']['mode'], 'index')
+        self.assertFalse(processor['evidence']['resolvers']['enable'])
+
+    def test_an_install_on_valkey_is_offered_the_switch(self):
+        self.existing_mode('valkey')
+        processor = self.run_setup(self.setup(yes_no=[True, True]))
+        self.assertEqual(processor['domain_index']['mode'], 'index')
+        # The rest of the resolver settings an operator chose are kept
+        self.assertEqual(processor['evidence']['resolvers'], {'enable': True, 'timeout_sec': 0.3})
+        self.assertEqual(processor['evidence']['min_publishers'], 3)
+
+    def test_declining_the_switch_keeps_valkey_and_asks_nothing_more(self):
+        self.existing_mode('compare')
+        processor = self.run_setup(self.setup(yes_no=[False]))
+        self.assertEqual(processor['domain_index']['mode'], 'compare')
+        self.assertFalse(processor['evidence']['resolvers']['enable'])
+
+    def test_enter_keeps_the_resolver_choice_already_made(self):
+        self.existing_mode('index', resolvers=False)
+        setup = self.setup()
+        offered = []
+        setup.prompt_yes_no = lambda message, default=True: offered.append(default) or default
+        processor = self.run_setup(setup)
+        self.assertEqual(offered, [False])
+        self.assertFalse(processor['evidence']['resolvers']['enable'])
+
+    def test_a_config_from_before_the_resolvers_offers_them_off(self):
+        # Pressing Enter must not start sending names to Quad9 and Cloudflare
+        self.existing_mode('index')
+        config = self.config()
+        del config['processor']['evidence']['resolvers']
+        with open(os.path.join(self.root, 'config.yaml'), 'w') as fh:
+            yaml.safe_dump(config, fh)
+        setup = self.setup()
+        offered = []
+        setup.prompt_yes_no = lambda message, default=True: offered.append(default) or default
+        processor = self.run_setup(setup)
+        self.assertEqual(offered, [False])
+        self.assertFalse(processor['evidence']['resolvers']['enable'])
+
+    def librarian(self, yes_no):
+        setup = self.setup(yes_no=yes_no)
+        setup.components, setup.node_type = ['librarian'], 'librarian'
+        return self.run_setup(setup)['domain_index']
+
+    def test_a_librarian_on_valkey_publishes_first_and_keeps_loading_valkey(self):
+        # Worker nodes still in valkey mode read what it loads into Valkey,
+        # and a librarian in index mode stops loading it
+        self.existing_mode('valkey')
+        index = self.librarian([True])
+        self.assertEqual((index['mode'], index['publish']), ('valkey', True))
+
+    def test_a_publishing_librarian_switches_once_the_workers_have(self):
+        self.existing_mode('valkey')
+        self.librarian([True])
+        self.assertEqual(self.librarian([False])['mode'], 'valkey')
+        index = self.librarian([True])
+        self.assertEqual((index['mode'], index['publish']), ('index', True))
+
+    def test_a_librarian_that_will_not_publish_is_left_as_it_is(self):
+        self.existing_mode('compare')
+        index = self.librarian([False])
+        self.assertEqual((index['mode'], index.get('publish', False)), ('compare', False))
+
+    def test_a_worker_node_on_valkey_switches_to_the_published_index(self):
+        self.existing_mode('valkey')
+        setup = self.setup(yes_no=[True, False])
+        setup.components, setup.node_type = ['worker'], 'worker'
+        index = self.run_setup(setup)['domain_index']
+        self.assertEqual((index['mode'], index['source']), ('index', 'valkey'))
+
+    def test_nothing_is_asked_when_config_is_not_updated(self):
+        self.existing_mode('valkey')
+        setup = self.setup()
+        setup.update_config = False
+        processor = self.run_setup(setup)
+        self.assertEqual(processor['domain_index']['mode'], 'valkey')
+
+    def test_a_librarian_node_publishes_the_index_for_remote_workers(self):
+        setup = self.setup()
+        setup.components, setup.node_type = ['librarian'], 'librarian'
+        index = self.run_setup(setup)['domain_index']
+        self.assertEqual((index['mode'], index['publish'], index['source']), ('index', True, 'file'))
+
+    def test_a_worker_node_downloads_the_index(self):
+        setup = self.setup(yes_no=[True])
+        setup.components, setup.node_type = ['worker'], 'worker'
+        index = self.run_setup(setup)['domain_index']
+        self.assertEqual((index['mode'], index['publish'], index['source']), ('index', False, 'valkey'))
+
+    def test_a_rerun_in_index_mode_leaves_where_the_index_comes_from(self):
+        # Set by an operator for a worker on another host, which this script
+        # cannot see from an application node
+        self.existing_mode('index', resolvers=True)
+        config = self.config()
+        config['processor']['domain_index']['publish'] = True
+        with open(os.path.join(self.root, 'config.yaml'), 'w') as fh:
+            yaml.safe_dump(config, fh)
+        index = self.run_setup(self.setup(yes_no=[True]))['domain_index']
+        self.assertTrue(index['publish'])
 
 
 class RetentionPromptTest(Rerun):

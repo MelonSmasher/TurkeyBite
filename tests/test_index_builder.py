@@ -370,6 +370,84 @@ class BuildLogTest(unittest.TestCase):
         self.assertNotIn(os.path.join('news', 'turkeybite'), log)
 
 
+class ConcurrentBuildTest(unittest.TestCase):
+    """Two builds at once, the librarian's and `turkeybite label --apply`'s."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='tb-concurrent-')
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = os.path.join(self.root, 'domains.tbidx')
+
+    def test_each_build_writes_a_file_of_its_own_and_leaves_none_behind(self):
+        seen = []
+        real = tempfile.mkstemp
+
+        def watch(*args, **kwargs):
+            handle, name = real(*args, **kwargs)
+            seen.append(name)
+            return handle, name
+        with unittest.mock.patch.object(builder.tempfile, 'mkstemp', side_effect=watch):
+            build({'a.example': {'s': ['news']}}, path=self.path)
+            build({'b.example': {'s': ['news']}}, path=self.path)
+        self.assertEqual(len(set(seen)), 2)
+        self.assertEqual(os.listdir(self.root), ['domains.tbidx'])
+        # Readable as the file it replaced was, not the owner's only
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o644)
+
+    def test_a_build_that_fails_leaves_the_index_and_no_scraps(self):
+        build({'a.example': {'s': ['news']}}, path=self.path)
+        before = open(self.path, 'rb').read()
+        with unittest.mock.patch.object(builder, '_blob_offsets', side_effect=RuntimeError('disk')):
+            with self.assertRaises(RuntimeError):
+                build({'b.example': {'s': ['news']}}, path=self.path)
+        self.assertEqual(open(self.path, 'rb').read(), before)
+        self.assertEqual(os.listdir(self.root), ['domains.tbidx'])
+
+    def build_index(self):
+        import contextlib
+        import io
+        from libtb import util
+        out = io.StringIO()
+        settings = {'path': self.path, 'publish': False}
+        with unittest.mock.patch.object(util, 'read_config', return_value={}), \
+                unittest.mock.patch.object(util, 'index_config', return_value=settings), \
+                contextlib.redirect_stdout(out):
+            stats = util.build_domain_index()
+        return stats, out.getvalue()
+
+    def in_lists(self):
+        os.makedirs(os.path.join(self.root, 'lists'), exist_ok=True)
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+
+    def test_builds_take_turns(self):
+        """The file, its marker and what is published are one build's."""
+        import fcntl
+        import threading
+        import time
+        self.in_lists()
+        held = open(self.path + '.lock', 'w')
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        threading.Timer(0.3, fcntl.flock, (held, fcntl.LOCK_UN)).start()
+        began = time.monotonic()
+        stats, log = self.build_index()
+        self.assertIsNotNone(stats)
+        self.assertGreaterEqual(time.monotonic() - began, 0.3)
+        self.assertIn('Waiting for another build of the domain index to finish', log)
+
+    def test_a_killed_builds_file_is_removed_by_the_next(self):
+        self.in_lists()
+        stale = self.path + '.k1llt.new'
+        with open(stale, 'wb') as handle:
+            handle.write(b'half an index')
+        stats, log = self.build_index()
+        self.assertIsNotNone(stats)
+        self.assertNotIn('Waiting', log)
+        self.assertFalse(os.path.exists(stale))
+
+
 class NegativeControlTest(unittest.TestCase):
     """Proves both layers of the fix are load-bearing rather than decorative.
 

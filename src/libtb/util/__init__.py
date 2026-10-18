@@ -1,3 +1,13 @@
+"""What the librarian and the command line share.
+
+Reading config.yaml; downloading and cleaning the domain lists and the
+lists they are checked against, the TLDs and the Public Suffix List;
+loading them into Valkey for the older lookups; and building, publishing
+and fetching the domain index the workers categorise with.
+"""
+
+import fcntl
+import glob
 import sys
 import yaml
 import urllib.request
@@ -180,13 +190,41 @@ def build_domain_index(path=None, publish_to_valkey=None):
     Kept separate from the Valkey list load so both can coexist while the index
     is on trial. Never raises: a failed index build must not fail a list pull
     that otherwise succeeded, because the Valkey path is still there.
+
+    One build at a time, in this process or any other sharing the lists: the
+    librarian's refresh and `turkeybite label --apply` can overlap, and the
+    file, its generation marker and what is published must all be one build's.
     """
-    from libtb.index.builder import (apply_ignorelist, build, collect_entries,
-                                     load_sources, source_table, unconfigured_files)
-    from libtb.index import transport
     config = read_config()
     settings = index_config(config)
     target = path or settings['path']
+    try:
+        os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
+        lock = open(target + '.lock', 'w', encoding='utf-8')
+    except OSError as e:
+        print('Failed to build domain index: ' + str(e), file=sys.stderr)
+        return None
+    with lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print('Waiting for another build of the domain index to finish')
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        # A build that was killed left its file behind, as large as the
+        # index, and holding the lock no other build is writing one now
+        for stale in glob.glob(glob.escape(target) + '.*.new'):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        return _build_domain_index(config, settings, target, publish_to_valkey)
+
+
+def _build_domain_index(config, settings, target, publish_to_valkey):  # pylint: disable=too-many-locals  # build_domain_index's body as it always was
+    """build_domain_index, holding the build lock."""
+    from libtb.index.builder import (apply_ignorelist, build, collect_entries,
+                                     load_sources, source_table, unconfigured_files)
+    from libtb.index import transport
     if publish_to_valkey is None:
         publish_to_valkey = settings['publish']
     # One generation number for the file, the manifest and the marker, so all

@@ -7,6 +7,7 @@ consistent file until it chooses to reopen.
 
 import os
 import struct
+import tempfile
 import time
 
 from libtb.index import (FLAG_LOCAL, HEADER, MAGIC, NEGATION, TRUST_LEVELS,
@@ -230,31 +231,41 @@ def build(entries, path=DEFAULT_PATH, built_at=None, sources=None):
     if len(cat_names) > 0xFFFF or len(src_names) > 0xFFFF:
         raise ValueError('category or source table exceeds the uint16 id space')
 
-    pending = path + '.new'
-    with open(pending, 'wb') as out:
-        out.write(HEADER.pack(
-            MAGIC,
-            int(built_at if built_at is not None else time.time()),
-            len(rows),
-            len(attr_table),
-            len(cat_names),
-            len(src_names),
-        ))
-        for name in cat_names:
-            out.write(_string(name))
-        for name in src_names:
-            out.write(_source_record(name, sources))
-        out.write(_attr_section(attr_table))
-        # offsets, then the attribute index, then the blob
-        out.write(_blob_offsets(rows))
-        out.write(b''.join(struct.pack('<I', attr_id) for _, attr_id in rows))
-        for name, _ in rows:
-            out.write(name)
+    # A file of this build's own beside the index, so two builds at once, the
+    # librarian's and `turkeybite label --apply` say, never write into one
+    # file, and the index is replaced by whichever finishes last, whole
+    handle, pending = tempfile.mkstemp(prefix=os.path.basename(path) + '.', suffix='.new',
+                                       dir=directory or '.')
+    try:
+        with os.fdopen(handle, 'wb') as out:
+            out.write(HEADER.pack(
+                MAGIC,
+                int(built_at if built_at is not None else time.time()),
+                len(rows),
+                len(attr_table),
+                len(cat_names),
+                len(src_names),
+            ))
+            for name in cat_names:
+                out.write(_string(name))
+            for name in src_names:
+                out.write(_source_record(name, sources))
+            out.write(_attr_section(attr_table))
+            # offsets, then the attribute index, then the blob
+            out.write(_blob_offsets(rows))
+            out.write(b''.join(struct.pack('<I', attr_id) for _, attr_id in rows))
+            for name, _ in rows:
+                out.write(name)
 
-        out.flush()
-        os.fsync(out.fileno())
-
-    os.replace(pending, path)
+            out.flush()
+            os.fsync(out.fileno())
+        # As readable as the file it replaces: mkstemp makes it the owner's only
+        os.chmod(pending, 0o644)
+        os.replace(pending, path)
+    except BaseException:
+        if os.path.exists(pending):
+            os.remove(pending)
+        raise
     return {
         'path': path,
         'domains': len(rows),
