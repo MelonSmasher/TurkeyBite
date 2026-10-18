@@ -44,8 +44,7 @@ def consume(consumer, batch_size, quiet):
     """Drain the durable queue: sieve, enrich, index, then acknowledge."""
     import os
     import socket
-    from redis import Redis
-    from libtb.queue import ListQueue
+    from libtb.queue import ListQueue, consumer_client
     from libtb.consumer import Consumer
 
     config = read_config()
@@ -58,12 +57,7 @@ def consume(consumer, batch_size, quiet):
         print('Note: processor.elastic.bulk.enable is off. This path acknowledges '
               'after the flush, so batching is safe here and worth turning on.')
 
-    redis = Redis(
-        host=queue_conf['host'],
-        port=queue_conf['port'],
-        db=queue_conf['db'],
-        password=queue_conf['password']
-    )
+    redis = consumer_client(queue_conf)
     queue = ListQueue(redis, queue_conf['channel'], name)
     # One process per name: two would share a processing list, and a requeue
     # by one could take the other's batch

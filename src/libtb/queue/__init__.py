@@ -36,6 +36,10 @@ import re
 import socket
 import uuid
 
+from redis import Redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
+
 PROCESSING_PREFIX = 'processing:'
 
 # A consumer that requeues a stranded list moves one item at a time, so it
@@ -172,6 +176,21 @@ for _ = 1, tonumber(ARGV[2]) do
 end
 return moved
 """
+
+
+def consumer_client(queue_conf, connect=Redis):
+    """The Valkey client a consumer claims, acknowledges and requeues with.
+
+    It never sends a command again by itself, as redis-py otherwise does when
+    a reply is lost. A claim whose reply was lost has still happened in
+    Valkey, so sending it again moves a second run of items and the reply
+    names only those: acknowledging them then trims the first run, which was
+    never indexed, up to a whole batch of it. The lost reply is raised
+    instead, and Consumer.run handles everything in the processing list again
+    before it claims more.
+    """
+    return connect(host=queue_conf['host'], port=queue_conf['port'], db=queue_conf['db'],
+                   password=queue_conf['password'], retry=Retry(NoBackoff(), 0))
 
 
 class NotOwner(Exception):

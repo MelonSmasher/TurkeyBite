@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'src'))
 sys.path.insert(0, HERE)
 
 from fakes import Blocked, FakeRedis
-from libtb.queue import ListQueue, NotOwner, recover_orphans
+from libtb.queue import ListQueue, NotOwner, consumer_client, recover_orphans
 
 KEY = 'turkeybite'
 
@@ -449,6 +449,17 @@ class OwnershipTest(unittest.TestCase):
         self.assertEqual(running.in_flight(), 1)
 
 
+class ConsumerClientTest(unittest.TestCase):
+
+    def test_the_consumers_client_never_sends_a_command_again(self):
+        made = {}
+        consumer_client({'host': 'valkey', 'port': 6379, 'db': 0, 'password': 'pw'},
+                        connect=lambda **kwargs: made.update(kwargs))
+        self.assertEqual((made['host'], made['port'], made['db'], made['password']),
+                         ('valkey', 6379, 0, 'pw'))
+        self.assertEqual(made['retry'].get_retries(), 0)
+
+
 @unittest.skipUnless(os.environ.get('TB_TEST_VALKEY'), 'set TB_TEST_VALKEY to run against a real Valkey')
 class RealValkeyTest(unittest.TestCase):
     """The queue's Lua in a real Valkey, as the fake does it in Python.
@@ -481,3 +492,89 @@ class RealValkeyTest(unittest.TestCase):
         self.assertEqual(real, self.story(FakeRedis()))
         self.assertEqual(real, ([items('a', 'b', 'c'), items('d'), items(*'efgh'), 3],
                                 items('f', 'g', 'h'), items('c', 'd', 'e')))
+
+    def test_a_claim_whose_reply_is_lost_is_raised_and_nothing_is_lost(self):
+        """A reply lost on the way back is an error, not a claim sent again.
+
+        A claim sent again moves a second run of items, and the reply names
+        only those, so acknowledging them would trim the first run unindexed.
+        Here a proxy drops the claim script's reply.
+        """
+        from urllib.parse import urlsplit
+        from redis.exceptions import ConnectionError as ValkeyConnectionError
+        url = urlsplit(os.environ['TB_TEST_VALKEY'])
+        proxy = DroppingProxy(url.hostname, url.port or 6379, b'EVAL')
+        self.addCleanup(proxy.close)
+        client = consumer_client({'host': '127.0.0.1', 'port': proxy.port,
+                                  'db': int(url.path.strip('/') or 0), 'password': None})
+        queue = ListQueue(client, KEY, 'worker1-01')
+        for n in range(20):
+            self.redis.rpush(KEY, f'e{n}')
+        with self.assertRaises(ValkeyConnectionError):
+            queue.claim(5)
+        # Each item moved is in the processing list, for recovery to handle,
+        # and none was moved twice
+        recovered = ListQueue(self.redis, KEY, 'worker1-01').recover()
+        self.assertEqual(recovered, items(*[f'e{n}' for n in range(5)]))
+        self.assertEqual(self.redis.llen(KEY), 15)
+
+
+class DroppingProxy:
+    """A TCP proxy to Valkey that closes the connection instead of passing on
+    the reply to the first command containing `marker`."""
+
+    def __init__(self, host, port, marker):
+        import socket
+        import threading
+        self.upstream = (host, port)
+        self.marker = marker
+        self.dropped = False
+        self.server = socket.socket()
+        self.server.bind(('127.0.0.1', 0))
+        self.server.listen()
+        self.port = self.server.getsockname()[1]
+        self.sockets = [self.server]
+        threading.Thread(target=self.accept, daemon=True).start()
+
+    def accept(self):
+        import socket
+        import threading
+        while True:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            upstream = socket.create_connection(self.upstream)
+            self.sockets += [client, upstream]
+            pending = []
+            threading.Thread(target=self.forward, args=(client, upstream, pending, True), daemon=True).start()
+            threading.Thread(target=self.forward, args=(upstream, client, pending, False), daemon=True).start()
+
+    def forward(self, source, target, pending, asking):
+        while True:
+            try:
+                data = source.recv(65536)
+            except OSError:
+                return
+            if not data:
+                return
+            if asking and not self.dropped and self.marker in data:
+                pending.append(True)
+            elif not asking and pending:
+                # The reply to the marked command: lose it, and the connection
+                pending.clear()
+                self.dropped = True
+                for sock in (source, target):
+                    sock.close()
+                return
+            try:
+                target.sendall(data)
+            except OSError:
+                return
+
+    def close(self):
+        for sock in self.sockets:
+            try:
+                sock.close()
+            except OSError:
+                pass

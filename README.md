@@ -234,7 +234,7 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    spelled `data_type` is not recognised, so the output silently falls back to
    its default of `list` no matter what value you give it.
 
-   Packetbeat RPUSHes onto a Valkey list. Workers claim a batch, sieve and enrich it, index it, in one bulk request when `processor.elastic.bulk.enable` is true, as the shipped `config.yaml` has it, and only then acknowledge. Enable Valkey persistence to retain the list across Valkey restarts; `LLEN` gives a backlog metric, and a burst makes
+   Packetbeat RPUSHes onto a Valkey list. Workers claim a batch, sieve and enrich it, index it, in one bulk request when `processor.elastic.bulk.enable` is true, as `config.example.yaml` has it, and only then acknowledge. Enable Valkey persistence to retain the list across Valkey restarts; `LLEN` gives a backlog metric, and a burst makes
    the list grow visibly rather than disappearing. A batch OpenSearch does not
    take goes back on the list instead of being acknowledged, whether
    `processor.elastic.bulk` is on or off: when every host refuses it, and when
@@ -257,7 +257,10 @@ To collect network data, you'll need to configure either Packetbeat or Browserbe
    stops answering the worker rests the same way rather than exiting, so a
    Valkey restart does not leave it stopped for good once supervisor runs out
    of retries, and when Valkey is back it handles again whatever it had in
-   flight before claiming more.
+   flight before claiming more. The worker's own connection to Valkey never
+   sends a command again by itself: a claim whose reply was lost has still
+   moved its items, and is handled by that recovery rather than claimed
+   twice.
 
    A batch a worker had claimed when it died stays in that consumer's
    processing list. Each worker container, as it starts, requeues what is
