@@ -10,9 +10,12 @@ source it cannot read, fails the build.
 """
 
 import ast
+import base64
+import hashlib
 import importlib.util
 import inspect
 import json
+import os
 import re
 from pathlib import Path
 
@@ -195,3 +198,67 @@ def on_page_markdown(markdown, page, **kwargs):
             raise ValueError(f'{page.file.src_path} asks for an unknown table, {name}')
         return TABLES[name]()
     return MARKER.sub(table, markdown)
+
+
+# The site's Content-Security-Policy, which nginx sends with every page. Its
+# scripts are the bundles, which 'self' allows, and a few lines the theme
+# writes into each page, which are allowed by their hashes rather than by
+# 'unsafe-inline': the site is on the console's own origin, where any other
+# inline script could act as whoever is signed in.
+POLICY = ("default-src 'self'; script-src 'self' {hashes}; style-src 'self' 'unsafe-inline'; "
+          "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; "
+          "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+SCRIPT = re.compile(r'<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>', re.S)
+HANDLER = re.compile(r'\son[a-z]+\s*=|href\s*=\s*["\']?\s*javascript:', re.I)
+RUNNABLE = ('', 'text/javascript', 'module')
+
+
+def inline_hashes(html):
+    """The CSP hashes of the inline scripts a page runs."""
+    hashes = set()
+    for match in SCRIPT.finditer(html):
+        attrs = match.group('attrs')
+        if re.search(r'\ssrc\s*=', attrs):
+            continue
+        kind = re.search(r'type\s*=\s*"([^"]*)"', attrs)
+        if (kind.group(1) if kind else '') not in RUNNABLE:
+            continue
+        digest = hashlib.sha256(match.group('body').encode('utf-8')).digest()
+        hashes.add("'sha256-" + base64.b64encode(digest).decode() + "'")
+    return hashes
+
+
+CANONICAL = re.compile(r'\s*<link rel="canonical"[^>]*>')
+
+
+def on_post_build(config, **kwargs):
+    """Writes the policy to TBDOCS_CSP_FILE, for nginx, when the image is built.
+
+    A page with an inline event handler or a javascript: link fails the
+    build, since no hash can allow it. The sitemap and each page's canonical
+    link go: they would name site_url's host, which is a placeholder, since
+    the site is served at each deployment's own address, behind sign-in.
+    """
+    for name in ('sitemap.xml', 'sitemap.xml.gz'):
+        if os.path.exists(os.path.join(config['site_dir'], name)):
+            os.remove(os.path.join(config['site_dir'], name))
+    hashes = set()
+    for folder, _, files in os.walk(config['site_dir']):
+        for name in files:
+            if not name.endswith('.html'):
+                continue
+            path = os.path.join(folder, name)
+            with open(path, encoding='utf-8') as handle:
+                html = handle.read()
+            if CANONICAL.search(html):
+                html = CANONICAL.sub('', html)
+                with open(path, 'w', encoding='utf-8') as handle:
+                    handle.write(html)
+            if HANDLER.search(SCRIPT.sub('', html)):
+                raise ValueError(f'{path} has an inline event handler or a javascript: link, '
+                                 f'which the site\'s Content-Security-Policy would block')
+            hashes |= inline_hashes(html)
+    target = os.environ.get('TBDOCS_CSP_FILE')
+    if target:
+        with open(target, 'w', encoding='utf-8') as handle:
+            handle.write(POLICY.format(hashes=' '.join(sorted(hashes))))

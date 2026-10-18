@@ -12,7 +12,7 @@ A rule is a TBQL query, which picks the events it looks at, and a type, which sa
 
 Rules are grouped as **Threats**, **Policy**, **Content**, **Anomalies**, **Health**, which watches TurkeyBite itself, and **Your rules**. Each row has a switch to turn it on or off, its type, how often it runs, its severity, when it last ran or whether it is failing, and a sparkline of the findings it raised over the last 14 days. Badges mark a rule you have **Modified**, one with an **Update available**, and how many **exceptions** it has. [Built-in rules](../reference/rules.md) lists every shipped rule, with what each looks for.
 
-A built-in rule can be changed but not deleted. A changed one keeps your change when the console is upgraded, and is marked as having an update available; **Reset to default** brings back the shipped one.
+A built-in rule can be changed but not deleted. A changed one keeps your change when the console is upgraded, and is marked as having an update available; **Reset to default** in the rules list, or **Reset** in the rule's editor, brings back the shipped one.
 
 </div>
 

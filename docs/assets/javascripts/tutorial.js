@@ -119,9 +119,10 @@
 
   function setUpTryLinks(root) {
     root.querySelectorAll('a.tb-try').forEach(function (link) {
-      // One console tab, reused by every link, beside the tutorial
+      // One console tab, reused by every link, beside the tutorial. The
+      // console is this site's own origin, and noopener would open a new
+      // tab every time
       link.target = 'tbconsole';
-      link.rel = 'noopener';
     });
   }
 

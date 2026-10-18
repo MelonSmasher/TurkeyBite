@@ -14,7 +14,10 @@ Only GET and HEAD are passed on, the path as it was asked for and checked
 first, so the container is never asked for anything outside /docs/. What it
 answers is streamed back as it came, compressed or not, with the headers a
 browser needs and none of the container's own; caching is made private,
-since only someone signed in may see it.
+since only someone signed in may see it. The pages' Content-Security-Policy
+comes from the site's build, which allows the theme's inline scripts by
+their hashes: the site shares the console's origin, so 'unsafe-inline'
+would let any inline script act as whoever is signed in.
 """
 
 from urllib.parse import quote, unquote
@@ -22,7 +25,6 @@ from urllib.parse import quote, unquote
 import httpx
 from fastapi import Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response, StreamingResponse
-from starlette.background import BackgroundTask
 
 from . import db
 from .config import get_settings
@@ -31,14 +33,17 @@ from .security import sessions
 PREFIX = '/docs'
 # Headers asked with that the site's answer depends on
 FORWARD = ('accept', 'accept-encoding', 'if-none-match', 'if-modified-since')
-# Headers of the answer that are passed back
+# Headers of the answer that are passed back. The Content-Security-Policy
+# among them is the one the site's build wrote, which allows its own inline
+# scripts by their hashes and nothing else inline.
 RETURN = ('content-type', 'content-length', 'content-encoding', 'etag', 'last-modified',
-          'location', 'vary')
+          'location', 'vary', 'content-security-policy')
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 
-# The site's pages carry inline scripts, which the console's own policy
-# forbids. Everything else stays as strict: nothing from another origin.
-CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+# For an answer that comes without the site's policy, from an older docs
+# image say: the app's own, which blocks the pages' inline scripts rather
+# than let any inline script run on the console's origin
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; "
        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
 
@@ -105,6 +110,14 @@ async def serve(request: Request) -> Response:
     cache = [part.strip() for part in upstream.headers.get('cache-control', 'no-cache').split(',')]
     returned['cache-control'] = ', '.join(
         ['private'] + [part for part in cache if part and part not in ('public', 'private')])
-    returned['content-security-policy'] = CSP
-    return StreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
-                             headers=returned, background=BackgroundTask(upstream.aclose))
+    returned.setdefault('content-security-policy', CSP)
+    return StreamingResponse(_relay(upstream), status_code=upstream.status_code, headers=returned)
+
+
+async def _relay(upstream: httpx.Response):
+    """The answer's body as it came, its connection let go however the stream ends."""
+    try:
+        async for chunk in upstream.aiter_raw():
+            yield chunk
+    finally:
+        await upstream.aclose()

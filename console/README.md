@@ -52,7 +52,7 @@ cp console.env.example console.env    # fill in the secret key, passwords and Op
 docker compose --env-file console.env up -d --build
 ```
 
-For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), then run `docker compose --env-file console.env pull console` and `docker compose --env-file console.env up -d --no-build`. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../README.md#published-images).
+For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), and `TURKEYBITE_DOCS_IMAGE=ghcr.io/melonsmasher/turkeybite-docs:v1.2.3` beside it, then run `docker compose --env-file console.env pull console docs` and `docker compose --env-file console.env up -d --no-build`. Without the docs image set, `--no-build` finds no `turkeybite-docs:local` image to start. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../README.md#published-images).
 
 `docker-compose.yml` also builds and starts `docs`, the documentation site and
 tutorial, which the console serves at `/docs/` to people who are signed in and
@@ -308,7 +308,8 @@ plain.
   query bar until you click into it, raw events, and the address bar. Exports,
   copied queries and the audit log keep the real values; they are records.
 - A strict Content-Security-Policy, `X-Frame-Options: DENY`, `no-store` on the
-  API, and no inline script anywhere in the app.
+  API, and no inline script anywhere in the app. The documentation at `/docs/`
+  allows the theme's few inline scripts by their hashes, and no others.
 - Sign-ins, failed ones included, every change, every export and every look at a
   person's profile go to the audit log.
 

@@ -11,7 +11,7 @@
 # the digests deliberately, with the tag beside them saying what they are
 FROM python:3.13-slim@sha256:3dd7cc108ec1493442514f5c2a871af6af0ec31d768ff6e378a93340c3b3db5f AS build
 ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    NO_MKDOCS_2_WARNING=true TBDOCS_SITE_URL=http://localhost/docs/
+    NO_MKDOCS_2_WARNING=true TBDOCS_CSP_FILE=/csp/policy
 WORKDIR /src
 COPY docker/docs/requirements.txt docker/docs/requirements.txt
 RUN pip install --require-hashes -r docker/docs/requirements.txt
@@ -27,10 +27,14 @@ COPY src/libtb/taxonomy src/libtb/taxonomy
 COPY src/support/config.example.yaml src/support/config.example.yaml
 COPY src/turkeybite src/turkeybite
 COPY vols/lists/host_files.example.json vols/lists/host_files.example.json
-RUN mkdocs build --strict --site-dir /site
+# The build also writes the site's Content-Security-Policy, which allows its
+# inline scripts by their hashes; nginx sends it with every page
+RUN mkdir /csp && mkdocs build --strict --site-dir /site \
+    && printf 'add_header Content-Security-Policy "%s" always;\n' "$(cat /csp/policy)" > /csp/docs-csp.conf
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
 COPY docker/docs/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /csp/docs-csp.conf /etc/nginx/docs-csp.conf
 COPY --from=build /site /usr/share/nginx/html/docs
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

@@ -15,6 +15,7 @@ from tbconsole.config import Settings, get_settings
 from tests.conftest import login, make_user
 
 DOCS = 'http://docs.test'
+SITE_POLICY = "default-src 'self'; script-src 'self' 'sha256-abc='"
 
 
 class Body(httpx.AsyncByteStream):
@@ -45,6 +46,8 @@ class FakeDocs:
         body = b'<html>' + request.url.path.encode() + b'</html>' * 200
         headers = {'content-type': 'text/html', 'cache-control': 'public, max-age=3600',
                    'etag': '"abc"', 'server': 'nginx/1.29', 'x-internal': 'secret'}
+        if request.url.path != '/docs/no-policy/':
+            headers['content-security-policy'] = SITE_POLICY
         if 'gzip' in request.headers.get('accept-encoding', ''):
             body = gzip.compress(body)
             headers['content-encoding'] = 'gzip'
@@ -96,13 +99,20 @@ async def test_a_page_is_passed_on_to_someone_signed_in(docs_client, docs_app):
     assert response.status_code == 200
     assert response.text.startswith('<html>/docs/tutorial/</html>')
     assert response.headers['etag'] == '"abc"'
-    # Private, since only someone signed in may see it, and with the site's
-    # own policy rather than the app's
+    # Private, since only someone signed in may see it, and with the policy
+    # the site's build wrote rather than the app's
     assert response.headers['cache-control'] == 'private, max-age=3600'
-    assert "script-src 'self' 'unsafe-inline'" in response.headers['content-security-policy']
+    assert response.headers['content-security-policy'] == SITE_POLICY
     assert response.headers['x-frame-options'] == 'DENY'
     assert 'x-internal' not in response.headers
     assert 'nginx' not in response.headers.get('server', '')
+
+
+async def test_an_answer_without_the_sites_policy_gets_one_with_no_inline_script(docs_client):
+    await signed_in(docs_client)
+    policy = (await docs_client.get('/docs/no-policy/')).headers['content-security-policy']
+    assert "script-src 'self';" in policy
+    assert 'unsafe-inline' not in policy.split('script-src')[1].split(';')[0]
 
 
 async def test_the_cookies_never_reach_the_container(docs_client, docs_app):

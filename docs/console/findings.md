@@ -26,7 +26,7 @@ A rule raises at most one open finding per person or machine, or per value for a
 |---|---|---|
 | New | nobody has looked yet | the rule |
 | Acknowledged | someone has seen it | **Acknowledge** |
-| In progress | someone is working it | **Start**, which also makes you the owner |
+| In progress | someone is working it | **Start**, which makes you the owner if it has none |
 | Resolved | dealt with | **Resolve** |
 | False positive | not what the rule thought | **Mark a false positive** |
 

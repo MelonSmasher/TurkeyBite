@@ -48,15 +48,23 @@
   }
 
   function onlinkkey(event: KeyboardEvent) {
-    if (event.key === 'ArrowRight') {
+    // Escape closes the submenu alone, not the account menu around it
+    if (event.key === 'ArrowRight' || event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       hide();
     }
   }
+
+  // The pointer passing on closes it, but not while the keyboard is in it
+  function onleave() {
+    hovered = false;
+    if (!menu?.contains(document.activeElement)) open = false;
+  }
 </script>
 
-<div class="help" role="none" onmouseenter={onenter} onmouseleave={() => { open = false; hovered = false; }}>
-  <button class="menu-item" bind:this={button} aria-haspopup="true" aria-expanded={open}
+<div class="help" role="none" onmouseenter={onenter} onmouseleave={onleave}>
+  <button class="menu-item" bind:this={button} aria-expanded={open}
           {onclick} onkeydown={onbuttonkey}>
     <LifeBuoy size={15} /> Help <ChevronLeft size={15} class="chevron" />
   </button>

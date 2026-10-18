@@ -72,6 +72,7 @@ page is refused.
     query bar until you click into it, raw events, and the address bar. Exports,
     copied queries and the audit log keep the real values; they are records.
 -   A strict Content-Security-Policy, `X-Frame-Options: DENY`, `no-store` on the
-    API, and no inline script anywhere in the app.
+    API, and no inline script anywhere in the app. The documentation at `/docs/`
+    allows the theme's few inline scripts by their hashes, and no others.
 -   Sign-ins, failed ones included, every change, every export and every look at a
     person's profile go to the audit log.

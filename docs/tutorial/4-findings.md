@@ -40,7 +40,7 @@ A finding moves through these statuses:
 |---|---|
 | **New** | Nobody has looked yet. |
 | **Acknowledged** | Someone has seen it. |
-| **In progress** | Someone is working it. **Start** sets this and makes you the owner. |
+| **In progress** | Someone is working it. **Start** sets this, and makes you the owner if it has none. |
 | **Resolved** | Dealt with. |
 | **False positive** | Not what the rule thought. |
 

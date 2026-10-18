@@ -8,7 +8,11 @@
 # built, by docker/docs/hooks.py, so they cannot fall behind it.
 site_name: TurkeyBite
 site_description: Documentation and tutorial for TurkeyBite and its console
-site_url: !ENV [TBDOCS_SITE_URL, 'http://localhost/docs/']
+# Only its path matters: it is where the console serves the site, and what the
+# 404 page's links are made from. The sitemap and canonical links it would
+# also make are left out by docker/docs/hooks.py, since a site behind sign-in
+# has no use for them and its real address is each deployment's own.
+site_url: http://localhost/docs/
 docs_dir: docs
 strict: true
 

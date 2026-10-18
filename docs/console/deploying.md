@@ -6,7 +6,7 @@ cp console.env.example console.env    # fill in the secret key, passwords and Op
 docker compose --env-file console.env up -d --build
 ```
 
-For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), then run `docker compose --env-file console.env pull console` and `docker compose --env-file console.env up -d --no-build`. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../pipeline/images.md).
+For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), and `TURKEYBITE_DOCS_IMAGE=ghcr.io/melonsmasher/turkeybite-docs:v1.2.3` beside it, then run `docker compose --env-file console.env pull console docs` and `docker compose --env-file console.env up -d --no-build`. Without the docs image set, `--no-build` finds no `turkeybite-docs:local` image to start. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../pipeline/images.md).
 
 Then sign in as the bootstrap admin from `console.env`, change its password,
 turn on its second factor, and remove `TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD`. Put

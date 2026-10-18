@@ -72,5 +72,46 @@ class GeneratedTablesTest(unittest.TestCase):
         self.assertIn('&lt;prefix&gt;-NN', HOOKS.pipeline_cli())
 
 
+class SitePolicyTest(unittest.TestCase):
+    """The site's inline scripts are allowed by their hashes, and nothing else inline."""
+
+    def test_a_runnable_inline_script_is_hashed_exactly(self):
+        import base64
+        import hashlib
+        body = 'var x=1;'
+        expected = "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+        page = (f'<script>{body}</script><script type="module">{body}</script>'
+                '<script type="application/json">{"a":1}</script><script src="b.js"></script>')
+        self.assertEqual(HOOKS.inline_hashes(page), {expected})
+
+    def build(self, html):
+        import tempfile
+        site = tempfile.mkdtemp(prefix='tb-site-')
+        self.addCleanup(__import__('shutil').rmtree, site, True)
+        with open(os.path.join(site, 'index.html'), 'w') as handle:
+            handle.write(html)
+        policy = os.path.join(site, 'policy')
+        os.environ['TBDOCS_CSP_FILE'] = policy
+        self.addCleanup(os.environ.pop, 'TBDOCS_CSP_FILE', None)
+        HOOKS.on_post_build({'site_dir': site})
+        with open(policy) as handle:
+            return handle.read(), open(os.path.join(site, 'index.html')).read()
+
+    def test_the_policy_names_the_hashes_and_never_unsafe_inline_for_scripts(self):
+        policy, page = self.build('<link rel="canonical" href="http://localhost/docs/">'
+                                  '<script>var a=1;</script>')
+        scripts = policy.split('script-src')[1].split(';')[0]
+        self.assertIn("'sha256-", scripts)
+        self.assertNotIn('unsafe-inline', scripts)
+        # The placeholder address goes with the canonical link
+        self.assertNotIn('canonical', page)
+
+    def test_an_inline_handler_fails_the_build(self):
+        with self.assertRaises(ValueError):
+            self.build('<a href="#" onclick="go()">x</a>')
+        with self.assertRaises(ValueError):
+            self.build('<a href="javascript:go()">x</a>')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
