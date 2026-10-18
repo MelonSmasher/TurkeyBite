@@ -366,6 +366,42 @@ async def test_security_headers_are_set(client, search):
     assert days == {'UTC': 'T00:00:00.000Z', 'Pacific/Kiritimati': 'T10:00:00.000Z'}  # nosec B101
 
 
+async def test_answers_go_compressed_to_those_that_take_it(client, search):
+    await make_user('ana', role='analyst')
+    headers = await login(client, 'ana')
+    packed = await client.get('/api/v1/fields', headers={'Accept-Encoding': 'gzip'})
+    plain = await client.get('/api/v1/fields', headers={'Accept-Encoding': 'identity'})
+    assert packed.headers['content-encoding'] == 'gzip' and 'content-encoding' not in plain.headers  # nosec B101
+    assert packed.json() == plain.json()  # nosec B101
+    assert packed.num_bytes_downloaded * 3 < len(plain.content)  # nosec B101
+    assert packed.headers['vary'] == 'Accept-Encoding'  # nosec B101
+    assert packed.headers['cache-control'] == 'no-store'  # nosec B101
+    # An export streams compressed, and arrives as it was
+    hits = [{'_id': str(i), '_index': 'tb-index-2026-10-05',
+             '_source': {'@timestamp': '2026-10-05T10:00:00Z', 'bite': {'client_user': f'user{i}'}}}
+            for i in range(200)]
+    for encoding in ('gzip', 'identity'):
+        answers = iter([{'hits': {'total': {'value': 200}, 'hits': hits}},
+                        {'hits': {'total': {'value': 200}, 'hits': []}}])
+        search.answer = lambda body, index=None: next(answers)
+        export = await client.post('/api/v1/events/export', json={'format': 'csv', 'columns': ['user']},
+                                   headers={**headers, 'Accept-Encoding': encoding})
+        assert export.text.splitlines() == ['bite.client_user', *[f'user{i}' for i in range(200)]]  # nosec B101
+        assert export.headers.get('content-encoding') == ('gzip' if encoding == 'gzip' else None)  # nosec B101
+
+
+async def test_server_sent_events_go_uncompressed(app, client):
+    # Compressed, a live tail's events would wait in the compressor rather
+    # than reach the page as they happen
+    from fastapi.responses import StreamingResponse
+
+    async def events():
+        yield 'event: hit\ndata: {}\n\n' * 100
+    app.add_api_route('/api/v1/test-stream', lambda: StreamingResponse(events(), media_type='text/event-stream'))
+    response = await client.get('/api/v1/test-stream', headers={'Accept-Encoding': 'gzip'})
+    assert response.status_code == 200 and 'content-encoding' not in response.headers  # nosec B101
+
+
 async def test_the_overview_puts_each_answer_where_it_belongs(client, search):
     # Four queries run at once; each answer must land in its own part
     await make_user('ana', role='analyst')
