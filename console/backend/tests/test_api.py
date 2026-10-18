@@ -5,12 +5,12 @@
 # is code that ships.
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 
 from tbconsole import db
-from tbconsole.models import AuditEvent, Finding, Rule, Webhook
+from tbconsole.models import AuditEvent, DailyStat, Finding, Rule, Webhook
 
 from .conftest import login, make_user
 
@@ -594,3 +594,34 @@ async def test_the_times_pages_count_by_are_indexed():
             plan = (await session.execute(text(
                 f'EXPLAIN SELECT count(*) FROM {table} WHERE {column} >= now()'))).scalars().all()
             assert any(f'ix_{table}_{column}' in line for line in plan), plan  # nosec B101
+
+
+async def test_trends_put_each_days_counts_in_their_series(client):
+    await make_user('ana', role='analyst')
+    await login(client, 'ana')
+    today = datetime.now(timezone.utc).date()
+    rows = {0: [('total', '', 900), ('severity', 'high', 40), ('severity', 'medium', 60),
+                ('type', 'dns', 800), ('type', 'browser.history', 100), ('unique', 'clients', 12),
+                ('risk', 'threat.malware', 5), ('risk', 'privacy.tracking', 400),
+                ('purpose', 'social.media', 70), ('response_code', 'NXDOMAIN', 9)],
+            2: [('total', '', 500), ('severity', 'low', 7), ('risk', 'policy.vpn', 9),
+                ('unique', 'users', 3)]}
+    async with db.sessionmaker()() as session:
+        for ago, counts in rows.items():
+            for dimension, key, count in counts:
+                session.add(DailyStat(day=today - timedelta(days=ago), dimension=dimension, key=key,
+                                      count=count))
+        await session.commit()
+    trend = (await client.get('/api/v1/trends', params={'days': 7})).json()
+    assert trend['days'][-1] == today.isoformat() and len(trend['days']) == 7  # nosec B101
+    assert trend['total'] == [0, 0, 0, 0, 500, 0, 900]  # nosec B101
+    assert trend['notable'] == [0, 0, 0, 0, 0, 0, 100]  # nosec B101
+    assert trend['severity']['low'] == [0, 0, 0, 0, 7, 0, 0]  # nosec B101
+    assert list(trend['types']) == ['dns', 'browser.history']  # nosec B101
+    assert trend['clients'][-1] == 12 and trend['users'][-3] == 3  # nosec B101
+    # Tracking is noise, never a trend of its own
+    assert list(trend['risks']) == ['policy.vpn', 'threat.malware']  # nosec B101
+    assert trend['purposes'] == {'social.media': [0, 0, 0, 0, 0, 0, 70]}  # nosec B101
+    assert trend['nxdomain'][-1] == 9  # nosec B101
+    assert trend['coverage']['days_counted'] == 2  # nosec B101
+    assert trend['coverage']['first_counted_day'] == (today - timedelta(days=2)).isoformat()  # nosec B101
