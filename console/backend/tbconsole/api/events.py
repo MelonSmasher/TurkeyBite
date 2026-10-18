@@ -350,8 +350,8 @@ async def export(body: ExportBody, request: Request,
                 'size': min(page, body.limit - sent), 'from': sent,
                 'query': query, 'sort': [{'@timestamp': {'order': 'desc'}}],
                 # A CSV has its columns and nothing else: the rest of each
-                # event would be sent, read and dropped, twice the columns
-                # or more
+                # event, twice their size or more, would be sent, read and
+                # dropped
                 '_source': {'includes': columns, 'excludes': ['packet']} if body.format == 'csv'
                 else True})
             hits = result.get('hits', {}).get('hits', [])

@@ -345,7 +345,7 @@ async def pivot(body: PivotBody, request: Request,  # pylint: disable=too-many-l
 
 
 @router.get('/trends')
-async def trends(days: int = 90, _: Principal = Depends(require(rbac.EVENTS_READ)),
+async def trends(days: int = 90, _: Principal = Depends(require(rbac.EVENTS_READ)),  # pylint: disable=too-many-locals  # a series per figure
                  db: AsyncSession = Depends(get_session),
                  search: SearchClient = Depends(search_client)) -> dict:
     """Daily counts from the rollups, which outlive the indices."""
