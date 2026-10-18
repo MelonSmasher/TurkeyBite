@@ -436,7 +436,7 @@ def uncategorised(days, top, order, exclude, pattern, out, use_claude):
     """
     from opensearchpy.exceptions import OpenSearchException
     from libtb.retag import client_for, default_pattern
-    from libtb.uncategorised import offered, report, review_lines
+    from libtb.uncategorised import offered, query, report, review_lines
 
     config = read_config()
     try:
@@ -445,7 +445,7 @@ def uncategorised(days, top, order, exclude, pattern, out, use_claude):
     except (OSError, KeyError, IndexError, TypeError, ValueError) as e:
         raise click.ClickException(f'configuration: {e}')
     try:
-        rows = report(client, pattern, days, top, order, exclude)
+        rows = report(client, pattern, query(days, top, order, exclude))
     except (OpenSearchException, OSError, KeyError) as e:
         raise click.ClickException(f'OpenSearch: {e}')
     finally:

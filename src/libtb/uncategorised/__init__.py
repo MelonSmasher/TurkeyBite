@@ -96,10 +96,9 @@ def query(days, top, order='clients', exclude=()):
     }
 
 
-def report(client, pattern, days=7, top=200, order='clients', exclude=()):
-    """The uncategorised domains in `pattern`, as Rows, most used first."""
-    response = client.search(index=pattern, body=query(days, top, order, exclude),
-                             request_timeout=120)
+def report(client, pattern, body):
+    """The uncategorised domains in `pattern` that `body`, from query(), finds, as Rows."""
+    response = client.search(index=pattern, body=body, request_timeout=120)
     rows = []
     # No aggregations at all when the pattern matches no index yet
     buckets = ((response.get('aggregations') or {}).get('domains') or {}).get('buckets') or []

@@ -12,6 +12,8 @@ category the taxonomy does not have is dropped. It needs ANTHROPIC_API_KEY.
 
 import json
 
+import anthropic
+
 from libtb.uncategorised import describe
 
 MODEL = 'claude-opus-5'
@@ -43,6 +45,7 @@ class Unavailable(Exception):
 
 
 def schema(categories):
+    """The answer's shape: a category from `categories`, or unknown, for each domain."""
     return {
         'type': 'object',
         'properties': {'labels': {'type': 'array', 'items': {
@@ -65,56 +68,56 @@ def suggest(domains, categories, client=None, log=print):
     reported through `log` and skipped, so what was suggested before it is
     kept.
     """
-    import anthropic
-
     if client is None:
         try:
             client = anthropic.Anthropic()
         except anthropic.AnthropicError as e:
             raise Unavailable(str(e)) from e
-    system = SYSTEM.format(unknown=UNKNOWN,
-                           categories='\n'.join(f'- {describe(c)}' for c in categories))
+    request = {
+        'model': MODEL,
+        'max_tokens': 16000,
+        'betas': [FALLBACK_BETA],
+        'fallbacks': 'default',
+        # Labelling a domain name is a lookup, not a puzzle
+        'output_config': {'effort': 'low',
+                          'format': {'type': 'json_schema', 'schema': schema(categories)}},
+        'system': SYSTEM.format(unknown=UNKNOWN,
+                                categories='\n'.join(f'- {describe(c)}' for c in categories)),
+    }
     wanted = set(categories)
     suggested = {}
     for start in range(0, len(domains), BATCH):
         batch = domains[start:start + BATCH]
-        try:
-            response = client.beta.messages.create(
-                model=MODEL,
-                max_tokens=16000,
-                betas=[FALLBACK_BETA],
-                fallbacks='default',
-                # Labelling a domain name is a lookup, not a puzzle
-                output_config={'effort': 'low',
-                               'format': {'type': 'json_schema', 'schema': schema(categories)}},
-                system=system,
-                messages=[{'role': 'user', 'content': '\n'.join(batch)}],
-            )
-        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
-            raise Unavailable(f'Claude refused the API key: {e}') from e
-        except TypeError as e:
-            # What the SDK raises at the first request when it finds no
-            # credentials at all
-            raise Unavailable(f'no Anthropic API key was found ({e})') from e
-        except anthropic.APIError as e:
-            log(f'Claude did not answer for domains {start + 1}-{start + len(batch)}: {e}')
-            continue
-        if response.stop_reason != 'end_turn':
-            log(f'Claude stopped ({response.stop_reason}) for domains '
-                f'{start + 1}-{start + len(batch)}; they get no suggestion')
-            continue
-        text = next((block.text for block in response.content if block.type == 'text'), '')
-        try:
-            labels = json.loads(text)['labels']
-        except (ValueError, KeyError, TypeError):
-            log(f'Claude answered domains {start + 1}-{start + len(batch)} in a shape '
-                f'this cannot read; they get no suggestion')
-            continue
-        asked = set(batch)
-        for item in labels:
-            if not isinstance(item, dict):
-                continue
-            domain, category = item.get('domain'), item.get('category')
-            if domain in asked and category in wanted:
-                suggested[domain] = category
+        for item in _labels(client, request, batch, f'domains {start + 1}-{start + len(batch)}', log):
+            if item.get('domain') in batch and item.get('category') in wanted:
+                suggested[item['domain']] = item['category']
     return suggested
+
+
+def _labels(client, request, batch, which, log):
+    """What Claude said about one batch, as the dicts it answered with.
+
+    None when it could not be asked or read, which is said through `log`.
+    """
+    try:
+        response = client.beta.messages.create(
+            **request, messages=[{'role': 'user', 'content': '\n'.join(batch)}])
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        raise Unavailable(f'Claude refused the API key: {e}') from e
+    except TypeError as e:
+        # What the SDK raises at the first request when it finds no
+        # credentials at all
+        raise Unavailable(f'no Anthropic API key was found ({e})') from e
+    except anthropic.APIError as e:
+        log(f'Claude did not answer for {which}: {e}')
+        return []
+    if response.stop_reason != 'end_turn':
+        log(f'Claude stopped ({response.stop_reason}) for {which}; they get no suggestion')
+        return []
+    text = next((block.text for block in response.content if block.type == 'text'), '')
+    try:
+        labels = json.loads(text)['labels']
+    except (ValueError, KeyError, TypeError):
+        log(f'Claude answered {which} in a shape this cannot read; they get no suggestion')
+        return []
+    return [item for item in labels if isinstance(item, dict)] if isinstance(labels, list) else []

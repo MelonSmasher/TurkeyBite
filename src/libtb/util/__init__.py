@@ -1,3 +1,5 @@
+import fcntl
+import glob
 import sys
 import yaml
 import urllib.request
@@ -185,13 +187,12 @@ def build_domain_index(path=None, publish_to_valkey=None):
     librarian's refresh and `turkeybite label --apply` can overlap, and the
     file, its generation marker and what is published must all be one build's.
     """
-    import fcntl
     config = read_config()
     settings = index_config(config)
     target = path or settings['path']
     try:
         os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
-        lock = open(target + '.lock', 'w')
+        lock = open(target + '.lock', 'w', encoding='utf-8')
     except OSError as e:
         print('Failed to build domain index: ' + str(e), file=sys.stderr)
         return None
@@ -203,7 +204,6 @@ def build_domain_index(path=None, publish_to_valkey=None):
             fcntl.flock(lock, fcntl.LOCK_EX)
         # A build that was killed left its file behind, as large as the
         # index, and holding the lock no other build is writing one now
-        import glob
         for stale in glob.glob(glob.escape(target) + '.*.new'):
             try:
                 os.remove(stale)
@@ -212,7 +212,7 @@ def build_domain_index(path=None, publish_to_valkey=None):
         return _build_domain_index(config, settings, target, publish_to_valkey)
 
 
-def _build_domain_index(config, settings, target, publish_to_valkey):
+def _build_domain_index(config, settings, target, publish_to_valkey):  # pylint: disable=too-many-locals  # build_domain_index's body as it always was
     """build_domain_index, holding the build lock."""
     from libtb.index.builder import (apply_ignorelist, build, collect_entries,
                                      load_sources, source_table, unconfigured_files)

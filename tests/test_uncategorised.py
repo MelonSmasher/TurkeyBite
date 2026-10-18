@@ -61,8 +61,10 @@ class QueryTest(unittest.TestCase):
 
 
 class FakeSearch:
+    """OpenSearch, answering every search with `buckets` and recording it."""
 
     def __init__(self, buckets):
+        """Answers with these aggregation buckets."""
         self.buckets = buckets
         self.asked = []
 
@@ -80,7 +82,7 @@ class ReportTest(unittest.TestCase):
             {'key': 'quiet.org', 'doc_count': 9, 'clients': {'value': 1},
              'candidates': {'buckets': []}},
         ])
-        rows = report(client, 'tb-index-2*', days=3, top=2)
+        rows = report(client, 'tb-index-2*', query(3, 2))
         self.assertEqual(rows, [Row('example.com', 1234, 56, ['gambling']),
                                 Row('quiet.org', 9, 1, [])])
         self.assertEqual(client.asked[0][0], 'tb-index-2*')
@@ -91,9 +93,12 @@ class NoIndexYetTest(unittest.TestCase):
 
     def test_a_pattern_matching_no_index_reports_nothing(self):
         class Empty:
+            """OpenSearch with no index to match."""
+
             def search(self, index, body, request_timeout):
+                """No aggregations at all, as for a pattern matching nothing."""
                 return {'hits': {'hits': []}}
-        self.assertEqual(report(Empty(), 'tb-index-2099-*'), [])
+        self.assertEqual(report(Empty(), 'tb-index-2099-*', query(7, 200)), [])
 
 
 class OfferedTest(unittest.TestCase):
@@ -224,6 +229,7 @@ class FakeClaude:
     """Stands in for anthropic.Anthropic, answering each request in turn."""
 
     def __init__(self, *answers):
+        """Answers each request with the next of `answers`, raising it if an exception."""
         self.answers = list(answers)
         self.requests = []
         self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
