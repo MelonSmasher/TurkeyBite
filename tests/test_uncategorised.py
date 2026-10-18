@@ -87,6 +87,15 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(client.asked[0][1], query(3, 2))
 
 
+class NoIndexYetTest(unittest.TestCase):
+
+    def test_a_pattern_matching_no_index_reports_nothing(self):
+        class Empty:
+            def search(self, index, body, request_timeout):
+                return {'hits': {'hits': []}}
+        self.assertEqual(report(Empty(), 'tb-index-2099-*'), [])
+
+
 class OfferedTest(unittest.TestCase):
 
     def test_every_offered_category_is_in_the_taxonomy(self):
@@ -194,6 +203,12 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(self.custom('shopping'), '# mine\nExample.com\nlast.example\nnew.example\n')
         self.assertEqual(apply([('new.example', 'shopping')], self.lists, write=True), {})
 
+    def test_a_listed_domain_with_a_comment_is_still_listed(self):
+        os.makedirs(os.path.join(self.lists, 'shopping'))
+        with open(os.path.join(self.lists, 'shopping', 'custom'), 'wb') as handle:
+            handle.write(b'shop.example  # from the help desk\n\xff\xfe not utf-8\n')
+        self.assertEqual(apply([('shop.example', 'shopping')], self.lists), {})
+
 
 def _message(labels=None, stop_reason='end_turn', text=None):
     if text is None:
@@ -272,6 +287,12 @@ class SuggestTest(unittest.TestCase):
         self.assertEqual(self.suggest(client, domains), {'d300.example': 'news'})
         self.assertEqual(len(self.logged), 3)
         self.assertIn('refusal', self.logged[1])
+
+    def test_no_key_at_all_stops_everything(self):
+        # What the SDK raises at the first request when it finds no credentials
+        client = FakeClaude(TypeError('Could not resolve authentication method'))
+        with self.assertRaises(suggesting.Unavailable):
+            self.suggest(client, ['a.example'])
 
     def test_a_refused_key_stops_everything(self):
         refused = anthropic.AuthenticationError(

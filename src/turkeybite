@@ -451,7 +451,7 @@ def uncategorised(days, top, order, exclude, pattern, out, use_claude):
     finally:
         client.close()
     if not rows:
-        click.echo(f'Every DNS lookup in {pattern} over the last {days} days has a category.')
+        click.echo(f'No uncategorised DNS lookups in {pattern} over the last {days} days.')
         return
     suggestions = {}
     if use_claude:
@@ -460,10 +460,11 @@ def uncategorised(days, top, order, exclude, pattern, out, use_claude):
         try:
             suggestions = suggest([row.domain for row in rows], offered(),
                                   log=lambda m: click.echo(m, err=True))
+            click.echo(f'Claude suggested a category for {len(suggestions)} of them', err=True)
         except Unavailable as e:
-            raise click.ClickException(f'{e}. Set ANTHROPIC_API_KEY in the container, or run '
-                                       'without --suggest.')
-        click.echo(f'Claude suggested a category for {len(suggestions)} of them', err=True)
+            # The list is still worth having without them
+            click.echo(f'No suggestions: {e}. Set ANTHROPIC_API_KEY in the container to have '
+                       'them.', err=True)
     heading = (f'Uncategorised domains in {pattern}, the last {days} days, '
                f'by {"distinct clients" if order == "clients" else "lookups"}.')
     lines = review_lines(rows, heading, suggestions)

@@ -180,13 +180,31 @@ def build_domain_index(path=None, publish_to_valkey=None):
     Kept separate from the Valkey list load so both can coexist while the index
     is on trial. Never raises: a failed index build must not fail a list pull
     that otherwise succeeded, because the Valkey path is still there.
+
+    One build at a time, in this process or any other sharing the lists: the
+    librarian's refresh and `turkeybite label --apply` can overlap, and the
+    file, its generation marker and what is published must all be one build's.
     """
-    from libtb.index.builder import (apply_ignorelist, build, collect_entries,
-                                     load_sources, source_table, unconfigured_files)
-    from libtb.index import transport
+    import fcntl
     config = read_config()
     settings = index_config(config)
     target = path or settings['path']
+    try:
+        os.makedirs(os.path.dirname(target) or '.', exist_ok=True)
+        lock = open(target + '.lock', 'w')
+    except OSError as e:
+        print('Failed to build domain index: ' + str(e), file=sys.stderr)
+        return None
+    with lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _build_domain_index(config, settings, target, publish_to_valkey)
+
+
+def _build_domain_index(config, settings, target, publish_to_valkey):
+    """build_domain_index, holding the build lock."""
+    from libtb.index.builder import (apply_ignorelist, build, collect_entries,
+                                     load_sources, source_table, unconfigured_files)
+    from libtb.index import transport
     if publish_to_valkey is None:
         publish_to_valkey = settings['publish']
     # One generation number for the file, the manifest and the marker, so all

@@ -425,6 +425,51 @@ class CategorisationPromptTest(Rerun):
         self.assertEqual(offered, [False])
         self.assertFalse(processor['evidence']['resolvers']['enable'])
 
+    def test_a_config_from_before_the_resolvers_offers_them_off(self):
+        # Pressing Enter must not start sending names to Quad9 and Cloudflare
+        self.existing_mode('index')
+        config = self.config()
+        del config['processor']['evidence']['resolvers']
+        with open(os.path.join(self.root, 'config.yaml'), 'w') as fh:
+            yaml.safe_dump(config, fh)
+        setup = self.setup()
+        offered = []
+        setup.prompt_yes_no = lambda message, default=True: offered.append(default) or default
+        processor = self.run_setup(setup)
+        self.assertEqual(offered, [False])
+        self.assertFalse(processor['evidence']['resolvers']['enable'])
+
+    def librarian(self, yes_no):
+        setup = self.setup(yes_no=yes_no)
+        setup.components, setup.node_type = ['librarian'], 'librarian'
+        return self.run_setup(setup)['domain_index']
+
+    def test_a_librarian_on_valkey_publishes_first_and_keeps_loading_valkey(self):
+        # Worker nodes still in valkey mode read what it loads into Valkey,
+        # and a librarian in index mode stops loading it
+        self.existing_mode('valkey')
+        index = self.librarian([True])
+        self.assertEqual((index['mode'], index['publish']), ('valkey', True))
+
+    def test_a_publishing_librarian_switches_once_the_workers_have(self):
+        self.existing_mode('valkey')
+        self.librarian([True])
+        self.assertEqual(self.librarian([False])['mode'], 'valkey')
+        index = self.librarian([True])
+        self.assertEqual((index['mode'], index['publish']), ('index', True))
+
+    def test_a_librarian_that_will_not_publish_is_left_as_it_is(self):
+        self.existing_mode('compare')
+        index = self.librarian([False])
+        self.assertEqual((index['mode'], index.get('publish', False)), ('compare', False))
+
+    def test_a_worker_node_on_valkey_switches_to_the_published_index(self):
+        self.existing_mode('valkey')
+        setup = self.setup(yes_no=[True, False])
+        setup.components, setup.node_type = ['worker'], 'worker'
+        index = self.run_setup(setup)['domain_index']
+        self.assertEqual((index['mode'], index['source']), ('index', 'valkey'))
+
     def test_nothing_is_asked_when_config_is_not_updated(self):
         self.existing_mode('valkey')
         setup = self.setup()

@@ -142,6 +142,7 @@ class TurkeyBiteSetup:
         # leaves what an existing config.yaml says as it is.
         self.lookup_mode = None
         self.use_resolvers = None
+        self.publish_index = False
         self.enable_dns_lookups = False
         self.dns_resolver = "172.172.0.100"  # Default resolver (Bind9 container)
         self.use_opensearch = True  # Default to using OpenSearch
@@ -375,6 +376,8 @@ class TurkeyBiteSetup:
                 elif self.node_type == 'worker':
                     index['source'] = 'valkey'
             index['mode'] = self.lookup_mode
+        if self.publish_index:
+            section(config_data, 'processor', 'domain_index')['publish'] = True
         if self.use_resolvers is not None:
             section(config_data, 'processor', 'evidence', 'resolvers')['enable'] = self.use_resolvers
 
@@ -981,15 +984,22 @@ class TurkeyBiteSetup:
             existing = self.load_yaml(target_config) or {}
         processor = (existing or {}).get('processor') or {}
         self.print_step("Categories")
-        mode = (processor.get('domain_index') or {}).get('mode', 'valkey')
+        index = processor.get('domain_index') or {}
+        mode = index.get('mode', 'valkey')
         if existing is None or mode == 'index':
             self.lookup_mode = 'index'
+        elif self.node_type == 'librarian':
+            self.switch_librarian(mode, bool(index.get('publish')))
+            return
         else:
             self.print_info(f"Categories are looked up in {mode} mode, which believes whatever "
                             "any list says: on the 10,000 most popular domains that called 291 "
                             "of them malicious. The index believes a category only on enough "
                             "evidence and needs no Valkey round trip per event. See 'How "
                             "traffic is categorised' in the README.")
+            if self.node_type == 'worker':
+                self.print_info("This node downloads the index the librarian node publishes. "
+                                "Run setup.py on the librarian node first and let it publish.")
             if self.prompt_yes_no("Switch category lookups to the index?", default=True):
                 self.lookup_mode = 'index'
         if 'worker' not in self.components or self.lookup_mode != 'index':
@@ -1001,9 +1011,37 @@ class TurkeyBiteSetup:
                         "it up, and the workers need outbound port 53 to 9.9.9.9, 9.9.9.10, "
                         "1.1.1.1 and 1.1.1.2. See 'Asking public resolvers for a second "
                         "opinion' in the README.")
+        # On a rerun Enter keeps what config.yaml says, and one written before
+        # the setting existed says nothing, which is off
         self.use_resolvers = self.prompt_yes_no(
             "Ask Quad9 and Cloudflare about threats one list names?",
-            default=bool(resolvers.get('enable', True)) if existing is not None else True)
+            default=bool(resolvers.get('enable', False)) if existing is not None else True)
+
+    def switch_librarian(self, mode: str, publishing: bool):
+        """Moves a full-scale librarian node to the index, in the only safe order.
+
+        Worker nodes download the index this node publishes, and once this
+        node runs the index itself it stops loading the lists into Valkey,
+        which workers still in valkey mode read. So it publishes first, while
+        it still loads Valkey, the worker nodes switch, and it switches last.
+        """
+        if not publishing:
+            self.print_info(f"This node is in {mode} mode. Worker nodes switched to the index "
+                            "download it from here, once this node publishes it. It keeps "
+                            "loading the lists into Valkey meanwhile, for workers still in "
+                            f"{mode} mode.")
+            self.publish_index = self.prompt_yes_no("Publish the index for worker nodes?",
+                                                    default=True)
+            if not self.publish_index:
+                return
+            self.print_info("Next, run setup.py on each worker node and switch it, then run "
+                            "it here again to switch this node.")
+            return
+        self.print_info("This node publishes the index. Once it runs the index itself it stops "
+                        "loading the lists into Valkey, so switch it only after every worker "
+                        "node has been switched.")
+        if self.prompt_yes_no("Has every worker node been switched to the index?", default=False):
+            self.lookup_mode = 'index'
 
     def prompt_for_client_lookups(self):
         """Ask if client IP lookups should be enabled"""

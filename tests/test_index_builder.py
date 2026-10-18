@@ -370,6 +370,70 @@ class BuildLogTest(unittest.TestCase):
         self.assertNotIn(os.path.join('news', 'turkeybite'), log)
 
 
+class ConcurrentBuildTest(unittest.TestCase):
+    """Two builds at once, the librarian's and `turkeybite label --apply`'s."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='tb-concurrent-')
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = os.path.join(self.root, 'domains.tbidx')
+
+    def test_each_build_writes_a_file_of_its_own_and_leaves_none_behind(self):
+        seen = []
+        real = tempfile.mkstemp
+
+        def watch(*args, **kwargs):
+            handle, name = real(*args, **kwargs)
+            seen.append(name)
+            return handle, name
+        with unittest.mock.patch.object(builder.tempfile, 'mkstemp', side_effect=watch):
+            build({'a.example': {'s': ['news']}}, path=self.path)
+            build({'b.example': {'s': ['news']}}, path=self.path)
+        self.assertEqual(len(set(seen)), 2)
+        self.assertEqual(os.listdir(self.root), ['domains.tbidx'])
+        # Readable as the file it replaced was, not the owner's only
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o644)
+
+    def test_a_build_that_fails_leaves_the_index_and_no_scraps(self):
+        build({'a.example': {'s': ['news']}}, path=self.path)
+        before = open(self.path, 'rb').read()
+        with unittest.mock.patch.object(builder, '_blob_offsets', side_effect=RuntimeError('disk')):
+            with self.assertRaises(RuntimeError):
+                build({'b.example': {'s': ['news']}}, path=self.path)
+        self.assertEqual(open(self.path, 'rb').read(), before)
+        self.assertEqual(os.listdir(self.root), ['domains.tbidx'])
+
+    def test_builds_take_turns(self):
+        """The file, its marker and what is published are one build's."""
+        import fcntl
+        from libtb import util
+        os.makedirs(os.path.join(self.root, 'lists'))
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        settings = {'path': self.path, 'publish': False}
+        held = open(self.path + '.lock', 'w')
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        tried = []
+        real = fcntl.flock
+
+        def flock(handle, op):
+            # The lock is held elsewhere: a build must wait for it, not go on
+            tried.append(op)
+            if len(tried) == 1:
+                with self.assertRaises(BlockingIOError):
+                    real(handle, op | fcntl.LOCK_NB)
+                real(held, fcntl.LOCK_UN)
+            return real(handle, op)
+        with unittest.mock.patch.object(util, 'read_config', return_value={}), \
+                unittest.mock.patch.object(util, 'index_config', return_value=settings), \
+                unittest.mock.patch('fcntl.flock', side_effect=flock), \
+                unittest.mock.patch('sys.stdout'):
+            self.assertIsNotNone(util.build_domain_index())
+        self.assertEqual(tried, [fcntl.LOCK_EX])
+
+
 class NegativeControlTest(unittest.TestCase):
     """Proves both layers of the fix are load-bearing rather than decorative.
 

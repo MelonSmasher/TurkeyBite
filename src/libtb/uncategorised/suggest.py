@@ -61,8 +61,9 @@ def suggest(domains, categories, client=None, log=print):
     """{domain: category} for the domains Claude recognises.
 
     Raises Unavailable when no request can be made at all, such as without an
-    API key; a batch that fails after that is reported through `log` and
-    skipped, so what was suggested before it is kept.
+    API key or with one Claude refuses; a batch that fails otherwise is
+    reported through `log` and skipped, so what was suggested before it is
+    kept.
     """
     import anthropic
 
@@ -91,6 +92,10 @@ def suggest(domains, categories, client=None, log=print):
             )
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
             raise Unavailable(f'Claude refused the API key: {e}') from e
+        except TypeError as e:
+            # What the SDK raises at the first request when it finds no
+            # credentials at all
+            raise Unavailable(f'no Anthropic API key was found ({e})') from e
         except anthropic.APIError as e:
             log(f'Claude did not answer for domains {start + 1}-{start + len(batch)}: {e}')
             continue

@@ -101,7 +101,9 @@ def report(client, pattern, days=7, top=200, order='clients', exclude=()):
     response = client.search(index=pattern, body=query(days, top, order, exclude),
                              request_timeout=120)
     rows = []
-    for bucket in response['aggregations']['domains']['buckets']:
+    # No aggregations at all when the pattern matches no index yet
+    buckets = ((response.get('aggregations') or {}).get('domains') or {}).get('buckets') or []
+    for bucket in buckets:
         rows.append(Row(bucket['key'], bucket['doc_count'], bucket['clients']['value'],
                         [c['key'] for c in bucket['candidates']['buckets']]))
     return rows
@@ -182,10 +184,12 @@ def read_labels(lines):
 
 
 def _listed(path):
+    """The domains a list already names, leaving out comments."""
     if not os.path.exists(path):
         return set()
-    with open(path, encoding='utf-8') as handle:
-        return {normalise(line) for line in handle if line.strip() and not line.startswith('#')}
+    with open(path, encoding='utf-8', errors='replace') as handle:
+        return {normalise(line.split('#', 1)[0]) for line in handle
+                if line.split('#', 1)[0].strip()}
 
 
 def apply(labels, lists_dir='lists', write=False):
