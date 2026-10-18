@@ -1101,13 +1101,51 @@ def test_a_webhook_proxy_or_ca_file_that_cannot_work_stops_the_console_starting(
     assert Settings(webhook_ca_certs='').webhook_ca_certs is None  # nosec B101
 
 
-def test_webhook_receivers_may_be_signed_by_an_internal_ca(monkeypatch):
+def _ca_pem(name: str) -> bytes:
+    """A self-signed CA certificate called `name`, in PEM."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now).not_valid_after(now + timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    return cert.public_bytes(serialization.Encoding.PEM)
+
+
+def test_webhook_receivers_may_be_signed_by_an_internal_ca(monkeypatch, tmp_path):
+    import os
     import ssl
     import certifi
     from tbconsole.config import get_settings
-    assert dispatcher._trust() is True  # nosec B101
-    monkeypatch.setattr(get_settings(), 'webhook_ca_certs', certifi.where())
-    assert isinstance(dispatcher._trust(), ssl.SSLContext)  # nosec B101
+
+    def names(context: ssl.SSLContext) -> set[str]:
+        return {value for cert in context.get_ca_certs() for part in cert['subject']
+                for key, value in part if key == 'commonName'}
+    public = ssl.create_default_context(cafile=certifi.where())
+    # The public certificates, as httpx would trust them, read once for every delivery
+    trusted = dispatcher._trust()
+    assert names(trusted) == names(public) and dispatcher._trust() is trusted  # nosec B101
+    assert dispatcher.client()._transport._pool._ssl_context is trusted  # nosec B101
+    ca = tmp_path / 'internal.pem'
+    ca.write_bytes(_ca_pem('Harbor Point Internal CA'))
+    monkeypatch.setattr(get_settings(), 'webhook_ca_certs', ca)
+    internal = dispatcher._trust()
+    assert names(internal) == names(public) | {'Harbor Point Internal CA'}  # nosec B101
+    assert dispatcher._trust() is internal  # nosec B101
+    # A file replaced with another CA's, as when it is renewed, is read again
+    ca.write_bytes(_ca_pem('Harbor Point Internal CA 2026'))
+    os.utime(ca, ns=(1, 1))
+    assert 'Harbor Point Internal CA 2026' in names(dispatcher._trust())  # nosec B101
+    # One that is gone fails the delivery, as it did when it was read for each
+    ca.unlink()
+    with pytest.raises(FileNotFoundError):
+        dispatcher._trust()
 
 
 async def test_a_test_delivery_is_recorded_as_unfinished_until_it_finishes(client, monkeypatch):
