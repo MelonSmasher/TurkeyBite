@@ -136,6 +136,31 @@ class ListQueueTest(unittest.TestCase):
         self.assertEqual(len(self.queue.claim(4)), 4)
         self.assertEqual(self.queue.depth(), 2)
 
+    def test_a_batch_is_two_round_trips_however_large(self):
+        # The first item waited for, then the rest in one script, rather
+        # than a round trip to Valkey for every event
+        self.push(*'abcdefgh')
+        asked = []
+        redis = self.redis
+
+        class Counting(object):
+            def __getattr__(self, name):
+                asked.append(name)
+                return getattr(redis, name)
+        self.queue.redis = Counting()
+        self.assertEqual(self.queue.claim(6), items(*'abcdef'))
+        self.assertEqual(asked, ['blmove', 'eval'])
+        self.assertEqual((self.waiting(), self.in_flight()), (items('g', 'h'), items(*'abcdef')))
+        # A batch of one is the first item alone
+        asked.clear()
+        self.assertEqual(self.queue.claim(1), items('g'))
+        self.assertEqual(asked, ['blmove'])
+        # And a queue that runs out part way gives what it had
+        asked.clear()
+        self.assertEqual(self.queue.claim(10), items('h'))
+        self.assertEqual(asked, ['blmove', 'eval'])
+        self.assertEqual(self.waiting(), [])
+
     # -- acknowledging ----------------------------------------------------
 
     def test_an_ack_removes_only_the_acknowledged_items(self):

@@ -134,6 +134,21 @@ return 0
 """
 
 
+# The rest of a batch, after its first item: up to ARGV[1] items moved one at
+# a time, as LMOVE would move them, stopping when the queue is empty
+CLAIM_SCRIPT = """
+local claimed = {}
+for _ = 1, tonumber(ARGV[1]) do
+    local item = redis.call('LMOVE', KEYS[1], KEYS[2], 'LEFT', 'RIGHT')
+    if not item then
+        break
+    end
+    claimed[#claimed + 1] = item
+end
+return claimed
+"""
+
+
 # Settling a batch, for a consumer that holds its name: done only while it
 # still does, checked in the same step, so one that stalled past its
 # reservation cannot trim or requeue its successor's items. -1 when not.
@@ -243,17 +258,18 @@ class ListQueue(object):
 
         Blocks up to block_seconds waiting for the first item, then takes the
         rest without blocking so a partial batch is not delayed by a quiet queue.
+        The rest are moved by one script rather than an LMOVE each, which cost
+        a round trip to Valkey for every event. The script is one atomic step,
+        so each item is in one list or the other, never both or neither.
         """
         claimed = []
         first = self.redis.blmove(self.key, self.processing_key, block_seconds, 'LEFT', 'RIGHT')
         if first is None:
             return claimed
         claimed.append(first)
-        while len(claimed) < max_items:
-            item = self.redis.lmove(self.key, self.processing_key, 'LEFT', 'RIGHT')
-            if item is None:
-                break
-            claimed.append(item)
+        if max_items > 1:
+            claimed.extend(self.redis.eval(CLAIM_SCRIPT, 2, self.key, self.processing_key,
+                                           max_items - 1))
         return claimed
 
     def ack(self, count):

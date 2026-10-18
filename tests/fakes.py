@@ -24,7 +24,7 @@ publish is half done, say.
 import fnmatch
 import json
 
-from libtb.queue import ACK_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
+from libtb.queue import ACK_SCRIPT, CLAIM_SCRIPT, RELEASE_SCRIPT, RENEW_SCRIPT, REQUEUE_SCRIPT
 from libtb.radius import RECORD_SCRIPT
 
 
@@ -144,6 +144,14 @@ class FakeRedis(object):
         self._did('eval', keys[0])
         if script == RECORD_SCRIPT:
             return self._record(keys, *args)
+        if script == CLAIM_SCRIPT:
+            claimed = []
+            while len(claimed) < int(args[0]):
+                item = self.lmove(keys[0], keys[1], 'LEFT', 'RIGHT')
+                if item is None:
+                    break
+                claimed.append(item)
+            return claimed
         held = self.data.get(_key(keys[0]))
         mine = held == _bytes(args[0])
         if script == RENEW_SCRIPT:
