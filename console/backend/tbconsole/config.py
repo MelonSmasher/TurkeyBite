@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # styles from a CDN, on the console's own origin. /api/openapi.json and
     # the app's API page describe the API either way
     api_docs: bool = False
-    # The documentation site's container, such as http://docs:8080, which the
+    # The documentation site's container, such as http://mkdoc:8080, which the
     # console serves at /docs/ to people who are signed in. Unset, there is
     # no /docs/ and the app leaves the documentation out of its menus.
     docs_url: str | None = None
@@ -143,7 +143,7 @@ class Settings(BaseSettings):
         parts = urlsplit(value.strip())
         if parts.scheme not in ('http', 'https') or not parts.hostname or parts.path.strip('/'):
             raise ValueError('TBCONSOLE_DOCS_URL is the docs container\'s http:// or https:// '
-                             'address with no path, such as http://docs:8080')
+                             'address with no path, such as http://mkdoc:8080')
         return value.strip().rstrip('/')
 
     @field_validator('webhook_proxy')
@@ -192,6 +192,7 @@ class Settings(BaseSettings):
             url = url.set(password=self.database_password)
             self.database_url = url.render_as_string(hide_password=False)
         return self
+
 
 
 @lru_cache

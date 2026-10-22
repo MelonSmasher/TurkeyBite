@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, CircleAlert, Gauge, Globe, RefreshCw, ShieldAlert,
+  import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, BookOpen, CircleAlert, Gauge, Globe, RefreshCw, ShieldAlert,
     ShieldX, Sparkles, UserRound, Users } from '@lucide/svelte';
   import { api, qs } from '../lib/api';
   import BarList from '../lib/charts/BarList.svelte';
@@ -63,6 +63,7 @@
 <PageHeader eyebrow={session.me?.org_name} title="Overview"
             subtitle="What happened on the network, what looks risky, and what the rules have raised.">
   {#snippet actions()}
+    {#if session.me?.docs}<a class="btn btn-sm" href="/docs/"><BookOpen size={15} /> Documentation</a>{/if}
     <TimeRangePicker />
     <button class="btn btn-icon" onclick={() => overview.reload()} use:tip={'Refresh'} aria-label="Refresh">
       <RefreshCw size={15} class={overview.loading ? 'spinning' : ''} />

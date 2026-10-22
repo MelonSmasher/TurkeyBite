@@ -14,7 +14,7 @@
   import type { User } from '../lib/types';
 
   const users = new Query((signal) => api.get<User[]>('/users', { signal }));
-  let filter = $state<'all' | 'ldap' | 'local' | 'service'>('all');
+  let filter = $state<'all' | 'ldap' | 'entra' | 'local' | 'service'>('all');
   let createOpen = $state(false);
   let kind = $state<'local' | 'service'>('local');
   let form = $state({ username: '', display_name: '', email: '', role: 'analyst', password: '' });
@@ -25,6 +25,7 @@
   const rows = $derived((users.data ?? []).filter((u) => filter === 'all' || u.source === filter));
   const counts = $derived({
     ldap: (users.data ?? []).filter((u) => u.source === 'ldap').length,
+    entra: (users.data ?? []).filter((u) => u.source === 'entra').length,
     local: (users.data ?? []).filter((u) => u.source === 'local').length,
     service: (users.data ?? []).filter((u) => u.source === 'service').length,
     admins: (users.data ?? []).filter((u) => u.role === 'admin' && !u.disabled && u.source !== 'service').length,
@@ -69,7 +70,7 @@
   }
 </script>
 
-<PageHeader title="Users" subtitle="Directory accounts appear the first time someone signs in through LDAP, with a role from their groups. Local accounts keep the console reachable when the directory is not; service accounts hold API keys for integrations.">
+<PageHeader title="Users" subtitle="LDAP and Microsoft Entra accounts appear on first sign-in, with roles from their identity provider. Keep a local account for direct sign-in and recovery; service accounts hold API keys for integrations.">
   {#snippet actions()}
     <button class="btn" onclick={() => { kind = 'service'; form = { username: 'svc-', display_name: '', email: '', role: 'analyst', password: '' }; createOpen = true; }}><Bot size={15} /> Service account</button>
     <button class="btn btn-primary" onclick={() => { kind = 'local'; form = { username: '', display_name: '', email: '', role: 'analyst', password: '' }; createOpen = true; }}><Plus size={15} /> Local account</button>
@@ -78,6 +79,7 @@
 
 <div class="stats">
   <div class="stat card"><Building2 size={16} /><div><strong>{counts.ldap}</strong><span class="muted">directory</span></div></div>
+  <div class="stat card"><Building2 size={16} /><div><strong>{counts.entra}</strong><span class="muted">Microsoft</span></div></div>
   <div class="stat card"><Lock size={16} /><div><strong>{counts.local}</strong><span class="muted">local</span></div></div>
   <div class="stat card"><Bot size={16} /><div><strong>{counts.service}</strong><span class="muted">service</span></div></div>
   <div class="stat card"><ShieldCheck size={16} /><div><strong>{counts.admins}</strong><span class="muted">active admins</span></div></div>
@@ -85,7 +87,7 @@
 </div>
 
 <div class="toolbar">
-  <Segmented bind:value={filter} label="Show" options={[{ value: 'all', label: 'Everyone' }, { value: 'ldap', label: 'Directory' }, { value: 'local', label: 'Local' }, { value: 'service', label: 'Service' }]} />
+  <Segmented bind:value={filter} label="Show" options={[{ value: 'all', label: 'Everyone' }, { value: 'ldap', label: 'Directory' }, { value: 'entra', label: 'Microsoft' }, { value: 'local', label: 'Local' }, { value: 'service', label: 'Service' }]} />
 </div>
 
 <section class="card">
@@ -100,10 +102,10 @@
               <div class="who-text"><strong>{u.display_name}</strong><span class="muted small mono">{u.username}{u.email ? ` · ${u.email}` : ''}</span></div>
             </div>
           </td>
-          <td><span class="kind {u.source}">{u.source === 'ldap' ? 'Directory' : u.source === 'local' ? 'Local' : 'Service'}</span></td>
+          <td><span class="kind {u.source}">{u.source === 'ldap' ? 'Directory' : u.source === 'entra' ? 'Microsoft' : u.source === 'local' ? 'Local' : 'Service'}</span></td>
           <td>
-            {#if u.source === 'ldap'}
-              <span class="role" use:tip={'From the directory groups, at each sign-in'}>{u.role}</span>
+            {#if u.source === 'ldap' || u.source === 'entra'}
+              <span class="role" use:tip={u.source === 'ldap' ? 'From the directory groups, at each sign-in' : 'From assigned Microsoft application roles, at each sign-in'}>{u.role}</span>
             {:else}
               <select class="select select-sm role-sel" value={u.role} disabled={u.id === session.user?.id}
                       onchange={(e) => setRole(u, (e.target as HTMLSelectElement).value)} aria-label="Role">

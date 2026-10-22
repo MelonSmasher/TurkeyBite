@@ -1,10 +1,10 @@
 """People and service accounts, for admins.
 
-Local accounts have a password kept here; directory accounts are created the
-first time someone signs in through LDAP, and their role comes from their
-groups; service accounts have no password and exist to hold API keys. An
-admin cannot lock themselves out: the last enabled admin cannot be demoted,
-disabled or deleted.
+Local accounts have a password kept here; LDAP and Entra accounts are created
+the first time someone signs in, and their roles come from the provider;
+service accounts have no password and exist to hold API keys. An admin cannot
+lock themselves out: the last enabled admin cannot be demoted, disabled or
+deleted.
 """
 
 from datetime import datetime, timezone
@@ -91,7 +91,7 @@ async def create_user(body: CreateUser, request: Request,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f'role is one of {", ".join(rbac.ROLES)}')
     if body.kind not in ('local', 'service'):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            'Create local or service accounts; directory accounts appear when '
+                            'Create local or service accounts; provider accounts appear when '
                             'their owner first signs in.')
     taken = (await db.execute(select(User).where(
         func.lower(User.username) == body.username.lower()))).scalar_one_or_none()
@@ -121,7 +121,7 @@ async def update_user(user_id: str, body: UpdateUser, request: Request,
     """Changes an account's name, email, role or whether it is disabled.
 
     Disabling an account ends its sessions. The last enabled admin cannot be
-    demoted or disabled, and a directory account's role comes from its groups.
+    demoted or disabled, and provider-managed roles come from the identity provider.
     """
     user = await _get(db, user_id)
     changes = {}
@@ -130,10 +130,11 @@ async def update_user(user_id: str, body: UpdateUser, request: Request,
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f'role is one of {", ".join(rbac.ROLES)}')
         if user.role == 'admin' and not await _other_admins(db, user):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, 'This is the last admin.')
-        if user.source == 'ldap':
+        if user.source in ('ldap', 'entra'):
+            provider = 'directory groups' if user.source == 'ldap' else 'Entra application roles'
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                'A directory account\'s role comes from its groups; change the '
-                                'mapping in Authentication instead.')
+                                f'This account\'s role comes from {provider}; change it at the '
+                                'identity provider instead.')
         changes['role'] = [user.role, body.role]
         user.role = body.role
     if body.disabled and user.disabled and user.disabled_reason == 'directory':

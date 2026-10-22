@@ -41,7 +41,7 @@ class TimestampMixin:
 # -- people and machines ------------------------------------------------------
 
 class User(TimestampMixin, Base):
-    """An account: a local one with its password here, a directory one, or a service account for API keys."""
+    """An account: local, LDAP, Microsoft Entra, or a service account for API keys."""
 
     __tablename__ = 'users'
     __table_args__ = (
@@ -50,19 +50,23 @@ class User(TimestampMixin, Base):
         Index('uq_users_ldap_guid', 'ldap_guid', unique=True, postgresql_where=text('ldap_guid IS NOT NULL')),
         Index('uq_users_ldap_dn_lower', func.lower(text('ldap_dn')), unique=True,
               postgresql_where=text('ldap_dn IS NOT NULL')),
+        Index('uq_users_entra_identity', 'entra_tenant_id', 'entra_object_id', unique=True,
+              postgresql_where=text('entra_tenant_id IS NOT NULL AND entra_object_id IS NOT NULL')),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(String(150), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(200))
     email: Mapped[str | None] = mapped_column(String(320))
-    # local: password kept here; ldap: the directory decides; service: API keys only
+    # local: password kept here; ldap/entra: identity provider decides; service: API keys only
     source: Mapped[str] = mapped_column(String(16), nullable=False, default='local')
     role: Mapped[str] = mapped_column(String(16), nullable=False, default='viewer')
     password_hash: Mapped[str | None] = mapped_column(String(255))
     ldap_dn: Mapped[str | None] = mapped_column(String(1000))
     # The entry's entryUUID or objectGUID, which outlasts renames and moves
     ldap_guid: Mapped[str | None] = mapped_column(String(64))
+    entra_tenant_id: Mapped[str | None] = mapped_column(String(36))
+    entra_object_id: Mapped[str | None] = mapped_column(String(64))
     disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # admin, or directory when the directory stopped granting access; only the
     # directory's own disabling is undone by the directory granting it again
@@ -79,6 +83,22 @@ class User(TimestampMixin, Base):
     preferences: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     # Bumped when a password changes, which ends every session issued before
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EntraLoginState(Base):
+    """One short-lived, browser-bound OIDC authorization attempt."""
+
+    __tablename__ = 'entra_login_states'
+
+    state_hash: Mapped[bytes] = mapped_column(LargeBinary(32), primary_key=True)
+    browser_hash: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    nonce: Mapped[str] = mapped_column(String(128), nullable=False)
+    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    next_path: Mapped[str] = mapped_column(String(2000), nullable=False, default='/')
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(500), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class UserSession(Base):

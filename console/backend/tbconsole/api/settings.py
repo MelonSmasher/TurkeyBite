@@ -9,10 +9,11 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import audit, settings_store
+from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, require
 from ..models import Webhook
-from ..security import crypto, ldap, rbac
+from ..security import crypto, entra, ldap, rbac
 
 router = APIRouter(prefix='/settings', tags=['settings'])
 
@@ -55,6 +56,33 @@ class LdapTestBody(LdapBody):
     password: str | None = Field(None, max_length=1024)
 
 
+class EntraBody(BaseModel):
+    """Single-tenant Microsoft Entra OIDC settings."""
+
+    enabled: bool = False
+    tenant_id: str = Field('', max_length=36)
+    client_id: str = Field('', max_length=36)
+    # None keeps the existing secret; use clear_client_secret to remove it
+    client_secret: str | None = Field(None, max_length=1024)
+    clear_client_secret: bool = False
+
+    @field_validator('tenant_id', 'client_id')
+    @classmethod
+    def _uuid(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return ''
+        try:
+            return str(uuid.UUID(value))
+        except ValueError as e:
+            raise ValueError('must be a UUID from the Microsoft app registration') from e
+
+    @field_validator('client_secret')
+    @classmethod
+    def _secret(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+
 class GeneralBody(BaseModel):
     """The organisation's name, the sign-in banner, and defaults for the whole console."""
 
@@ -92,6 +120,75 @@ def _public(cfg: dict) -> dict:
     out = {k: v for k, v in cfg.items() if k != 'bind_password_enc'}
     out['has_bind_password'] = bool(cfg.get('bind_password_enc'))
     return out
+
+
+def _entra_public(cfg: dict) -> dict:
+    """The Entra settings without the encrypted or plaintext client secret."""
+    return {
+        'enabled': bool(cfg.get('enabled')),
+        'tenant_id': cfg.get('tenant_id') or '',
+        'client_id': cfg.get('client_id') or '',
+        'has_client_secret': bool(cfg.get('client_secret_enc')),
+        'redirect_uri': f"{get_settings().public_url}/api/v1/auth/entra/callback",
+    }
+
+
+def _merge_entra(body: EntraBody, saved: dict) -> dict:
+    """Keeps a secret only for the client it was saved for, or encrypts its replacement."""
+    cfg = {'enabled': body.enabled, 'tenant_id': body.tenant_id, 'client_id': body.client_id}
+    secret_enc = saved.get('client_secret_enc') or ''
+    changed_client = (body.tenant_id != (saved.get('tenant_id') or '')
+                      or body.client_id != (saved.get('client_id') or ''))
+    if body.clear_client_secret and body.client_secret:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            'Enter a replacement secret or clear the saved secret, not both.')
+    if body.client_secret:
+        secret_enc = crypto.encrypt(body.client_secret)
+    elif body.clear_client_secret:
+        secret_enc = ''
+    elif changed_client and secret_enc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            'Enter the client secret again when you change the tenant or app.')
+    elif secret_enc:
+        try:
+            crypto.decrypt(secret_enc)
+        except crypto.SecretUnreadable as e:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                'The saved client secret cannot be decrypted. Enter it again.')
+    cfg['client_secret_enc'] = secret_enc
+    if body.enabled:
+        settings = get_settings()
+        if (urlsplit(settings.public_url).scheme != 'https' or not settings.cookie_secure):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                'Microsoft sign-in requires an https:// public URL and secure cookies.')
+        if not (cfg['tenant_id'] and cfg['client_id'] and secret_enc):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                'Enable Microsoft sign-in only after saving the tenant, client ID, '
+                                'and client secret.')
+    return cfg
+
+
+@router.get('/entra')
+async def get_entra(_: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
+                    db: AsyncSession = Depends(get_session)) -> dict:
+    """Microsoft Entra OIDC settings, never returning the client secret."""
+    return _entra_public(await settings_store.get(db, 'entra', entra.DEFAULTS))
+
+
+@router.put('/entra')
+async def put_entra(body: EntraBody, request: Request,
+                    principal: Principal = Depends(require(rbac.SETTINGS_ADMIN)),
+                    db: AsyncSession = Depends(get_session)) -> dict:
+    """Saves Entra settings, encrypting the client secret with the console key."""
+    saved = await settings_store.get(db, 'entra', entra.DEFAULTS)
+    cfg = _merge_entra(body, saved)
+    await settings_store.put(db, 'entra', cfg, principal.user.id)
+    audit.record(db, 'settings.entra', principal=principal, request=request,
+                 details={'enabled': body.enabled, 'tenant_id': body.tenant_id,
+                          'client_id': body.client_id,
+                          'secret_changed': bool(body.client_secret or body.clear_client_secret)})
+    await db.commit()
+    return _entra_public(cfg)
 
 
 def _check(body: LdapBody) -> None:

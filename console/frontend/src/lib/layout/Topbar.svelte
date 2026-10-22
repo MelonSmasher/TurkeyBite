@@ -132,7 +132,7 @@
     {#snippet children({ close })}
       <div class="who">
         <div class="who-name">{session.user?.display_name}</div>
-        <div class="muted who-meta">{session.user?.username} · {session.user?.role} · {session.user?.source === 'ldap' ? 'directory' : session.user?.source}</div>
+        <div class="muted who-meta">{session.user?.username} · {session.user?.role} · {session.user?.source === 'ldap' ? 'directory' : session.user?.source === 'entra' ? 'Microsoft' : session.user?.source}</div>
       </div>
       <div class="menu-sep"></div>
       <a class="menu-item" href="/account" onclick={close}><UserRound size={15} /> Your account</a>

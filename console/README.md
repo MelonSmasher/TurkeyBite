@@ -41,7 +41,7 @@ omitting it keeps the mixed view and its user → hostname → PTR host → IP p
 | **Rules** | The analysis layer. Six rule types (threshold, distinct values, ratio, spike, first seen, silence), grouped per person or machine, with schedules, exceptions, re-alert gaps and webhook routing. Twenty built-in rules ship ready to enable, disable, tune, clone or reset. A backtest shows what a rule would have raised before it is switched on. |
 | **Dashboards and trends** | Dashboards of live widgets, three built in. Trends from the daily counts, which outlive index retention. |
 | **Webhooks** | Slack, Microsoft Teams, Discord, Google Chat, or signed JSON. Deliveries are queued in Postgres, retried with backoff, and can be sent again by hand. Identities can be redacted per webhook. |
-| **Access** | LDAP sign-in with group-to-role mapping, local accounts that keep working when the directory does not, TOTP second factor, service accounts and scoped API keys, three roles, and an audit log of who looked at what. |
+| **Access** | Microsoft Entra ID sign-in with assigned application roles, LDAP sign-in with group-to-role mapping, local accounts, TOTP second factor, service accounts and scoped API keys, three roles, and an audit log of who looked at what. |
 | **Look and feel** | Light, dark and system themes, six accents, compact density, a ⌘K command palette, and privacy mode, which shows people as stable aliases for a shared screen. |
 
 ## Deploying
@@ -52,13 +52,13 @@ cp console.env.example console.env    # fill in the secret key, passwords and Op
 docker compose --env-file console.env up -d --build
 ```
 
-For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), and `TURKEYBITE_DOCS_IMAGE=ghcr.io/melonsmasher/turkeybite-docs:v1.2.3` beside it, then run `docker compose --env-file console.env pull console docs` and `docker compose --env-file console.env up -d --no-build`. Without the docs image set, `--no-build` finds no `turkeybite-docs:local` image to start. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../README.md#published-images).
+For a published image, set `TURKEYBITE_CONSOLE_IMAGE=ghcr.io/melonsmasher/turkeybite-console:v1.2.3` in `console.env` (substitute an actual successful release version, or use `:sha-<full-master-commit-sha>` for a master build), and `TURKEYBITE_DOCS_IMAGE=ghcr.io/melonsmasher/turkeybite-docs:v1.2.3` beside it, then run `docker compose --env-file console.env pull console mkdoc` and `docker compose --env-file console.env up -d --no-build`. Without the docs image set, `--no-build` finds no `turkeybite-docs:local` image to start. Use the same version or commit for the pipeline roles if deploying together. The console image includes both the frontend and API; Postgres remains a separate upstream image. See [release tagging](../README.md#published-images).
 
-`docker-compose.yml` also builds and starts `docs`, the documentation site and
-tutorial, which the console serves at `/docs/` to people who are signed in and
-links under **Help** in the account menu. It publishes no port; the console
-reaches it at `TBCONSOLE_DOCS_URL`. Set `TURKEYBITE_DOCS_IMAGE` to use a
-published image instead of building it.
+`docker-compose.yml` also builds and starts the `mkdoc` container, which serves
+the full MkDocs site and tutorial at `/docs/` to signed-in people. The Overview
+home page links to it, and it is also available under **Help** in the account
+menu. It publishes no port; the console reaches it at `TBCONSOLE_DOCS_URL`.
+Set `TURKEYBITE_DOCS_IMAGE` to use a published image instead of building it.
 
 Then sign in as the bootstrap admin from `console.env`, change its password,
 turn on its second factor, and remove `TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD`. Put
@@ -80,6 +80,40 @@ turn; the rule scheduler and webhook dispatcher claim their work with
 if its process dies, and the daily rollups and housekeeping hold a lease, so
 nothing runs twice. Set `TBCONSOLE_RUN_WORKERS=false` on replicas that should
 only serve.
+
+### Microsoft Entra ID single sign-on
+
+Entra sign-in is optional and works alongside local and LDAP accounts. In the
+Microsoft Entra admin center, create an app registration for a **Web**
+application. Add the console callback as a redirect URI:
+`https://<your-console-host>/api/v1/auth/entra/callback` (the public URL plus
+that path). Under **App roles**, create roles whose values are exactly
+`viewer`, `analyst`, and `admin`. Assign the users or groups who may sign in
+to the appropriate app roles, and set **Assignment required** to **Yes**.
+Unassigned identities and identities without one of these roles are refused;
+the console does not grant access by email or automatically link an existing
+local account.
+
+Set `TBCONSOLE_PUBLIC_URL` to the HTTPS address people use to reach the
+console, then open **Admin → Authentication → Microsoft Entra ID**. Enter the
+tenant UUID, application (client) ID, and client secret there and enable the
+provider. The secret is encrypted in the console database with
+`TBCONSOLE_SECRET_KEY`; it is never returned to the browser. The callback URI
+is shown in that settings panel: register it exactly in the Entra app
+registration. The sign-in page then offers **Continue with Microsoft** and
+keeps the username/password form for local and LDAP sign-in. Retain a local
+administrator for testing and recovery: set
+`TBCONSOLE_BOOTSTRAP_ADMIN_USERNAME` and a strong
+`TBCONSOLE_BOOTSTRAP_ADMIN_PASSWORD` on a fresh install, or create another
+local account with `python -m tbconsole create-user`. Entra Conditional Access
+policies govern Microsoft-side MFA; the console's TOTP setup applies to local
+accounts.
+
+The OIDC flow uses tenant-specific endpoints, short-lived browser-bound state,
+nonce validation, and PKCE. Entra users are identified by tenant and object
+ID, so changing an email address does not create a new identity. A role is
+refreshed on each sign-in; disabling an account in the console remains in
+force until an administrator re-enables it.
 
 Housekeeping runs hourly: it deletes ended sessions, sent or abandoned webhook
 deliveries after `TBCONSOLE_DELIVERY_RETENTION_DAYS` (30 by default), findings
@@ -364,4 +398,4 @@ screenshots in `docs/screenshots/` from the running app.
   busiest groups per field, and a ratio rule ranks the 2,000 busiest by their
   share. Each says so on its run when it reaches the limit.
 - The live tail polls OpenSearch every two seconds rather than streaming from it.
-- Single sign-on is LDAP only for now; SAML and OIDC would sit beside it.
+- Microsoft Entra ID OIDC and LDAP are both supported; local accounts remain available.

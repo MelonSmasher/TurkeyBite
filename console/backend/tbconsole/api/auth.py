@@ -10,21 +10,24 @@ used to find out which usernames exist. Five wrong passwords lock a local
 account for fifteen minutes, and an address that fails often is slowed down.
 """
 
+import hmac
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from fastapi.responses import RedirectResponse
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import __version__, audit, settings_store
 from ..config import get_settings
 from ..db import get_session
 from ..deps import Principal, current_principal, optional_principal, origin_ok
-from ..models import User, UserSession, Webhook
-from ..security import crypto, ldap, limits, lockout, passwords, sessions, totp
+from ..models import EntraLoginState, User, UserSession, Webhook
+from ..security import crypto, entra, ldap, limits, lockout, passwords, rbac, sessions, totp
 from .common import user_out
 
 router = APIRouter(prefix='/auth', tags=['auth'])
@@ -68,8 +71,187 @@ async def auth_config(db: AsyncSession = Depends(get_session)) -> dict:
     """What the sign-in page needs to know before anyone has signed in."""
     general = await settings_store.general(db)
     cfg = ldap.config_with_defaults(await settings_store.get(db, 'ldap'))
+    entra_cfg = await settings_store.get(db, 'entra', entra.DEFAULTS)
+    settings = get_settings()
     return {'org_name': general['org_name'], 'login_banner': general['login_banner'],
-            'ldap_enabled': bool(cfg.get('enabled')), 'version': __version__}
+            'ldap_enabled': bool(cfg.get('enabled')),
+            'entra_enabled': bool(entra_cfg.get('enabled') and entra_cfg.get('tenant_id')
+                                  and entra_cfg.get('client_id')
+                                  and entra_cfg.get('client_secret_enc')
+                                  and urlsplit(settings.public_url).scheme == 'https'
+                                  and settings.cookie_secure),
+            'version': __version__}
+
+
+def _safe_next(value: str | None) -> str:
+    """A same-origin relative path for the OIDC return, never an external URL."""
+    if not value or len(value) > 2000 or not value.startswith('/') or value.startswith('//'):
+        return '/'
+    if '\\' in value or any(ord(char) < 32 for char in value):
+        return '/'
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc or parts.path.startswith('//'):
+        return '/'
+    return value
+
+
+def _entra_cookie(response: Response) -> None:
+    settings = get_settings()
+    response.delete_cookie('tbc_entra', path='/api/v1/auth/entra',
+                           secure=settings.cookie_secure, httponly=True, samesite='lax')
+
+
+def _entra_redirect(settings, destination: str) -> RedirectResponse:
+    response = RedirectResponse(f'{settings.public_url}{destination}',
+                                status_code=status.HTTP_303_SEE_OTHER)
+    _entra_cookie(response)
+    return response
+
+
+async def _entra_failure(db: AsyncSession, request: Request, reason: str) -> None:
+    audit.record(db, 'auth.login', actor_name='Microsoft Entra ID', request=request,
+                 outcome='failure', details={'reason': reason})
+    await db.commit()
+
+
+async def _entra_config(db: AsyncSession) -> entra.Config | None:
+    saved = await settings_store.get(db, 'entra', entra.DEFAULTS)
+    if not saved.get('enabled'):
+        return None
+    settings = get_settings()
+    if urlsplit(settings.public_url).scheme != 'https' or not settings.cookie_secure:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'Microsoft sign-in requires an https:// public URL and secure cookies.')
+    if not (saved.get('tenant_id') and saved.get('client_id')
+            and saved.get('client_secret_enc')):
+        return None
+    try:
+        secret = crypto.decrypt(saved['client_secret_enc'])
+    except crypto.SecretUnreadable as e:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            'The Microsoft client secret cannot be decrypted. Re-enter it in '
+                            'Authentication settings.') from e
+    return entra.Config(saved['tenant_id'], saved['client_id'], secret,
+                        f"{settings.public_url}/api/v1/auth/entra/callback")
+
+
+@router.get('/entra/start', include_in_schema=False)
+async def entra_start(request: Request, db: AsyncSession = Depends(get_session)) -> Response:
+    """Starts a browser-bound, PKCE-protected Microsoft Entra sign-in."""
+    settings = get_settings()
+    config = await _entra_config(db)
+    if config is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Microsoft sign-in is not configured.')
+    state, browser, nonce, verifier = (entra.new_secret() for _ in range(4))
+    now = datetime.now(timezone.utc)
+    await db.execute(delete(EntraLoginState).where(EntraLoginState.expires_at <= now))
+    db.add(EntraLoginState(
+        state_hash=crypto.sha256(state), browser_hash=crypto.sha256(browser), nonce=nonce,
+        code_verifier=verifier, next_path=_safe_next(request.query_params.get('next')),
+        tenant_id=config.tenant_id, client_id=config.client_id, redirect_uri=config.redirect_uri,
+        expires_at=now + timedelta(minutes=5)))
+    await db.commit()
+    response = RedirectResponse(entra.authorization_url(config, state, nonce, verifier),
+                                status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie('tbc_entra', browser, max_age=300, httponly=True,
+                        secure=settings.cookie_secure, samesite='lax',
+                        path='/api/v1/auth/entra')
+    return response
+
+
+@router.get('/entra/callback', include_in_schema=False)
+async def entra_callback(request: Request, db: AsyncSession = Depends(get_session)) -> Response:
+    """Consumes a one-time OIDC response and starts a console session."""
+    settings = get_settings()
+    state = request.query_params.get('state') or ''
+    browser = request.cookies.get('tbc_entra') or ''
+    if not 32 <= len(state) <= 256 or not 32 <= len(browser) <= 256:
+        await _entra_failure(db, request, 'missing or invalid OIDC state')
+        return _entra_redirect(settings, '/login?entra=failed')
+
+    row = (await db.execute(select(EntraLoginState).where(
+        EntraLoginState.state_hash == crypto.sha256(state)).with_for_update())).scalar_one_or_none()
+    if row is None or not hmac.compare_digest(row.browser_hash, crypto.sha256(browser)):
+        await _entra_failure(db, request, 'OIDC state did not match this browser')
+        return _entra_redirect(settings, '/login?entra=failed')
+
+    nonce, verifier, next_path = row.nonce, row.code_verifier, row.next_path
+    expected_provider = (row.tenant_id, row.client_id, row.redirect_uri)
+    expired = row.expires_at <= datetime.now(timezone.utc)
+    await db.delete(row)
+    await db.commit()
+
+    if expired:
+        await _entra_failure(db, request, 'OIDC state expired')
+        return _entra_redirect(settings, '/login?entra=failed')
+
+    config = await _entra_config(db)
+    if (config is None or (config.tenant_id, config.client_id, config.redirect_uri)
+            != expected_provider):
+        await _entra_failure(db, request, 'Entra configuration changed during sign-in')
+        return _entra_redirect(settings, '/login?entra=failed')
+
+    code = request.query_params.get('code') or ''
+    if request.query_params.get('error') or not code or len(code) > 8192:
+        await _entra_failure(db, request, 'Microsoft did not complete sign-in')
+        return _entra_redirect(settings, '/login?entra=failed')
+    try:
+        token = await entra.exchange_code(config, code, verifier)
+        claims = await entra.validate_id_token(config, token, nonce)
+    except entra.EntraUnavailable:
+        await _entra_failure(db, request, 'Microsoft sign-in service unavailable')
+        return _entra_redirect(settings, '/login?entra=unavailable')
+    except entra.EntraError:
+        await _entra_failure(db, request, 'Microsoft rejected the sign-in response')
+        return _entra_redirect(settings, '/login?entra=failed')
+
+    roles = claims.get('roles')
+    role = None
+    if isinstance(roles, list):
+        for assigned in roles:
+            if assigned in rbac.ROLES:
+                role = rbac.higher_role(role, assigned)
+    oid = claims['oid']
+    tenant_id = claims['tid']
+    username = claims.get('preferred_username') or claims.get('email') or oid
+    if (role is None or not isinstance(username, str) or not username.strip()
+            or len(username.strip()) > 150
+            or (claims.get('name') is not None and not isinstance(claims['name'], str))
+            or (claims.get('email') is not None and not isinstance(claims['email'], str))
+            or (isinstance(claims.get('name'), str) and len(claims['name']) > 200)
+            or (isinstance(claims.get('email'), str) and len(claims['email']) > 320)):
+        await _entra_failure(db, request, 'account has no supported assigned application role')
+        return _entra_redirect(settings, '/login?entra=failed')
+
+    lock_keys = sorted((f'entra-id:{tenant_id}:{oid}',
+                        f'entra-username:{username.strip().lower()}'))
+    for key in lock_keys:
+        await db.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'),
+                         {'key': key})
+    user = (await db.execute(select(User).where(
+        User.entra_tenant_id == tenant_id, User.entra_object_id == oid))).scalar_one_or_none()
+    if user is None:
+        existing = (await db.execute(select(User.id).where(
+            func.lower(User.username) == username.strip().lower()))).first()
+        if existing:
+            await _entra_failure(db, request, 'Entra identity conflicts with an existing account')
+            return _entra_redirect(settings, '/login?entra=failed')
+        user = User(username=username.strip(), source='entra', role=role,
+                    display_name=claims.get('name'), email=claims.get('email'),
+                    entra_tenant_id=tenant_id, entra_object_id=oid, preferences={})
+        db.add(user)
+        await db.flush()
+    elif user.disabled:
+        await _entra_failure(db, request, 'Entra account is disabled in the console')
+        return _entra_redirect(settings, '/login?entra=failed')
+    else:
+        user.role = role
+        user.display_name = claims.get('name') or user.display_name
+        user.email = claims.get('email') or user.email
+
+    response = _entra_redirect(settings, _safe_next(next_path))
+    await _finish(db, user, request, response, 'entra')
+    return response
 
 
 async def _finish(db: AsyncSession, user: User, request: Request, response: Response,

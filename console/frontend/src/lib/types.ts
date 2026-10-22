@@ -8,7 +8,7 @@ export interface UserRef {
   username: string;
   display_name: string;
   role: 'viewer' | 'analyst' | 'admin';
-  source: 'local' | 'ldap' | 'service';
+  source: 'local' | 'ldap' | 'entra' | 'service';
 }
 
 export interface User extends UserRef {

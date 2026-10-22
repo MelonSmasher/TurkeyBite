@@ -94,7 +94,7 @@
       <Avatar name={user?.display_name ?? '?'} size={56} />
       <div class="pnames">
         <h2>{user?.display_name}</h2>
-        <span class="muted">{user?.username} · <span class="cap">{user?.role}</span> · {user?.source === 'ldap' ? 'directory account' : 'local account'}</span>
+        <span class="muted">{user?.username} · <span class="cap">{user?.role}</span> · {user?.source === 'ldap' ? 'directory account' : user?.source === 'entra' ? 'Microsoft account' : 'local account'}</span>
       </div>
     </section>
 
