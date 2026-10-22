@@ -15,13 +15,18 @@
     attr_email: string; attr_groups: string; group_base_dn: string; group_filter: string;
     role_mappings: { group: string; role: string }[]; default_role: string | null; timeout_sec: number;
   }
+  interface Entra { enabled: boolean; tenant_id: string; client_id: string; has_client_secret: boolean; redirect_uri: string }
   interface General { org_name: string; login_banner: string; default_range: string; require_mfa_for_local_admins: boolean; privacy_mode_default: boolean; device_lookup_url: string; device_lookup_webhook_id: string }
 
   const ldapQ = new Query((signal) => api.get<Ldap>('/settings/ldap', { signal }));
+  const entraQ = new Query((signal) => api.get<Entra>('/settings/entra', { signal }));
   const generalQ = new Query((signal) => api.get<General>('/settings/general', { signal }));
   const hooks = new Query((signal) => api.get<{ id: string; name: string }[]>('/webhooks', { signal }));
   let ldap = $state<Ldap | null>(null);
+  let entra = $state<Entra | null>(null);
   let general = $state<General | null>(null);
+  let entraSecret = $state('');
+  let clearEntraSecret = $state(false);
   let urlsText = $state('');
   let bindPassword = $state('');
   let testUser = $state('');
@@ -37,6 +42,10 @@
     const data = generalQ.data;
     if (data) untrack(() => (general = { ...data }));
   });
+  $effect(() => {
+    const data = entraQ.data;
+    if (data) untrack(() => (entra = { ...data }));
+  });
 
   function payload() {
     return { ...$state.snapshot(ldap!), urls: urlsText.split(/\s+/).filter(Boolean), bind_password: bindPassword ? bindPassword : null };
@@ -50,6 +59,24 @@
       ldapQ.reload();
     } catch (e) {
       toasts.error('Could not save', errorText(e));
+    }
+  }
+
+  async function saveEntra() {
+    try {
+      await api.put('/settings/entra', {
+        enabled: entra!.enabled,
+        tenant_id: entra!.tenant_id,
+        client_id: entra!.client_id,
+        client_secret: entraSecret || null,
+        clear_client_secret: clearEntraSecret,
+      });
+      entraSecret = '';
+      clearEntraSecret = false;
+      toasts.success('Microsoft sign-in settings saved');
+      entraQ.reload();
+    } catch (e) {
+      toasts.error('Could not save Microsoft sign-in settings', errorText(e));
     }
   }
 
@@ -78,11 +105,37 @@
   }
 </script>
 
-<PageHeader title="Authentication" subtitle="Who can sign in, and how. The directory decides for most people; local accounts and their second factor are the way in when it cannot." />
+<PageHeader title="Authentication" subtitle="Who can sign in, and how. Microsoft Entra ID and LDAP provide external sign-in; local accounts remain available, with an optional second factor." />
 
-{#if ldap && general}
+{#if ldap && entra && general}
   <div class="layout">
     <div class="main">
+      <section class="card card-pad stack">
+        <div class="sec-head">
+          <div class="sec-title"><ShieldCheck size={17} /> Microsoft Entra ID</div>
+          <div class="spacer"></div>
+          <label class="row"><Switch bind:checked={entra.enabled} label="Use Microsoft sign-in" /> {entra.enabled ? 'On' : 'Off'}</label>
+        </div>
+        <p class="muted small">Single-tenant OpenID Connect. Assign the app roles <code>viewer</code>, <code>analyst</code>, or <code>admin</code> in Entra; unassigned accounts are refused. The role is refreshed on each sign-in.</p>
+        <div class="row2">
+          <label class="field"><span class="field-label">Tenant ID</span><input class="input mono" bind:value={entra.tenant_id} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></label>
+          <label class="field"><span class="field-label">Application (client) ID</span><input class="input mono" bind:value={entra.client_id} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></label>
+        </div>
+        <label class="field"><span class="field-label">Client secret</span>
+          <input class="input" type="password" bind:value={entraSecret} placeholder={entra.has_client_secret ? 'Saved, encrypted. Type to replace.' : ''} autocomplete="new-password" oninput={() => { clearEntraSecret = false; }} />
+          <span class="field-hint">Encrypted with the console secret key and never shown again. Re-enter it when changing the tenant or app.</span>
+        </label>
+        {#if entra.has_client_secret}
+          <button class="btn btn-sm" onclick={() => { clearEntraSecret = !clearEntraSecret; entraSecret = ''; }}>
+            {clearEntraSecret ? 'Keep saved secret' : 'Clear saved secret'}
+          </button>
+        {/if}
+        <label class="field"><span class="field-label">Redirect URI (register this in Entra)</span><input class="input mono" value={entra.redirect_uri} readonly /></label>
+        <div class="foot">
+          <button class="btn btn-primary" onclick={saveEntra}><Save size={15} /> Save Microsoft settings</button>
+        </div>
+      </section>
+
       <section class="card card-pad stack">
         <div class="sec-head">
           <div class="sec-title"><Network size={17} /> LDAP directory</div>

@@ -41,8 +41,8 @@ services:
       TBCONSOLE_DATABASE_URL: postgresql+asyncpg://tbconsole@postgres:5432/tbconsole
       # Given on its own, so a password with @ or / in it works unescaped
       TBCONSOLE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
-      # The documentation site below, which the console serves at /docs/
-      TBCONSOLE_DOCS_URL: http://docs:8080
+      # The MkDocs site below, which the console serves at /docs/
+      TBCONSOLE_DOCS_URL: http://mkdoc:8080
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,10 +53,10 @@ services:
       - ./certs:/certs:ro
     networks: [console]
 
-  # The documentation and tutorial, served by the console at /docs/ to people
+  # The full MkDocs documentation and tutorial, served by the console at /docs/ to people
   # who are signed in. It publishes no port: only the console reaches it.
   # Built from the repository root, since some pages are made from the code.
-  docs:
+  mkdoc:
     build:
       context: ..
       dockerfile: docker/docs/Dockerfile

@@ -7,7 +7,13 @@
   import { router } from '../lib/router.svelte';
   import { session } from '../lib/stores/session.svelte';
 
-  interface AuthConfig { org_name: string; login_banner: string; ldap_enabled: boolean; version: string }
+  interface AuthConfig {
+    org_name: string;
+    login_banner: string;
+    ldap_enabled: boolean;
+    entra_enabled: boolean;
+    version: string;
+  }
 
   let config = $state<AuthConfig | null>(null);
   let username = $state('');
@@ -19,6 +25,9 @@
   let directoryDown = $state(false);
 
   api.get<AuthConfig>('/auth/config').then((c) => (config = c)).catch(() => {});
+  const entraResult = router.query.get('entra');
+  if (entraResult === 'failed') error = 'Microsoft sign-in could not be completed. Check your access or try again.';
+  if (entraResult === 'unavailable') error = 'Microsoft sign-in is temporarily unavailable. Try again shortly.';
 
   // Only ever back into the console: a next= that resolves to another origin,
   // such as //evil.example or /\evil.example, is ignored
@@ -104,9 +113,16 @@
       {#if !mfaToken}
         <h1>Sign in</h1>
         <p class="muted lead">
-          {#if config?.ldap_enabled}Use your directory account, or a local account if the directory is unavailable.
+          {#if config?.entra_enabled}Sign in with your organisation's Microsoft account.
+          {:else if config?.ldap_enabled}Use your directory account, or a local account if the directory is unavailable.
           {:else}Use your console account.{/if}
         </p>
+        {#if config?.entra_enabled}
+          <a class="btn btn-primary btn-lg submit entra" href="/api/v1/auth/entra/start?next={encodeURIComponent(next())}">
+            <Building2 size={16} /> Continue with Microsoft <ArrowRight size={16} />
+          </a>
+          <div class="divider"><span>or sign in another way</span></div>
+        {/if}
         <form onsubmit={submit} class="stack">
           <label class="field">
             <span class="field-label">Username</span>
@@ -158,6 +174,9 @@
     padding: 48px 56px; color: #fff;
     background: radial-gradient(120% 90% at 10% 0%, color-mix(in srgb, var(--accent) 85%, #fff 0%) 0%, #12102a 62%), #0b0a18;
   }
+  .entra { text-decoration: none; }
+  .divider { display: flex; align-items: center; gap: 12px; color: var(--text-muted); font-size: .82rem; margin: 18px 0; }
+  .divider::before, .divider::after { content: ''; height: 1px; flex: 1; background: var(--line); }
   :global(:root[data-accent='ocean']) .brand-panel { background: radial-gradient(120% 90% at 10% 0%, #0b84a5 0%, #06202a 62%), #041218; }
   :global(:root[data-accent='forest']) .brand-panel { background: radial-gradient(120% 90% at 10% 0%, #1f8a4c 0%, #08200f 62%), #04120a; }
   :global(:root[data-accent='ember']) .brand-panel { background: radial-gradient(120% 90% at 10% 0%, #d9480f 0%, #2a1006 62%), #160803; }
