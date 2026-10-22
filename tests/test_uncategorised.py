@@ -41,9 +41,9 @@ class QueryTest(unittest.TestCase):
         self.assertIn({'exists': {'field': 'bite.contexts'}}, bool_query['must_not'])
         self.assertEqual(body['size'], 0)
 
-    def test_names_no_list_could_hold_are_left_out(self):
+    def test_fallback_domains_are_considered_but_reverse_lookups_are_left_out(self):
         must_not = query(7, 200)['query']['bool']['must_not']
-        self.assertIn({'term': {'bite.psl_fallback': True}}, must_not)
+        self.assertNotIn({'term': {'bite.psl_fallback': True}}, must_not)
         self.assertIn({'wildcard': {'bite.registrable_domain': {'value': '*arpa'}}}, must_not)
 
     def test_clients_rank_by_distinct_clients_and_lookups_by_count(self):
@@ -87,6 +87,16 @@ class ReportTest(unittest.TestCase):
                                 Row('quiet.org', 9, 1, [])])
         self.assertEqual(client.asked[0][0], 'tb-index-2*')
         self.assertEqual(client.asked[0][1], query(3, 2))
+
+    def test_tld_filter_leaves_out_unknown_suffixes(self):
+        client = FakeSearch([
+            {'key': 'example.com', 'doc_count': 2, 'clients': {'value': 1},
+             'candidates': {'buckets': []}},
+            {'key': 'printer.local', 'doc_count': 1, 'clients': {'value': 1},
+             'candidates': {'buckets': []}},
+        ])
+        self.assertEqual(report(client, 'tb-index-*', query(3, 2), tlds={'com'}),
+                         [Row('example.com', 2, 1, [])])
 
 
 class NoIndexYetTest(unittest.TestCase):
