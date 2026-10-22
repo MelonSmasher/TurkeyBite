@@ -20,10 +20,11 @@ Only domain names and counts leave OpenSearch, never who looked a domain up.
 """
 
 import os
-import re
 from collections import namedtuple
 
+from libtb import psl
 from libtb.taxonomy import SERVICE, TAXONOMY
+from libtb.util import VALID_HOST
 
 Row = namedtuple('Row', 'domain lookups clients candidates')
 
@@ -33,10 +34,6 @@ ORDERS = ('clients', 'lookups')
 # has one obvious name. `label` still takes them.
 SPELLINGS = frozenset(('torrent', 'proxy', 'windows-tracking'))
 
-# A hostname as the cleaned lists hold them: lower case, dot separated, each
-# label up to 63 characters, and punycode for anything else
-_LABEL = r'[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?'
-DOMAIN = re.compile(rf'^(?=.{{1,253}}$){_LABEL}(?:\.{_LABEL})+$')
 
 # Where an operator's own labels go, beside the shipped `turkeybite` list
 CUSTOM = 'custom'
@@ -63,18 +60,21 @@ def describe(category):
 def query(days, top, order='clients', exclude=()):
     """The aggregation that finds the uncategorised domains, newest `days` days.
 
-    Reverse lookups and names whose suffix is not on the Public Suffix List,
-    such as printer.local, are left out: no list could name them.
+    Reverse lookups are left out: no list could name them. So are names
+    under a top-level domain IANA does not have, such as printer.local, but
+    by `report`, which knows the TLDs.
     """
     if order not in ORDERS:
         raise ValueError(f'order must be one of {", ".join(ORDERS)}, not {order!r}')
     must_not = [{'exists': {'field': 'bite.contexts'}},
-                {'term': {'bite.psl_fallback': True}},
                 {'wildcard': {'bite.registrable_domain': {'value': '*arpa'}}}]
     excluded = sorted({normalise(domain) for domain in exclude if domain.strip()})
     if excluded:
         must_not.append({'terms': {'bite.registrable_domain': excluded}})
-    terms = {'field': 'bite.registrable_domain', 'size': top}
+    # Each shard ranks its own domains and only its best are merged, so it is
+    # asked for many more than are wanted: a domain whose clients are spread
+    # over the days' indices is then not lost from the top
+    terms = {'field': 'bite.registrable_domain', 'size': top, 'shard_size': max(1000, top * 5)}
     if order == 'clients':
         terms['order'] = {'clients': 'desc'}
     return {
@@ -96,13 +96,19 @@ def query(days, top, order='clients', exclude=()):
     }
 
 
-def report(client, pattern, body):
-    """The uncategorised domains in `pattern` that `body`, from query(), finds, as Rows."""
+def report(client, pattern, body, tlds=None):
+    """The uncategorised domains in `pattern` that `body`, from query(), finds, as Rows.
+
+    With `tlds`, the top-level domains IANA has, a domain under any other,
+    such as printer.local or a typo, is left out.
+    """
     response = client.search(index=pattern, body=body, request_timeout=120)
     rows = []
     # No aggregations at all when the pattern matches no index yet
     buckets = ((response.get('aggregations') or {}).get('domains') or {}).get('buckets') or []
     for bucket in buckets:
+        if tlds and bucket['key'].rsplit('.', 1)[-1] not in tlds:
+            continue
         rows.append(Row(bucket['key'], bucket['doc_count'], bucket['clients']['value'],
                         [c['key'] for c in bucket['candidates']['buckets']]))
     return rows
@@ -156,12 +162,15 @@ def normalise(domain):
     return domain
 
 
-def read_labels(lines):
+def read_labels(lines, psl_path=psl.DEFAULT_PATH):
     """(labels, problems) from a filled-in review file.
 
     labels is a list of (domain, category). A line with a domain and nothing
     after it is skipped; anything that is not a domain followed by a category
-    the taxonomy knows is a problem, named with its line number.
+    the taxonomy knows is a problem, named with its line number. So is a
+    public suffix, such as co.uk or github.io: a label reaches every name
+    under it, which would be every site there. A rule that broad belongs in
+    a list written by hand, as *.edu is.
     """
     labels, problems = [], []
     for number, line in enumerate(lines, 1):
@@ -172,8 +181,12 @@ def read_labels(lines):
             problems.append(f'line {number}: expected a domain and a category, found {line.strip()!r}')
             continue
         domain, category = normalise(words[0]), words[1].lower()
-        if not DOMAIN.match(domain):
+        if not VALID_HOST.match(domain) or domain.startswith('*.'):
+            # The test the index makes of every line it reads
             problems.append(f'line {number}: {words[0]!r} is not a domain name')
+        elif psl.public_suffix(domain, psl_path) == domain:
+            problems.append(f'line {number}: {domain} is a public suffix, so a label would '
+                            f'reach every site under it')
         elif category not in TAXONOMY:
             problems.append(f'line {number}: {category!r} is not a category; the review '
                             f'file lists them')
